@@ -1,0 +1,25 @@
+metadata:
+  name: Example Evaluation
+  version: "1.0"
+cases:
+  - id: example_case
+    query: "Describe the scenario under evaluation"
+    constraints: "Optional constraint hints"
+    expected_verdict: approve
+    fused:
+      verdict: approve
+      justification: "Why the final verdict is expected"
+      confidence: 0.5
+      residual_risk: medium
+      risks: []
+      mitigations: []
+    personas:
+      melchior:
+        text: "Persona output text"
+        confidence: 0.5
+      balthasar:
+        text: "Persona output text"
+        confidence: 0.5
+      casper:
+        text: "Persona output text"
+        confidence: 0.5
