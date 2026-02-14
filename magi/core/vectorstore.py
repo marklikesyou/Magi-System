@@ -1,10 +1,10 @@
 
 
-from __future__ import annotations 
+from __future__ import annotations
 
-import math 
-from dataclasses import dataclass ,field 
-from typing import Any ,Dict ,Iterable ,List ,Sequence 
+import math
+from dataclasses import dataclass ,field
+from typing import Any ,Dict ,Iterable ,List ,Sequence
 
 
 def cosine_similarity (a :Sequence [float ],b :Sequence [float ])->float :
@@ -16,17 +16,17 @@ def cosine_similarity (a :Sequence [float ],b :Sequence [float ])->float :
     norm_a =math .sqrt (sum (x *x for x in a ))
     norm_b =math .sqrt (sum (y *y for y in b ))
     if norm_a ==0.0 or norm_b ==0.0 :
-        return 0.0 
+        return 0.0
     return dot /(norm_a *norm_b )
 
 
-@dataclass 
+@dataclass
 class VectorEntry :
 
 
-    document_id :str 
+    document_id :str
     embedding :List [float ]
-    text :str 
+    text :str
     metadata :Dict [str ,Any ]=field (default_factory =dict )
 
     def to_dict (self )->Dict [str ,Any ]:
@@ -37,7 +37,7 @@ class VectorEntry :
         "metadata":self .metadata ,
         }
 
-    @classmethod 
+    @classmethod
     def from_dict (cls ,payload :Dict [str ,Any ])->"VectorEntry":
         return cls (
         document_id =payload ["document_id"],
@@ -47,19 +47,19 @@ class VectorEntry :
         )
 
 
-@dataclass 
+@dataclass
 class RetrievedChunk :
 
 
-    document_id :str 
-    text :str 
-    score :float 
+    document_id :str
+    text :str
+    score :float
     metadata :Dict [str ,Any ]
 
 
 class InMemoryVectorStore :
     def __init__ (self ,dim :int ):
-        self .dim =dim 
+        self .dim =dim
         self ._entries :List [VectorEntry ]=[]
 
     def add (self ,entries :Iterable [VectorEntry ])->None :
@@ -75,7 +75,7 @@ class InMemoryVectorStore :
     def dump (self )->List [Dict [str ,Any ]]:
         return [entry .to_dict ()for entry in self ._entries ]
 
-    @property 
+    @property
     def entries (self )->List [VectorEntry ]:
         return list (self ._entries )
 
@@ -90,7 +90,7 @@ class InMemoryVectorStore :
         score =cosine_similarity (query_embedding ,entry .embedding ),
         metadata =entry .metadata ,
         )
-        for entry in self ._entries 
+        for entry in self ._entries
         ]
         scored .sort (key =lambda chunk :chunk .score ,reverse =True )
         return scored [:top_k ]

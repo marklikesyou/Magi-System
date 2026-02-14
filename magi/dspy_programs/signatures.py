@@ -1,7 +1,7 @@
-from __future__ import annotations 
+from __future__ import annotations
 
-import os 
-from pathlib import Path 
+import os
+from pathlib import Path
 
 _cache_dir =Path (__file__ ).resolve ().parents [1 ]/"storage"/"dspy_cache"
 os .environ .setdefault ("DSPY_CACHEDIR",str (_cache_dir ))
@@ -13,20 +13,20 @@ _force_stub =os .getenv ("MAGI_FORCE_DSPY_STUB","0")!="0"
 try :
     if _force_stub :
         raise ModuleNotFoundError ("forced stub mode for DSPy signatures.")
-    import dspy 
-    from dspy .signatures import InputField ,OutputField 
+    import dspy
+    from dspy .signatures import InputField ,OutputField
 except ModuleNotFoundError :
-    STUB_MODE =True 
+    STUB_MODE =True
 
     class _Field :
         def __init__ (self ,desc :str |None =None ):
-            self .desc =desc 
+            self .desc =desc
 
     class _Signature :
-        pass 
+        pass
 
     class _DSPyStub :
-        Signature =_Signature 
+        Signature =_Signature
 
     dspy =_DSPyStub ()
 
@@ -36,7 +36,7 @@ except ModuleNotFoundError :
     def OutputField (*_ :object ,desc :str |None =None ,**__ :object )->_Field :
         return _Field (desc =desc )
 else :
-    STUB_MODE =False 
+    STUB_MODE =False
 
 
 class AnalyzeEvidence (dspy .Signature ):
@@ -127,5 +127,3 @@ __all__ =[
 "ExplanationDraft",
 "STUB_MODE",
 ]
-
-

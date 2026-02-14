@@ -11,6 +11,7 @@ __pycache__/
 .venv/
 .claude/
 .env
+.env.local
 magi/storage/dspy_cache/
 magi/storage/vector_store.json
 magi/eval/artifacts/

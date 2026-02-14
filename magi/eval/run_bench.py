@@ -16,7 +16,7 @@ from magi.eval.dataset import (
     export_feature_log,
     load_dataset,
 )
-from magi.eval.metrics import accuracy
+from magi.eval.metrics import accuracy, classification_report, confidence_interval
 
 
 def evaluate_dataset(dataset: EvaluationDataset) -> Tuple[List[str], List[str], List[Tuple[str, str, str]], List[Dict[str, object]]]:
@@ -37,11 +37,25 @@ def evaluate_dataset(dataset: EvaluationDataset) -> Tuple[List[str], List[str], 
     return predictions, gold, rows, feature_rows
 
 
-def report(rows: List[Tuple[str, str, str]], score: float, total: int) -> None:
+def report(
+    rows: List[Tuple[str, str, str]],
+    score: float,
+    total: int,
+    predictions: List[str],
+    gold: List[str],
+) -> None:
     print("case_id\tgold\tpredicted")
-    for case_id, gold, predicted in rows:
-        print(f"{case_id}\t{gold}\t{predicted}")
+    for case_id, g, predicted in rows:
+        print(f"{case_id}\t{g}\t{predicted}")
     print(f"\naccuracy\t{score:.2%}\ncount\t{total}")
+
+
+    print("\n--- Classification Report ---")
+    print(classification_report(predictions, gold))
+
+
+    lower, upper = confidence_interval(score, total)
+    print(f"\n95% confidence interval for accuracy: [{lower:.4f}, {upper:.4f}]")
 
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
@@ -65,7 +79,7 @@ def main(argv: List[str] | None = None) -> int:
     dataset = load_dataset(args.cases)
     predictions, gold, rows, features = evaluate_dataset(dataset)
     score = accuracy(predictions, gold)
-    report(rows, score, len(dataset.cases))
+    report(rows, score, len(dataset.cases), predictions, gold)
     if args.features_out:
         export_feature_log(features, args.features_out)
     return 0

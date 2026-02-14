@@ -1,14 +1,14 @@
 
 
-from __future__ import annotations 
+from __future__ import annotations
 
-import json 
-import logging 
-import tempfile 
-from pathlib import Path 
-from typing import Iterable ,List 
+import json
+import logging
+import tempfile
+from pathlib import Path
+from typing import Iterable ,List
 
-from .vectorstore import InMemoryVectorStore ,VectorEntry 
+from .vectorstore import InMemoryVectorStore ,VectorEntry
 
 logger =logging .getLogger (__name__ )
 
@@ -24,7 +24,7 @@ def load_entries (path :Path )->List [VectorEntry ]:
 def save_entries (path :Path ,entries :Iterable [VectorEntry ])->None :
     serialized =[entry .to_dict ()for entry in entries ]
     path .parent .mkdir (parents =True ,exist_ok =True )
-    tmp_path :Path |None =None 
+    tmp_path :Path |None =None
     try :
         with tempfile .NamedTemporaryFile (
         "w",
@@ -40,7 +40,7 @@ def save_entries (path :Path ,entries :Iterable [VectorEntry ])->None :
             try :
                 tmp_path .unlink ()
             except FileNotFoundError :
-                pass 
+                pass
 
 
 def initialize_store (path :Path ,embedder )->InMemoryVectorStore :
@@ -55,4 +55,4 @@ def initialize_store (path :Path ,embedder )->InMemoryVectorStore :
         path ,
         )
         store =InMemoryVectorStore (getattr (embedder ,"dimension"))
-    return store 
+    return store

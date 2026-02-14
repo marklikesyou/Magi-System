@@ -1,5 +1,5 @@
-from magi.decision.aggregator import choose_verdict ,majority_weighted ,parse_vote ,PersonaVote 
-from magi.decision.schema import PersonaOutput 
+from magi.decision.aggregator import choose_verdict ,majority_weighted ,parse_vote ,PersonaVote
+from magi.decision.schema import PersonaOutput
 
 
 def test_majority_weighted_prefers_high_confidence ():

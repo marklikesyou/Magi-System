@@ -1,11 +1,11 @@
 
 
-from __future__ import annotations 
+from __future__ import annotations
 
-import re 
-from typing import Callable ,Iterable ,Sequence 
+import re
+from typing import Callable ,Iterable ,Sequence
 
-from .vectorstore import InMemoryVectorStore ,RetrievedChunk 
+from .vectorstore import InMemoryVectorStore ,RetrievedChunk
 
 Formatter =Callable [[Iterable [RetrievedChunk ]],str ]
 Embedder =Callable [[str ],Sequence [float ]]
@@ -25,14 +25,14 @@ class RagRetriever :
     *,
     formatter :Formatter =default_formatter ,
     ):
-        self .embedder =embedder 
-        self .store =store 
-        self .formatter =formatter 
+        self .embedder =embedder
+        self .store =store
+        self .formatter =formatter
 
     def __call__ (self ,query :str ,*,persona :str |None =None ,top_k :int =8 )->str :
         if not query :
             return ""
-        enriched_query =f"[{persona }] {query }"if persona else query 
+        enriched_query =f"[{persona }] {query }"if persona else query
         embedding =self .embedder (enriched_query )
         results =self .store .search (embedding ,top_k =top_k )
         page_numbers ={
@@ -46,7 +46,7 @@ class RagRetriever :
             for entry in self .store .entries :
                 entry_id =entry .document_id .lower ()
                 lower_text =entry .text .lower ()
-                matched_request =False 
+                matched_request =False
                 for token in page_tokens :
                     token_lower =token .lower ()
                     suffix =token_lower .replace (" ","-")
@@ -55,8 +55,8 @@ class RagRetriever :
                     or suffix in entry_id
                     or any (suffix_alt in entry_id for suffix_alt in page_suffixes )
                     ):
-                        matched_request =True 
-                        break 
+                        matched_request =True
+                        break
                 if matched_request :
                     matched .append (
                     RetrievedChunk (
@@ -72,10 +72,10 @@ class RagRetriever :
                 for chunk in matched +results :
                     key =(chunk .document_id ,chunk .text )
                     if key in seen :
-                        continue 
+                        continue
                     seen .add (key )
                     combined .append (chunk )
-                results =combined 
+                results =combined
 
         if page_numbers :
             page_requests ={token .lower ()for token in page_tokens }
@@ -84,7 +84,7 @@ class RagRetriever :
                 text_lower =chunk .text .lower ()
                 metadata_source =str (chunk .metadata .get ("source","")).lower ()
                 doc_id_lower =chunk .document_id .lower ()
-                score =0 
+                score =0
                 for label in page_requests :
                     page_suffix =label .replace (" ","-")
                     if (
@@ -93,8 +93,8 @@ class RagRetriever :
                     or f"#{page_suffix}"in doc_id_lower
                     or f"/{page_suffix}"in doc_id_lower
                     ):
-                        score +=1 
-                return score 
+                        score +=1
+                return score
 
             results .sort (
             key =lambda chunk :(page_match_score (chunk ),chunk .score ),
@@ -107,7 +107,7 @@ class RagRetriever :
         for chunk in results :
             key =(chunk .document_id ,chunk .text )
             if key in seen :
-                continue 
+                continue
             seen .add (key )
             unique .append (chunk )
         return self .formatter (unique )

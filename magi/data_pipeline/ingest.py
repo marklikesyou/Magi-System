@@ -1,18 +1,18 @@
 
 
-from __future__ import annotations 
+from __future__ import annotations
 
-from pathlib import Path 
-from typing import Dict ,Iterable ,List 
+from pathlib import Path
+from typing import Dict ,Iterable ,List
 
 
 def _extract_pdf_pages (path :Path )->List [Dict [str ,str ]]:
     try :
-        from pypdf import PdfReader 
+        from pypdf import PdfReader
     except ImportError as exc :
         raise RuntimeError (
         "pypdf missing"
-        )from exc 
+        )from exc
 
     reader =PdfReader (str (path ))
     records :List [Dict [str ,str ]]=[]
@@ -20,7 +20,7 @@ def _extract_pdf_pages (path :Path )->List [Dict [str ,str ]]:
         text =page .extract_text ()or ""
         labeled =f"[Page {index }]\n{text.strip ()}"
         records .append ({"id":f"{path }#page-{index }","text":labeled })
-    return records 
+    return records
 
 
 def load_text (path :Path )->List [Dict [str ,str ]]:
@@ -42,13 +42,13 @@ def ingest_paths (paths :Iterable [Path ])->List [Dict [str ,str ]]:
     records =[]
     for path in paths :
         entries =load_text (path )
-        added =False 
+        added =False
         for entry in entries :
             text =entry .get ("text","")
             if not text .strip ():
-                continue 
+                continue
             records .append (entry )
-            added =True 
+            added =True
         if not added :
             print (f"Warning: {path } produced no extractable text, skipping.")
-    return records 
+    return records

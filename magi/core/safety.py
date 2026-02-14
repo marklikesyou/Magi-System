@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Tuple
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_FORBIDDEN = {
@@ -87,7 +90,7 @@ def analyze_safety(text: str, client: Any | None = None) -> SafetyReport:
         if settings.openai_api_key:
             try:
                 from openai import OpenAI
-            except ImportError:  # pragma: no cover
+            except ImportError:
                 client = None
             else:
                 kwargs: Dict[str, Any] = {"api_key": settings.openai_api_key}
@@ -97,7 +100,11 @@ def analyze_safety(text: str, client: Any | None = None) -> SafetyReport:
                     kwargs["organization"] = settings.openai_organization
                 client = OpenAI(**kwargs)
     reasons: List[str] = []
-    flagged_moderation, moderation_payload = moderate_text(text, client)
+    try:
+        flagged_moderation, moderation_payload = moderate_text(text, client)
+    except Exception:
+        logger.warning("Moderation API unreachable; degrading to local-only safety checks")
+        flagged_moderation, moderation_payload = False, {"error": "moderation_unavailable"}
     if detect_prompt_injection(text):
         reasons.append("prompt_injection")
     if detect_sensitive_leak(text):

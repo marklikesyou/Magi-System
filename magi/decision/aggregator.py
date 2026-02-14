@@ -6,6 +6,80 @@ import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Literal, Tuple
 
+from .constants import (
+    APPROVE_CONSENSUS_BONUS,
+    APPROVE_EVIDENCE_BONUS,
+    APPROVE_FUSED_CONF_WEIGHT,
+    APPROVE_PROB_BASE,
+    APPROVE_PROB_OVERRIDE_THRESHOLD,
+    APPROVE_REJECT_PENALTY,
+    APPROVE_RISK_PENALTY,
+    APPROVE_SAFETY_WEIGHT,
+    BALTHASAR_BASE_WEIGHT,
+    BALTHASAR_COVERAGE_SCALE,
+    BALTHASAR_COVERAGE_WEIGHT,
+    BASE_SAFETY_MITIGATION_WEIGHT,
+    BASE_SAFETY_RISK_WEIGHT,
+    CASPER_BASE_WEIGHT,
+    CASPER_COVERAGE_SCALE,
+    CASPER_COVERAGE_WEIGHT,
+    CASPER_RISK_ALIGNMENT_WEIGHT,
+    CONFIDENCE_BONUS_WEIGHT,
+    CONSENSUS_ANALYSIS_DEPTH_SCALE,
+    CONSENSUS_MITIGATION_DEPTH_SCALE,
+    CONSENSUS_PLAN_DEPTH_SCALE,
+    DECISION_MARGIN_THRESHOLD,
+    DIRICHLET_PRIOR,
+    EVIDENCE_CONFIDENCE_WEIGHT,
+    EVIDENCE_DEPTH_WEIGHT,
+    FALLBACK_BASE_WEIGHT,
+    FALLBACK_COVERAGE_SCALE,
+    FALLBACK_COVERAGE_WEIGHT,
+    FALLBACK_PROB_APPROVE,
+    FALLBACK_PROB_REJECT,
+    FALLBACK_PROB_REVISE,
+    FUSED_CONFIDENCE_OVERRIDE_THRESHOLD,
+    HEURISTIC_WEIGHT,
+    LEAK_FACTOR,
+    LOW_CONFIDENCE_THRESHOLD,
+    MELCHIOR_BASE_WEIGHT,
+    MELCHIOR_COVERAGE_SCALE,
+    MELCHIOR_COVERAGE_WEIGHT,
+    MIN_LEAK,
+    MODEL_OVERRIDE_MARGIN,
+    MODEL_WEIGHT,
+    PERSONA_COUNT,
+    PROB_APPROVE_THRESHOLD,
+    PROB_REJECT_THRESHOLD,
+    REJECT_APPROVE_SAFETY_PENALTY,
+    REJECT_PROB_BASE,
+    REJECT_RISK_BONUS,
+    REJECT_RISK_WEIGHT,
+    REJECT_UNSAFETY_WEIGHT,
+    RELIABILITY_BASE_FLOOR,
+    RELIABILITY_CONFIDENCE_FACTOR,
+    RELIABILITY_CONFIDENCE_WEIGHT,
+    RELIABILITY_MAX,
+    RELIABILITY_MIN,
+    REVISE_DISSENSUS_BONUS,
+    REVISE_EVIDENCE_GAP_WEIGHT,
+    REVISE_PROB_BASE,
+    REVISE_STRATEGY_GAP_WEIGHT,
+    RISK_SCORE_BALANCED,
+    RISK_SCORE_CRITICAL,
+    RISK_SCORE_DEFAULT,
+    RISK_SCORE_ELEVATED,
+    RISK_SCORE_HIGH,
+    RISK_SCORE_LOW,
+    RISK_SCORE_MEDIUM,
+    RISK_SCORE_MINIMAL,
+    RISK_SCORE_MODERATE,
+    SAFETY_APPROVE_THRESHOLD,
+    SAFETY_REJECT_THRESHOLD,
+    STRATEGY_CONFIDENCE_WEIGHT,
+    STRATEGY_DEPTH_WEIGHT,
+    UNIFORM_PROBABILITY,
+)
 from .model import get_decision_model
 from .schema import PersonaOutput
 
@@ -96,24 +170,24 @@ def _normalized_length(text: object, scale: float) -> float:
 
 def _risk_to_score(value: object) -> float:
     mapping = {
-        "low": 1.0,
-        "minimal": 0.9,
-        "moderate": 0.6,
-        "medium": 0.55,
-        "balanced": 0.55,
-        "elevated": 0.35,
-        "high": 0.15,
-        "critical": 0.0,
+        "low": RISK_SCORE_LOW,
+        "minimal": RISK_SCORE_MINIMAL,
+        "moderate": RISK_SCORE_MODERATE,
+        "medium": RISK_SCORE_MEDIUM,
+        "balanced": RISK_SCORE_BALANCED,
+        "elevated": RISK_SCORE_ELEVATED,
+        "high": RISK_SCORE_HIGH,
+        "critical": RISK_SCORE_CRITICAL,
     }
     if not value:
-        return 0.45
+        return RISK_SCORE_DEFAULT
     label = str(value).strip().lower()
     if label in mapping:
         return mapping[label]
     for token, score in mapping.items():
         if token in label:
             return score
-    return 0.45
+    return RISK_SCORE_DEFAULT
 
 
 def _consensus_strength(confidences: List[float]) -> float:
@@ -125,38 +199,38 @@ def _consensus_strength(confidences: List[float]) -> float:
 
 def _persona_reliability(name: str, persona_obj: object) -> float:
     confidence = _safe_float(_get_field(persona_obj, "confidence"))
-    base = 0.35 + 0.5 * confidence
+    base = RELIABILITY_BASE_FLOOR + RELIABILITY_CONFIDENCE_FACTOR * confidence
     if name == "melchior":
         analysis = _get_field(persona_obj, "analysis") or _get_field(persona_obj, "text", "")
-        coverage = _normalized_length(analysis, 220.0)
-        return max(0.1, min(0.95, base * 0.55 + coverage * 0.45))
+        coverage = _normalized_length(analysis, MELCHIOR_COVERAGE_SCALE)
+        return max(RELIABILITY_MIN, min(RELIABILITY_MAX, base * MELCHIOR_BASE_WEIGHT + coverage * MELCHIOR_COVERAGE_WEIGHT))
     if name == "balthasar":
         plan = _get_field(persona_obj, "plan") or _get_field(persona_obj, "text", "")
-        coverage = _normalized_length(plan, 240.0)
-        return max(0.1, min(0.95, base * 0.5 + coverage * 0.5))
+        coverage = _normalized_length(plan, BALTHASAR_COVERAGE_SCALE)
+        return max(RELIABILITY_MIN, min(RELIABILITY_MAX, base * BALTHASAR_BASE_WEIGHT + coverage * BALTHASAR_COVERAGE_WEIGHT))
     if name == "casper":
         mitigations = _get_field(persona_obj, "mitigations") or _get_field(persona_obj, "text", "")
-        coverage = _normalized_length(mitigations, 200.0)
+        coverage = _normalized_length(mitigations, CASPER_COVERAGE_SCALE)
         risk_alignment = _risk_to_score(_get_field(persona_obj, "residual_risk"))
-        return max(0.1, min(0.95, base * 0.45 + coverage * 0.3 + risk_alignment * 0.25))
+        return max(RELIABILITY_MIN, min(RELIABILITY_MAX, base * CASPER_BASE_WEIGHT + coverage * CASPER_COVERAGE_WEIGHT + risk_alignment * CASPER_RISK_ALIGNMENT_WEIGHT))
     text = _get_field(persona_obj, "text", "")
-    coverage = _normalized_length(text, 200.0)
-    return max(0.1, min(0.95, base * 0.6 + coverage * 0.4))
+    coverage = _normalized_length(text, FALLBACK_COVERAGE_SCALE)
+    return max(RELIABILITY_MIN, min(RELIABILITY_MAX, base * FALLBACK_BASE_WEIGHT + coverage * FALLBACK_COVERAGE_WEIGHT))
 
 
 def _dirichlet_vote(
     persona_outputs: List[PersonaOutput],
     persona_objects: Dict[str, object],
 ) -> Tuple[Dict[Action, float], Dict[str, float]]:
-    counts: Dict[Action, float] = {"approve": 1.0, "reject": 1.0, "revise": 1.0}
+    counts: Dict[Action, float] = {"approve": DIRICHLET_PRIOR, "reject": DIRICHLET_PRIOR, "revise": DIRICHLET_PRIOR}
     reliabilities: Dict[str, float] = {}
     for persona in persona_outputs:
         persona_obj = persona_objects.get(persona.name)
         reliability = _persona_reliability(persona.name, persona_obj)
         reliabilities[persona.name] = reliability
         vote = parse_vote(persona)
-        counts[vote.action] += reliability * (0.8 + 0.2 * persona.confidence)
-        leak = max(0.05, (1.0 - reliability) * 0.25)
+        counts[vote.action] += reliability * (RELIABILITY_CONFIDENCE_WEIGHT + CONFIDENCE_BONUS_WEIGHT * persona.confidence)
+        leak = max(MIN_LEAK, (1.0 - reliability) * LEAK_FACTOR)
         for label in counts:
             if label != vote.action:
                 counts[label] += leak
@@ -179,38 +253,38 @@ def _consensus_action(
     bal_conf = _safe_float(_get_field(bal, "confidence"))
     cas_conf = _safe_float(_get_field(cas, "confidence"))
     confidences = [mel_conf, bal_conf, cas_conf]
-    base_conf = sum(confidences) / 3.0
+    base_conf = sum(confidences) / PERSONA_COUNT
     consensus = _consensus_strength(confidences)
-    analysis_depth = _normalized_length(_get_field(mel, "analysis"), 160.0)
-    plan_depth = _normalized_length(_get_field(bal, "plan"), 160.0)
-    mitigation_depth = _normalized_length(_get_field(cas, "mitigations"), 140.0)
+    analysis_depth = _normalized_length(_get_field(mel, "analysis"), CONSENSUS_ANALYSIS_DEPTH_SCALE)
+    plan_depth = _normalized_length(_get_field(bal, "plan"), CONSENSUS_PLAN_DEPTH_SCALE)
+    mitigation_depth = _normalized_length(_get_field(cas, "mitigations"), CONSENSUS_MITIGATION_DEPTH_SCALE)
     risk_score = _risk_to_score(_get_field(cas, "residual_risk"))
     fused_conf = _safe_float(_get_field(fused, "confidence"))
     probabilities, reliabilities = _dirichlet_vote(persona_outputs, persona_objects)
     for label in ("approve", "reject", "revise"):
-        probabilities.setdefault(label, 1.0 / 3.0)
-    base_safety = (risk_score * 0.6) + (mitigation_depth * 0.4)
+        probabilities.setdefault(label, UNIFORM_PROBABILITY)
+    base_safety = (risk_score * BASE_SAFETY_RISK_WEIGHT) + (mitigation_depth * BASE_SAFETY_MITIGATION_WEIGHT)
     safety = max(risk_score, base_safety)
     safety = max(0.0, min(1.0, safety))
-    evidence = (analysis_depth * 0.5) + (mel_conf * 0.5)
-    strategy = (plan_depth * 0.5) + (bal_conf * 0.5)
+    evidence = (analysis_depth * EVIDENCE_DEPTH_WEIGHT) + (mel_conf * EVIDENCE_CONFIDENCE_WEIGHT)
+    strategy = (plan_depth * STRATEGY_DEPTH_WEIGHT) + (bal_conf * STRATEGY_CONFIDENCE_WEIGHT)
     risk_level = max(0.0, min(1.0, 1.0 - safety))
     approve_score = (
-        probabilities["approve"] * (0.6 + 0.25 * evidence + 0.15 * consensus)
-        + safety * 0.35
-        + fused_conf * 0.2
-        - (risk_level * 0.55 + probabilities["reject"] * 0.35)
+        probabilities["approve"] * (APPROVE_PROB_BASE + APPROVE_EVIDENCE_BONUS * evidence + APPROVE_CONSENSUS_BONUS * consensus)
+        + safety * APPROVE_SAFETY_WEIGHT
+        + fused_conf * APPROVE_FUSED_CONF_WEIGHT
+        - (risk_level * APPROVE_RISK_PENALTY + probabilities["reject"] * APPROVE_REJECT_PENALTY)
     )
     reject_score = (
-        probabilities["reject"] * (0.55 + 0.25 * risk_level)
-        + risk_level * 0.45
-        + (1.0 - safety) * 0.3
-        - (probabilities["approve"] * safety * 0.4)
+        probabilities["reject"] * (REJECT_PROB_BASE + REJECT_RISK_BONUS * risk_level)
+        + risk_level * REJECT_RISK_WEIGHT
+        + (1.0 - safety) * REJECT_UNSAFETY_WEIGHT
+        - (probabilities["approve"] * safety * REJECT_APPROVE_SAFETY_PENALTY)
     )
     revise_score = (
-        probabilities["revise"] * (0.5 + 0.2 * (1.0 - consensus))
-        + (1.0 - evidence) * 0.3
-        + (1.0 - strategy) * 0.3
+        probabilities["revise"] * (REVISE_PROB_BASE + REVISE_DISSENSUS_BONUS * (1.0 - consensus))
+        + (1.0 - evidence) * REVISE_EVIDENCE_GAP_WEIGHT
+        + (1.0 - strategy) * REVISE_STRATEGY_GAP_WEIGHT
     )
     scores: Dict[Action, float] = {
         "approve": approve_score,
@@ -220,14 +294,14 @@ def _consensus_action(
     decision = max(scores, key=scores.get)
     sorted_scores = sorted(scores.values(), reverse=True)
     margin = (sorted_scores[0] - sorted_scores[1]) if len(sorted_scores) > 1 else sorted_scores[0]
-    if decision == "approve" and safety < 0.4 and probabilities["approve"] < 0.4:
+    if decision == "approve" and safety < SAFETY_APPROVE_THRESHOLD and probabilities["approve"] < PROB_APPROVE_THRESHOLD:
         decision = "revise"
-    elif decision == "reject" and safety > 0.6 and probabilities["reject"] < 0.35:
+    elif decision == "reject" and safety > SAFETY_REJECT_THRESHOLD and probabilities["reject"] < PROB_REJECT_THRESHOLD:
         decision = "revise"
-    elif decision == "revise" and margin > 0.18:
+    elif decision == "revise" and margin > DECISION_MARGIN_THRESHOLD:
         alternate = {label: score for label, score in scores.items() if label != "revise"}
         decision = max(alternate, key=alternate.get)
-    if base_conf < 0.4 and decision == "approve":
+    if base_conf < LOW_CONFIDENCE_THRESHOLD and decision == "approve":
         decision = "revise"
     features: Dict[str, object] = {
         "mel_confidence": mel_conf,
@@ -318,7 +392,7 @@ def resolve_verdict_with_details(
         persona_outputs,
     )
     if not probabilities:
-        probabilities = {"approve": 1.0 / 3.0, "reject": 1.0 / 3.0, "revise": 1.0 / 3.0}
+        probabilities = {"approve": UNIFORM_PROBABILITY, "reject": UNIFORM_PROBABILITY, "revise": UNIFORM_PROBABILITY}
     model_probabilities: Dict[str, float] | None = None
     combined_probabilities = dict(probabilities)
     model = get_decision_model()
@@ -326,12 +400,12 @@ def resolve_verdict_with_details(
         model_inputs = prepare_model_features(features)
         model_probabilities = model.predict(model_inputs)
         combined_probabilities = {
-            label: 0.5 * probabilities.get(label, 0.0) + 0.5 * model_probabilities.get(label, 0.0)
+            label: HEURISTIC_WEIGHT * probabilities.get(label, 0.0) + MODEL_WEIGHT * model_probabilities.get(label, 0.0)
             for label in ("approve", "reject", "revise")
         }
         combined_choice = max(combined_probabilities, key=combined_probabilities.get)
         base_choice = computed or combined_choice
-        if combined_probabilities[combined_choice] - combined_probabilities.get(base_choice, 0.0) >= 0.1:
+        if combined_probabilities[combined_choice] - combined_probabilities.get(base_choice, 0.0) >= MODEL_OVERRIDE_MARGIN:
             computed = combined_choice
         probabilities = combined_probabilities
     fused_conf = _safe_float(_get_field(fused, "confidence"))
@@ -344,14 +418,19 @@ def resolve_verdict_with_details(
             computed = "revise"
 
     if fused_answer:
-        if all(stance not in {"reject"} for stance in persona_stances) and (
-            computed not in {"revise", "reject"}
-            if computed is not None
-            else determined not in {"revise", "reject"}
+        safety = features.get("safety", 0.5)
+        if (
+            all(stance not in {"reject"} for stance in persona_stances)
+            and safety >= SAFETY_APPROVE_THRESHOLD
+            and (
+                computed not in {"revise", "reject"}
+                if computed is not None
+                else determined not in {"revise", "reject"}
+            )
         ):
             computed = "approve"
-            probabilities = probabilities or {"approve": 0.34, "revise": 0.33, "reject": 0.33}
-            probabilities["approve"] = max(probabilities.get("approve", 0.0), 0.75)
+            probabilities = probabilities or {"approve": FALLBACK_PROB_APPROVE, "revise": FALLBACK_PROB_REVISE, "reject": FALLBACK_PROB_REJECT}
+
             total = sum(probabilities.values()) or 1.0
             probabilities = {k: v / total for k, v in probabilities.items()}
             combined_probabilities = dict(probabilities)
@@ -361,9 +440,9 @@ def resolve_verdict_with_details(
             final = computed
         elif determined == "revise" and computed != "revise":
             final = computed
-        elif fused_conf < 0.6 and determined != computed:
+        elif fused_conf < FUSED_CONFIDENCE_OVERRIDE_THRESHOLD and determined != computed:
             final = computed
-        elif determined == "approve" and probabilities.get("approve", 0.0) < 0.35:
+        elif determined == "approve" and probabilities.get("approve", 0.0) < APPROVE_PROB_OVERRIDE_THRESHOLD:
             final = computed
         else:
             final = determined

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -106,16 +107,16 @@ def save_model(weights: List[List[float]], bias: List[float], feature_names: Lis
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def split_indices(count: int, val_ratio: float = 0.3) -> Tuple[List[int], List[int]]:
+def split_indices(count: int, val_ratio: float = 0.3, seed: int = 42) -> Tuple[List[int], List[int]]:
+    """Shuffle indices and split into train/val with deterministic seed."""
     if count == 0:
         return [], []
-    val_size = max(1, int(round(count * val_ratio)))
+    indices = list(range(count))
+    rng = random.Random(seed)
+    rng.shuffle(indices)
+    val_size = max(1, round(count * val_ratio))
     train_size = max(1, count - val_size)
-    train_indices = list(range(train_size))
-    val_indices = list(range(train_size, count))
-    if not val_indices:
-        val_indices = [train_indices.pop()]
-    return train_indices, val_indices
+    return indices[:train_size], indices[train_size:train_size + val_size]
 
 
 def model_predict(weights: List[List[float]], bias: List[float], sample: List[float]) -> Dict[str, float]:
@@ -187,6 +188,8 @@ def main(argv: List[str] | None = None) -> int:
     args = parse_args(argv)
     dataset = load_dataset(args.cases)
     samples, labels, feature_names, heuristics = collect_samples(dataset)
+    if len(samples) < 10:
+        print("Warning: Dataset has fewer than 10 samples. Results may be unreliable.")
     train_idx, val_idx = split_indices(len(samples), val_ratio=args.val_ratio)
     train_samples = [samples[i] for i in train_idx]
     train_labels = [labels[i] for i in train_idx]
@@ -199,7 +202,9 @@ def main(argv: List[str] | None = None) -> int:
     print(f"val_heuristic_accuracy\t{val_base:.2%}")
     print(f"val_model_accuracy\t{val_model:.2%}")
     print(f"val_blended_accuracy\t{val_blended:.2%}")
-    final_weights, final_bias = train(samples, labels, epochs=args.epochs, lr=args.learning_rate)
+
+
+    final_weights, final_bias = train(train_samples, train_labels, epochs=args.epochs, lr=args.learning_rate)
     save_model(final_weights, final_bias, feature_names, args.model_out)
     print(f"model_saved\t{args.model_out}")
     return 0

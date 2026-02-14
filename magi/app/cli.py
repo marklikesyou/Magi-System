@@ -1,23 +1,33 @@
-from __future__ import annotations 
+from __future__ import annotations
 
-import argparse 
-from pathlib import Path 
-from typing import Dict ,Iterable ,List 
+import argparse
+import re
+from pathlib import Path
+from typing import Dict ,Iterable ,List
 
-from magi.core.config import get_settings 
-from magi.core.embeddings import HashingEmbedder ,build_embedder 
-from magi.core.rag import RagRetriever 
-from magi.core.storage import initialize_store ,save_entries 
-from magi.core.vectorstore import VectorEntry 
-from magi.data_pipeline.chunkers import sliding_window_chunk 
-from magi.data_pipeline.embed import embed_chunks 
-from magi.data_pipeline.ingest import ingest_paths 
-from magi.decision.aggregator import resolve_verdict 
-from magi.decision.schema import FinalDecision ,PersonaOutput 
-from magi.dspy_programs.personas import MagiProgram ,USING_STUB 
-from magi.dspy_programs.setup import configure_dspy 
+from magi.core.config import get_settings
+from magi.core.embeddings import HashingEmbedder ,build_embedder
+from magi.core.rag import RagRetriever
+from magi.core.safety import analyze_safety
+from magi.core.storage import initialize_store ,save_entries
+from magi.core.vectorstore import VectorEntry
+from magi.data_pipeline.chunkers import sliding_window_chunk
+from magi.data_pipeline.embed import embed_chunks
+from magi.data_pipeline.ingest import ingest_paths
+from magi.decision.aggregator import resolve_verdict
+from magi.decision.schema import FinalDecision ,PersonaOutput
+from magi.dspy_programs.personas import MagiProgram ,USING_STUB
+from magi.dspy_programs.setup import configure_dspy
 
 DEFAULT_STORE =Path (__file__ ).resolve ().parents [1 ]/"storage"/"vector_store.json"
+
+
+_PERSONA_TAG_RE = re.compile(r"^\[(?:APPROVE|REJECT|REVISE)\]\s*\[(?:MELCHIOR|BALTHASAR|CASPER)\]\s*", re.IGNORECASE)
+
+
+def _strip_persona_tags(text: str) -> str:
+    """Remove leading [STANCE] [NAME] tags from persona text for clean display."""
+    return _PERSONA_TAG_RE.sub("", text).strip()
 
 
 def _normalize_residual_label (value :object )->str :
@@ -55,111 +65,197 @@ def _vector_entries (payload :Iterable [Dict [str ,object ]])->List [VectorEntry
         metadata ={"source":str (record ["id"]).split ("::")[0 ]},
         )
         )
-    return entries 
+    return entries
 
 
 def command_ingest (args :argparse .Namespace )->None :
-    settings =get_settings ()
-    embedder =build_embedder (settings )
-    store =initialize_store (args .store ,embedder )
+    verbose = getattr(args, "verbose", False)
+    try:
+        settings =get_settings ()
+        embedder =build_embedder (settings )
+        store =initialize_store (args .store ,embedder )
 
-    doc_paths =[Path (p )for p in args .paths ]
-    documents =ingest_paths (doc_paths )
+        doc_paths =[Path (p )for p in args .paths ]
+        documents =ingest_paths (doc_paths )
 
-    chunks =[]
-    for doc in documents :
-        chunks .extend (
-        sliding_window_chunk (
-        doc ,
-        chunk_size =args .chunk_size ,
-        overlap =args .chunk_overlap ,
-        )
-        )
+        chunks =[]
+        for doc in documents :
+            chunks .extend (
+            sliding_window_chunk (
+            doc ,
+            chunk_size =args .chunk_size ,
+            overlap =args .chunk_overlap ,
+            )
+            )
 
-    embedded =embed_chunks (chunks ,embedder )
-    entries =_vector_entries (embedded )
-    store .add (entries )
-    save_entries (args .store ,store .entries )
+        if verbose:
+            print(f"[verbose] Chunked {len(documents)} document(s) into {len(chunks)} chunks "
+                  f"(size={args.chunk_size}, overlap={args.chunk_overlap}).")
 
-    print (f"Ingested {len (entries )} chunks from {len (documents )} document(s).")
-    print (f"Store persisted to {args .store }")
-    if isinstance (embedder ,HashingEmbedder ):
-        print ("Using hashing embedder (offline mode).")
-    else :
-        print (f"Using OpenAI embeddings ({settings .openai_embedding_model }).")
+        embedded =embed_chunks (chunks ,embedder )
+        entries =_vector_entries (embedded )
+        store .add (entries )
+        save_entries (args .store ,store .entries )
+
+        print (f"Ingested {len (entries )} chunks from {len (documents )} document(s).")
+        print (f"Store persisted to {args .store }")
+        if verbose:
+            if isinstance (embedder ,HashingEmbedder ):
+                print ("[verbose] Using hashing embedder (offline mode).")
+            else :
+                print (f"[verbose] Using OpenAI embeddings ({settings .openai_embedding_model }).")
+    except FileNotFoundError as e:
+        print(f"Error: File not found - {e}")
+        return
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        return
+    except ValueError as e:
+        print(f"Error: Invalid value - {e}")
+        return
+    except Exception as e:
+        print(f"Error: Unexpected error - {e}")
+        return
 
 
 def command_chat (args :argparse .Namespace )->None :
-    settings =get_settings ()
-    embedder =build_embedder (settings )
-    store =initialize_store (args .store ,embedder )
-    retriever =RagRetriever (embedder ,store )
+    verbose = getattr(args, "verbose", False)
+    try:
+        settings =get_settings ()
+        embedder =build_embedder (settings )
+        store =initialize_store (args .store ,embedder )
+        retriever =RagRetriever (embedder ,store )
 
-    if not USING_STUB :
-        configure_dspy (settings )
-    else :
-        if not isinstance (embedder ,HashingEmbedder ):
-            print ("Warning: DSPy stub active; real embeddings will still be used.")
+        if not USING_STUB :
+            configure_dspy (settings )
+        else :
+            if not isinstance (embedder ,HashingEmbedder ):
+                print ("Warning: DSPy stub active; real embeddings will still be used.")
 
-    if isinstance (embedder ,HashingEmbedder ):
-        print ("Using hashing embedder (offline mode).")
-    else :
-        print (f"Using OpenAI embeddings ({settings .openai_embedding_model }).")
+        if verbose:
+            if isinstance (embedder ,HashingEmbedder ):
+                print ("[verbose] Using hashing embedder (offline mode).")
+            else :
+                print (f"[verbose] Using OpenAI embeddings ({settings .openai_embedding_model }).")
+            print(f"[verbose] Store loaded from {args.store} ({len(store.entries)} entries).")
 
-    magi =MagiProgram (retriever =retriever )
 
-    fused ,personas =magi .forward (args .query ,constraints =args .constraints or "")
+        input_report = analyze_safety(args.query)
+        if input_report.flagged:
+            print(f"Warning: Input flagged by safety check - {', '.join(input_report.reasons)}")
 
-    persona_outputs =[]
-    for name ,result in personas .items ():
-        persona_outputs .append (
-        PersonaOutput (
-        name =name .lower (),
-        text =str (result ),
-        confidence =float (getattr (result ,"confidence",0.0 )or 0.0 ),
-        evidence =[],
+        magi =MagiProgram (retriever =retriever )
+
+        fused ,personas =magi (args .query ,constraints =args .constraints or "")
+
+        if verbose:
+            print(f"[verbose] Received responses from {len(personas)} persona(s).")
+
+        persona_outputs =[]
+        for name ,result in personas .items ():
+            persona_outputs .append (
+            PersonaOutput (
+            name =name .lower (),
+            text =str (result ),
+            confidence =float (getattr (result ,"confidence",0.0 )or 0.0 ),
+            evidence =[],
+            )
+            )
+
+        fused_final =str (getattr (fused ,"final_answer","")).strip ()
+        fused_justification =str (getattr (fused ,"justification",str (fused ))).strip ()
+        combined_justification =fused_final if fused_final else fused_justification
+        next_steps =getattr (fused ,"next_steps",[])
+        if isinstance (next_steps ,str ):
+            next_steps =[next_steps ]if next_steps else []
+        if next_steps :
+            formatted_steps = []
+            for step in next_steps :
+                s = str(step).strip()
+                if not s :
+                    continue
+
+                if re.match(r"^\d+[\.\)]\s", s) :
+                    formatted_steps.append(s)
+                else :
+                    formatted_steps.append(f"- {s}")
+            if formatted_steps :
+                combined_justification = (
+                    combined_justification + "\n\nNext steps:\n" + "\n".join(formatted_steps)
+                ).strip()
+        if not combined_justification :
+            combined_justification =str (fused )
+        residual_risk_value =_normalize_residual_label (getattr (fused ,"residual_risk",None ))
+
+        def _stringify_items(items):
+            """Coerce list items to strings (LLM may return dicts)."""
+            if not items:
+                return []
+            result = []
+            for item in items:
+                if isinstance(item, dict):
+                    parts = [str(v) for v in item.values() if v]
+                    result.append(" - ".join(parts))
+                else:
+                    result.append(str(item))
+            return result
+
+        decision =FinalDecision (
+        verdict =resolve_verdict (fused ,personas ,persona_outputs ),
+        justification =combined_justification ,
+        persona_outputs =persona_outputs ,
+        risks =_stringify_items(getattr (fused ,"risks",[])),
+        mitigations =_stringify_items(getattr (fused ,"mitigations",[])),
+        residual_risk =residual_risk_value ,
         )
-        )
 
-    fused_final =str (getattr (fused ,"final_answer","")).strip ()
-    fused_justification =str (getattr (fused ,"justification",str (fused ))).strip ()
-    combined_justification =fused_final if fused_final else fused_justification
-    next_steps =getattr (fused ,"next_steps",[])
-    if isinstance (next_steps ,str ):
-        next_steps =[next_steps ]if next_steps else []
-    if next_steps :
-        combined_justification =(
-        combined_justification +"\n\nNext steps:\n"+"\n".join (f"- {step }"for step in next_steps )
-        ).strip ()
-    if not combined_justification :
-        combined_justification =str (fused )
-    residual_risk_value =_normalize_residual_label (getattr (fused ,"residual_risk",None ))
 
-    decision =FinalDecision (
-    verdict =resolve_verdict (fused ,personas ,persona_outputs ),
-    justification =combined_justification ,
-    persona_outputs =persona_outputs ,
-    risks =list (getattr (fused ,"risks",[]))if getattr (fused ,"risks",None )else [],
-    mitigations =list (getattr (fused ,"mitigations",[]))
-    if getattr (fused ,"mitigations",None )
-    else [],
-    residual_risk =residual_risk_value ,
-    )
+        output_report = analyze_safety(decision.justification)
+        if output_report.flagged:
+            print(f"Warning: Output flagged by safety check - {', '.join(output_report.reasons)}")
 
-    print (f"\nVerdict: {decision .verdict .upper ()}")
-    print (f"Justification: {decision .justification }\n")
-    for persona in decision .persona_outputs :
-        print (f"- {persona .name .title ()} (confidence {persona .confidence :.2f}):")
-        print (f"  {persona .text }\n")
-    if decision .risks :
-        print ("Risks:")
-        for risk in decision .risks :
-            print (f"  - {risk }")
-    if decision .mitigations :
-        print ("\nMitigations:")
-        for mitigation in decision .mitigations :
-            print (f"  - {mitigation }")
-    print ()
+        print (f"\n{'=' * 60}")
+        print (f"Verdict: {decision .verdict .upper ()}")
+        print (f"Residual Risk: {decision .residual_risk}")
+        print (f"{'=' * 60}\n")
+        print (f"{decision .justification }\n")
+        print (f"{'-' * 60}")
+        print ("Persona Perspectives:\n")
+        for persona in decision .persona_outputs :
+            clean_text = _strip_persona_tags(persona .text)
+            print (f"  [{persona .name .title ()}] (confidence {persona .confidence :.2f})")
+
+            for line in clean_text .splitlines ():
+                stripped = line .strip ()
+                if stripped :
+                    print (f"    {stripped }")
+            print ()
+        if decision .risks :
+            print (f"{'-' * 60}")
+            print ("Risks:")
+            for risk in decision .risks :
+                risk_text = risk .strip () if isinstance(risk, str) else str(risk)
+                if risk_text :
+                    print (f"  - {risk_text }")
+        if decision .mitigations :
+            print ("\nMitigations:")
+            for mitigation in decision .mitigations :
+                mit_text = mitigation .strip () if isinstance(mitigation, str) else str(mitigation)
+                if mit_text :
+                    print (f"  - {mit_text }")
+        print ()
+    except FileNotFoundError as e:
+        print(f"Error: File not found - {e}")
+        return
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        return
+    except ValueError as e:
+        print(f"Error: Invalid value - {e}")
+        return
+    except Exception as e:
+        print(f"Error: Unexpected error - {e}")
+        return
 
 
 def build_parser ()->argparse .ArgumentParser :
@@ -172,13 +268,19 @@ def build_parser ()->argparse .ArgumentParser :
     default =DEFAULT_STORE ,
     help =f"Path to persisted vector store (default: {DEFAULT_STORE })",
     )
+    parser .add_argument (
+    "-v", "--verbose",
+    action ="store_true",
+    default =False,
+    help ="Print additional diagnostic information (embedder, chunks, scores).",
+    )
 
     subparsers =parser .add_subparsers (dest ="command")
 
     ingest_parser =subparsers .add_parser ("ingest",help ="Ingest one or more documents.")
     ingest_parser .add_argument ("paths",nargs ="+",help ="Paths to documents for ingestion.")
-    ingest_parser .add_argument ("--chunk-size",type =int ,default =512 ,help ="Chunk size in characters.")
-    ingest_parser .add_argument ("--chunk-overlap",type =int ,default =64 ,help ="Overlap between chunks.")
+    ingest_parser .add_argument ("--chunk-size",type =int ,default =1500 ,help ="Chunk size in characters.")
+    ingest_parser .add_argument ("--chunk-overlap",type =int ,default =200 ,help ="Overlap between chunks.")
     ingest_parser .set_defaults (handler =command_ingest )
 
     chat_parser =subparsers .add_parser ("chat",help ="Ask a question against ingested documents.")
@@ -186,7 +288,7 @@ def build_parser ()->argparse .ArgumentParser :
     chat_parser .add_argument ("--constraints",help ="Optional constraints for Balthasar.")
     chat_parser .set_defaults (handler =command_chat )
 
-    return parser 
+    return parser
 
 
 def main (argv :List [str ]|None =None )->int :

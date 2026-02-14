@@ -1,14 +1,18 @@
 """DSPy evaluation metrics and judges for the MAGI system."""
 
-from __future__ import annotations 
+from __future__ import annotations
 
-from typing import Any ,Dict ,Optional 
+from typing import Any ,Dict ,Optional
 
-from .signatures import STUB_MODE 
+from .signatures import STUB_MODE
+
+
+
+
 
 if not STUB_MODE :
-    import dspy 
-    from dspy .evaluate import Evaluate 
+    import dspy
+    from dspy .evaluate import Evaluate
 
     class ConsensusJudge (dspy .Signature ):
 
@@ -136,7 +140,7 @@ if not STUB_MODE :
         pred .persona_outputs .get ("casper",{}))
         ]
 
-        total_score =0.0 
+        total_score =0.0
         for name ,traits ,output in personas :
             result =judge (
             persona_name =name ,
@@ -145,7 +149,7 @@ if not STUB_MODE :
             )
             total_score +=float (result .consistency_score )
 
-        return total_score /3.0 
+        return total_score /3.0
 
     def risk_coverage_metric (gold :Any ,pred :Any ,trace :Optional [Any ]=None )->float :
 
@@ -160,7 +164,7 @@ if not STUB_MODE :
         )
 
 
-        return (float (result .coverage_score )+float (result .mitigation_quality ))/2.0 
+        return (float (result .coverage_score )+float (result .mitigation_quality ))/2.0
 
     def composite_magi_metric (gold :Any ,pred :Any ,trace :Optional [Any ]=None )->float :
 
@@ -170,7 +174,7 @@ if not STUB_MODE :
         "consensus":0.25 ,
         "decision":0.30 ,
         "personality":0.25 ,
-        "risk":0.20 
+        "risk":0.20
         }
 
         scores ={
@@ -190,7 +194,7 @@ if not STUB_MODE :
                 print (f"  {key .capitalize ()}: {score :.2f} (weight: {weights [key ]})")
             print (f"  Total: {total :.2f}")
 
-        return total 
+        return total
 
 
 
@@ -262,7 +266,7 @@ if not STUB_MODE :
         casper_confidence =str (casper .get ("confidence",0 )),
 
         final_verdict =pred .verdict ,
-        final_justification =pred .justification 
+        final_justification =pred .justification
         )
 
 
@@ -278,7 +282,7 @@ if not STUB_MODE :
         float (result .risk_management ),
         float (result .decision_quality ),
         float (result .system_coherence )
-        ])/5.0 
+        ])/5.0
         }
 
         if trace :
@@ -293,21 +297,21 @@ if not STUB_MODE :
             print (f"Weaknesses: {result .weaknesses }")
             print (f"Recommendation: {result .recommendation }")
 
-        return scores 
+        return scores
 
 
 
     def create_magi_evaluator (devset ,metric =None ,num_threads =1 ):
 
         if metric is None :
-            metric =composite_magi_metric 
+            metric =composite_magi_metric
 
         return Evaluate (
         devset =devset ,
         metric =metric ,
         num_threads =num_threads ,
         display_progress =True ,
-        display_table =True 
+        display_table =True
         )
 
 
@@ -315,44 +319,44 @@ if not STUB_MODE :
     def magi_optimization_metric (gold :Any ,pred :Any ,trace :Optional [Any ]=None )->bool :
 
         score =composite_magi_metric (gold ,pred ,trace )
-        return score >=0.7 
+        return score >=0.7
 
 else :
 
     class _StubJudge :
         def __init__ (self ,*args ,**kwargs ):
-            self .args =args 
-            self .kwargs =kwargs 
+            self .args =args
+            self .kwargs =kwargs
 
     class ConsensusJudge (_StubJudge ):
-        pass 
+        pass
 
     class DecisionQualityJudge (_StubJudge ):
-        pass 
+        pass
 
     class PersonaConsistencyJudge (_StubJudge ):
-        pass 
+        pass
 
     class RiskMitigationJudge (_StubJudge ):
-        pass 
+        pass
 
     class MAGISystemJudge (_StubJudge ):
-        pass 
+        pass
 
     def consensus_metric (*args ,**kwargs ):
-        return 0.5 
+        return 0.5
 
     def decision_quality_metric (*args ,**kwargs ):
-        return 0.5 
+        return 0.5
 
     def personality_consistency_metric (*args ,**kwargs ):
-        return 0.5 
+        return 0.5
 
     def risk_coverage_metric (*args ,**kwargs ):
-        return 0.5 
+        return 0.5
 
     def composite_magi_metric (*args ,**kwargs ):
-        return 0.5 
+        return 0.5
 
     def comprehensive_judge_metric (*args ,**kwargs ):
         return {"overall":0.5 }
@@ -361,7 +365,7 @@ else :
         raise NotImplementedError ("DSPy required for evaluation")
 
     def magi_optimization_metric (*args ,**kwargs ):
-        return False 
+        return False
 
 
 __all__ =[

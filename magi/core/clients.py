@@ -1,7 +1,5 @@
 
 
-from __future__ import annotations 
-
 from __future__ import annotations
 
 import json
@@ -79,7 +77,7 @@ class OpenAIClient(LLMClient):
     ):
         try:
             from openai import OpenAI
-        except ImportError as exc:  # pragma: no cover
+        except ImportError as exc:
             raise RuntimeError("openai package is required for OpenAIClient") from exc
 
         kwargs: Dict[str, Any] = {"api_key": api_key}
@@ -102,18 +100,17 @@ class OpenAIClient(LLMClient):
         normalized_messages = _normalize_messages(messages)
         normalized_tools = _normalize_tools(tools)
         try:
-            response = self.client.responses.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
-                input=normalized_messages,
+                messages=normalized_messages,
                 tools=normalized_tools,
-                response_format=response_format,
             )
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             raise LLMClientError(str(exc)) from exc
-        if hasattr(response, "to_dict"):
-            return response.to_dict()
         if hasattr(response, "model_dump"):
             return response.model_dump()
+        if hasattr(response, "to_dict"):
+            return response.to_dict()
         return json.loads(response.json()) if hasattr(response, "json") else {"response": response}
 
 
@@ -130,7 +127,7 @@ class GeminiClient(LLMClient):
     ):
         try:
             from google import genai
-        except ImportError as exc:  # pragma: no cover
+        except ImportError as exc:
             raise RuntimeError("google-genai package is required for GeminiClient") from exc
 
         kwargs: Dict[str, Any] = {"api_key": api_key}
@@ -152,14 +149,13 @@ class GeminiClient(LLMClient):
         response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         normalized_messages = _normalize_messages(messages)
+        contents = [{"role": m["role"], "parts": [{"text": m["content"]}]} for m in normalized_messages]
         try:
-            response = self.client.responses.generate(
+            response = self.client.models.generate_content(
                 model=self.model,
-                input=normalized_messages,
-                tools=tools,
-                response_format=response_format,
+                contents=contents,
             )
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             raise LLMClientError(str(exc)) from exc
         if hasattr(response, "to_dict"):
             return response.to_dict()

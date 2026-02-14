@@ -1,9 +1,9 @@
-from __future__ import annotations 
+from __future__ import annotations
 
-import json 
-import logging 
-import re 
-from typing import Any ,Callable ,Dict ,List ,Sequence ,Tuple 
+import json
+import logging
+import re
+from typing import Any ,Callable ,Dict ,List ,Sequence ,Tuple
 
 from ..core .utils import (
 CircuitBreaker ,
@@ -36,7 +36,7 @@ class PersonaRecord (dict ):
         return self .get (item )
 
     def __setattr__ (self ,key :str ,value :Any )->None :
-        self [key ]=value 
+        self [key ]=value
 
     def __str__ (self )->str :
         return (
@@ -79,11 +79,19 @@ INFORMATIONAL_KEYWORDS =(
 "discussion",
 )
 
+_SAFETY_OVERRIDE_KEYWORDS ={
+    "bypass","hack","exploit","attack","steal","illegal",
+    "weapon","harm","kill","abuse","fraud","breach",
+    "malware","phishing","inject","compromise",
+}
+
 
 def _is_informational_query (query :str )->bool :
     if not query :
-        return False 
+        return False
     lowered =query .lower ()
+    if any (kw in lowered for kw in _SAFETY_OVERRIDE_KEYWORDS ):
+        return False
     return any (token in lowered for token in INFORMATIONAL_KEYWORDS )
 
 
@@ -93,7 +101,7 @@ query :str ,
 context :str |None =None ,
 )->str :
     normalized =stance .strip ().lower ()
-    if normalized in ("reject","revise"):
+    if normalized in ("revise","reject"):
         if _is_informational_query (query )and context and context .strip ():
             return "approve"
     if normalized not in STANCE_TAGS :
@@ -171,17 +179,19 @@ def _normalize_residual_label(value :Any )->str :
     return "medium"
 
 def _resolve_stance (raw :Any ,query :str ,context :str )->tuple [str ,str ]:
-    normalized =str (raw or "").strip ().lower ()
-    adjusted =_adjust_informational_stance (normalized ,query ,context )
+
+    clean_label ,_ =_normalize_stance (raw )
+
+    adjusted =_adjust_informational_stance (clean_label ,query ,context )
     return _normalize_stance (adjusted )
 
-MAX_DIALOGUE_ROUNDS =4 
-CONSENSUS_CONFIDENCE =0.58 
+MAX_DIALOGUE_ROUNDS =4
+CONSENSUS_CONFIDENCE =0.58
 
 def _record_dialogue (log :List [tuple [int ,str ,str ]],round_index :int ,speaker :str ,message :Any )->None :
     text =str (message ).strip ()
     if not text :
-        return 
+        return
     log .append ((round_index ,speaker ,text ))
 
 
@@ -193,13 +203,13 @@ def _dialogue_transcript (log :Sequence [tuple [int ,str ,str ]])->str :
 
 def _consensus_decision (bundles :Sequence [Dict [str ,Any ]],threshold :float )->str |None :
     if not bundles :
-        return None 
+        return None
     stances =[str (bundle .get ("stance","revise"))for bundle in bundles ]
     confidences =[float (bundle .get ("confidence",0.0 )or 0.0 )for bundle in bundles ]
     base =stances [0 ]
     if all (value ==base for value in stances )and all (value >=threshold for value in confidences ):
-        return base 
-    return None 
+        return base
+    return None
 
 def _fallback_summary (context :str ,limit :int =600 )->str :
     text =str (context or "").strip ()
@@ -207,7 +217,7 @@ def _fallback_summary (context :str ,limit :int =600 )->str :
         return ""
     collapsed =re .sub (r"\s+"," ",text )
     if len (collapsed )<=limit :
-        return collapsed 
+        return collapsed
     trimmed =collapsed [:limit ]
     if " "in collapsed [limit :]:
         trimmed =collapsed [:limit ].rsplit (" ",1 )[0 ]
@@ -215,7 +225,7 @@ def _fallback_summary (context :str ,limit :int =600 )->str :
 
 
 if not STUB_MODE :
-    import dspy 
+    import dspy
 
     class MelchiorSignature (AnalyzeEvidence ):
         """MELCHIOR: The scientist. Analytical, evidence-driven, skeptical.
@@ -299,21 +309,21 @@ if not STUB_MODE :
         Always include a concise justification and, when helpful, short next steps or follow-up ideas.
         """
 
-    Melchior =dspy .Predict (MelchiorSignature )
-    Balthasar =dspy .Predict (BalthasarSignature )
-    Casper =dspy .Predict (CasperSignature )
-    Fuse =dspy .Predict (FusionSignature )
-    Responder =dspy .Predict (ResponderSignature )
+    Melchior =dspy .ChainOfThought (MelchiorSignature )
+    Balthasar =dspy .ChainOfThought (BalthasarSignature )
+    Casper =dspy .ChainOfThought (CasperSignature )
+    Fuse =dspy .ChainOfThought (FusionSignature )
+    Responder =dspy .ChainOfThought (ResponderSignature )
 
     class MagiProgram (dspy .Module ):
         def __init__ (self ,retriever :Callable [[str ],str ]):
             super ().__init__ ()
-            self .retriever =retriever 
-            self .melchior =Melchior 
-            self .balthasar =Balthasar 
-            self .casper =Casper 
-            self .fuse =Fuse 
-            self .responder =Responder 
+            self .retriever =retriever
+            self .melchior =Melchior
+            self .balthasar =Balthasar
+            self .casper =Casper
+            self .fuse =Fuse
+            self .responder =Responder
 
         def forward (self ,query :str ,constraints :str ="")->Tuple [Any ,Dict [str ,Any ]]:
             query =sanitize_input (query ,max_length =2000 )
@@ -323,7 +333,7 @@ if not STUB_MODE :
             cached_result =query_cache .get (cache_key )
             if cached_result :
                 logger .info (f"Cache hit for query: {query [:50 ]}...")
-                return cached_result 
+                return cached_result
 
             base_context =self .retriever (query )
             base_context =truncate_to_token_limit (base_context ,max_tokens =2000 )
@@ -392,8 +402,16 @@ if not STUB_MODE :
                 cas_outstanding =_to_list (getattr (casper_raw ,"outstanding_questions",[]))
                 residual_label =_normalize_residual_label (getattr (casper_raw ,"residual_risk","medium"))
                 if _is_informational_query (query ):
-                    residual_label ="low"
+                    if residual_label =="high":
+                        residual_label ="medium"
 
+                _cas_risks_text =_dedupe_lines (getattr (casper_raw ,"risks",""))
+                _cas_mits_text =_dedupe_lines (getattr (casper_raw ,"mitigations",""))
+                _cas_summary_parts =[f"Risk Level: {residual_label }"]
+                if _cas_risks_text :
+                    _cas_summary_parts .append (f"Risks: {_cas_risks_text }")
+                if _cas_mits_text :
+                    _cas_summary_parts .append (f"Mitigations: {_cas_mits_text }")
                 casper_bundle =PersonaRecord (
                 risks =getattr (casper_raw ,"risks",""),
                 mitigations =getattr (casper_raw ,"mitigations",""),
@@ -402,7 +420,7 @@ if not STUB_MODE :
                 stance =cas_stance ,
                 actions =cas_actions ,
                 outstanding_questions =cas_outstanding ,
-                text =f"[{cas_tag }] [CASPER] Risk Level: {residual_label }"
+                text =f"[{cas_tag }] [CASPER] {' | '.join (_cas_summary_parts )}"
                 )
 
                 _record_dialogue (dialogue_log ,round_index ,"Melchior",mel_bundle .get ("text",""))
@@ -435,6 +453,9 @@ if not STUB_MODE :
                 else :
                     fused_verdict ="revise"
 
+
+                fused_verdict =_adjust_informational_stance (fused_verdict ,query ,context_input )
+
                 fused_next_steps =_to_list (getattr (fused_raw ,"next_steps",[]))
                 fused_residual =_normalize_residual_label (getattr (fused_raw ,"residual_risk",residual_label ))
                 fused_bundle =PersonaRecord (
@@ -461,11 +482,13 @@ if not STUB_MODE :
                 CONSENSUS_CONFIDENCE ,
                 )
                 if consensus_choice :
+
+                    consensus_choice =_adjust_informational_stance (consensus_choice ,query ,context_input )
                     agreement =consensus_choice
                     fused_bundle ["verdict"]=consensus_choice
                     if not fused_bundle .get ("justification"):
                         fused_bundle ["justification"]=f"Consensus reached on {consensus_choice }"
-                    responder_raw =None 
+                    responder_raw =None
                     try :
                         responder_raw =self .responder (
                         query =query ,
@@ -521,20 +544,25 @@ if not STUB_MODE :
                 "casper":PersonaRecord (),
                 }
             elif agreement is None :
-                final_bundle ["verdict"]="revise"
-                final_bundle ["justification"]="Consensus not reached; request revision."
-                final_bundle ["final_answer"]=""
-                final_bundle ["next_steps"]=[]
-                final_bundle ["confidence"]=0.0
-                final_bundle ["text"]=final_bundle .get ("justification","Consensus not reached; request revision.")
+
+                existing_justification =str (final_bundle .get ("justification","")).strip ()
+                existing_answer =str (final_bundle .get ("final_answer","")).strip ()
+                if existing_justification :
+                    final_bundle ["justification"]=f"(No unanimous consensus) {existing_justification }"
+                else :
+                    final_bundle ["justification"]="Personas did not reach unanimous consensus. Further review recommended."
+                    if not final_bundle .get ("verdict"):
+                        final_bundle ["verdict"]="revise"
+                if not existing_answer and existing_justification :
+                    final_bundle ["text"]=final_bundle ["justification"]
 
             result =(final_bundle ,final_personas )
             query_cache .put (cache_key ,result )
-            return result 
+            return result
 
 else :
-    import json 
-    from typing import Optional 
+    import json
+    from typing import Optional
 
     class PersonaStub (dict ):
         def __init__ (self ,**kwargs :Any ):
@@ -544,34 +572,34 @@ else :
             return self .get (item )
 
         def __setattr__ (self ,key :str ,value :Any )->None :
-            self [key ]=value 
+            self [key ]=value
 
         def __str__ (self )->str :
             return self .get ("text")or self .get ("analysis")or self .get ("plan")or ""
 
     class LLMPersona :
         def __init__ (self ,name :str ,personality :str ,role :str ):
-            self .name =name 
-            self .personality =personality 
-            self .role =role 
-            self ._llm_client =None 
+            self .name =name
+            self .personality =personality
+            self .role =role
+            self ._llm_client =None
             self .circuit_breaker =CircuitBreaker (failure_threshold =3 ,recovery_timeout =30.0 )
             self ._init_llm ()
 
         def _init_llm (self ):
             try :
-                from ..core .config import get_settings 
-                from ..core .clients import build_default_client 
+                from ..core .config import get_settings
+                from ..core .clients import build_default_client
                 settings =get_settings ()
                 client =build_default_client (settings )
                 if client :
-                    self ._llm_client =client 
+                    self ._llm_client =client
                     self .model =getattr (client ,"model",settings .openai_model )
                 else :
                     self .model ="heuristic"
             except (ImportError ,RuntimeError )as e :
                 logger .error (f"Failed to initialize LLM client: {e }")
-                self ._llm_client =None 
+                self ._llm_client =None
                 self .model ="heuristic"
 
         def analyze (self ,**inputs )->Dict [str ,Any ]:
@@ -621,9 +649,9 @@ else :
                 token_tracker .track (
                 input_text =self .personality +prompt ,
                 output_text =output ,
-                model =self .model 
+                model =self .model
                 )
-                return output 
+                return output
 
             return self .circuit_breaker .call (make_call )
 
@@ -905,7 +933,15 @@ Format your response as JSON with keys: risks, mitigations, residual_risk, confi
             if data :
                 residual_labeled =_normalize_residual_label (data .get ("residual_risk","medium"))
                 if _is_informational_query (query or ""):
-                    residual_labeled ="low"
+                    if residual_labeled =="high":
+                        residual_labeled ="medium"
+                _risks_text =_dedupe_lines (data .get ("risks",""))
+                _mits_text =_dedupe_lines (data .get ("mitigations",""))
+                _summary_parts =[f"Risk Level: {residual_labeled }"]
+                if _risks_text :
+                    _summary_parts .append (f"Risks: {_risks_text }")
+                if _mits_text :
+                    _summary_parts .append (f"Mitigations: {_mits_text }")
                 return PersonaStub (
                 risks =data .get ("risks",""),
                 mitigations =data .get ("mitigations",""),
@@ -914,7 +950,7 @@ Format your response as JSON with keys: risks, mitigations, residual_risk, confi
                 stance =stance_adjusted ,
                 actions =actions ,
                 outstanding_questions =outstanding ,
-                text =f"[{tag}] [CASPER] Risk Level: {residual_labeled }"
+                text =f"[{tag}] [CASPER] {' | '.join (_summary_parts )}"
                 )
             else :
                 return PersonaStub (
@@ -1075,16 +1111,25 @@ Format your response as JSON with keys: verdict, justification, confidence, fina
         def __init__ (self ):
             super ().__init__ (
             name ="RESPONDER",
-            personality ="""You are the final voice of the MAGI system.
+            personality ="""You are the final voice of the MAGI system -- a synthesis engine that delivers authoritative, well-structured answers.
 
-Your job is to speak to the user with a clear, structured explanation.
-Use the retrieved evidence and the personas' insights to answer the query directly.
-Always deliver a concise justification and, when helpful, short next steps or follow-up ideas.""",
+Your responsibilities:
+1. Directly answer the user's question using retrieved evidence and persona insights.
+2. Cite evidence with [n] markers when referencing specific data points or claims.
+3. Structure your answer with clear paragraphs or bullet points for readability.
+4. Include a concise justification explaining why this answer is well-supported.
+5. When helpful, suggest 2-3 concrete next steps or follow-up actions.
+
+Style guidelines:
+- Lead with the most important information first.
+- Be specific and concrete -- use numbers, names, and dates from the evidence.
+- Acknowledge trade-offs or limitations when they exist.
+- Keep the tone professional but accessible.""",
             role ="explainer"
             )
 
         def _llm_analyze (self ,query :str ,context :str ,dialogue :str ,melchior :str ,balthasar :str ,casper :str )->Dict [str ,Any ]:
-            prompt =f"""Craft the final answer for the user.
+            prompt =f"""Craft the definitive final answer for the user by synthesizing all available inputs.
 
 User Query: {query }
 
@@ -1094,19 +1139,26 @@ Retrieved Evidence:
 Persona Discussion:
 {dialogue }
 
-Scientist Perspective:
+Scientist (Melchior) -- evidence and data analysis:
 {melchior }
 
-Strategist Perspective:
+Strategist (Balthasar) -- feasibility and stakeholder plan:
 {balthasar }
 
-Guardian Perspective:
+Guardian (Casper) -- risk and ethics assessment:
 {casper }
 
+INSTRUCTIONS:
+1. Write a clear, direct answer to the user's query grounded in the retrieved evidence.
+2. Use [n] citation markers (e.g., [1], [2]) when referencing specific evidence or data points.
+3. Incorporate the strongest insights from each persona where relevant.
+4. Acknowledge key risks or trade-offs identified by the Guardian, but keep the tone balanced.
+5. Structure the answer for readability: use short paragraphs or bullet points.
+
 Respond with JSON containing:
-- final_answer: 3-6 sentences or bullet points that directly answer the query, citing evidence markers like [1] when available.
-- justification: one short paragraph explaining why this answer is correct and sufficient.
-- next_steps: optional list (bullet strings) of follow-up actions or study tips.
+- final_answer: A thorough but concise answer (4-8 sentences or a mix of prose and bullet points). Lead with the direct answer, then supporting detail.
+- justification: One paragraph explaining why this answer is well-supported and what evidence backs it.
+- next_steps: A list of 2-4 concrete, actionable follow-up items (as short strings).
 """
             response =self ._call_llm (prompt )
             data =validate_json_response (response ,["final_answer","justification","next_steps"])
@@ -1128,7 +1180,7 @@ Respond with JSON containing:
 
     class MagiProgram :
         def __init__ (self ,retriever :Callable [[str ],str ]):
-            self .retriever =retriever 
+            self .retriever =retriever
             self .melchior =MelchiorPersona ()
             self .balthasar =BalthasarPersona ()
             self .casper =CasperPersona ()
@@ -1146,7 +1198,7 @@ Respond with JSON containing:
             cached_result =query_cache .get (cache_key )
             if cached_result :
                 logger .info (f"Cache hit for query: {query [:50 ]}...")
-                return cached_result 
+                return cached_result
 
             base_context =self .retriever (query )
             base_context =truncate_to_token_limit (base_context ,max_tokens =2000 )
@@ -1248,8 +1300,16 @@ Respond with JSON containing:
                 cas_outstanding =_to_list (cas_raw .get ("outstanding_questions",[]))
                 residual_label =_normalize_residual_label (cas_raw .get ("residual_risk","medium"))
                 if _is_informational_query (query ):
-                    residual_label ="low"
+                    if residual_label =="high":
+                        residual_label ="medium"
 
+                _cas_risks_text =_dedupe_lines (cas_raw .get ("risks",""))
+                _cas_mits_text =_dedupe_lines (cas_raw .get ("mitigations",""))
+                _cas_summary_parts =[f"Risk Level: {residual_label }"]
+                if _cas_risks_text :
+                    _cas_summary_parts .append (f"Risks: {_cas_risks_text }")
+                if _cas_mits_text :
+                    _cas_summary_parts .append (f"Mitigations: {_cas_mits_text }")
                 cas_bundle =PersonaStub (
                 risks =cas_raw .get ("risks",""),
                 mitigations =cas_raw .get ("mitigations",""),
@@ -1258,7 +1318,7 @@ Respond with JSON containing:
                 stance =cas_stance ,
                 actions =cas_actions ,
                 outstanding_questions =cas_outstanding ,
-                text =f"[{cas_tag }] [CASPER] Risk Level: {residual_label }"
+                text =f"[{cas_tag }] [CASPER] {' | '.join (_cas_summary_parts )}"
                 )
 
                 _record_dialogue (dialogue_log ,round_index ,"Melchior",mel_bundle .get ("text",""))
@@ -1317,11 +1377,13 @@ Respond with JSON containing:
                 CONSENSUS_CONFIDENCE ,
                 )
                 if consensus_choice :
+
+                    consensus_choice =_adjust_informational_stance (consensus_choice ,query ,context_input )
                     agreement =consensus_choice
                     fused_output ["verdict"]=consensus_choice
                     if not fused_output .get ("justification"):
                         fused_output ["justification"]=f"Consensus reached on {consensus_choice }"
-                    responder_raw =None 
+                    responder_raw =None
                     try :
                         responder_raw =self .responder .analyze (
                         query =query ,
@@ -1379,14 +1441,19 @@ Respond with JSON containing:
                 "casper":PersonaStub (),
                 }
             elif agreement is None :
-                final_bundle ["verdict"]="revise"
-                final_bundle ["justification"]="Consensus not reached; request revision."
-                final_bundle ["final_answer"]=""
-                final_bundle ["next_steps"]=[]
-                final_bundle ["confidence"]=0.0
+
+                existing_justification =str (final_bundle .get ("justification","")).strip ()
+                existing_answer =str (final_bundle .get ("final_answer","")).strip ()
+                if existing_justification :
+                    final_bundle ["justification"]=f"(No unanimous consensus) {existing_justification }"
+                else :
+                    final_bundle ["justification"]="Personas did not reach unanimous consensus. Further review recommended."
+                    if not final_bundle .get ("verdict"):
+                        final_bundle ["verdict"]="revise"
+                if not existing_answer and existing_justification :
+                    final_bundle ["text"]=final_bundle ["justification"]
                 final_bundle ["risks"]=final_bundle .get ("risks",[])
                 final_bundle ["mitigations"]=final_bundle .get ("mitigations",[])
-                final_bundle ["text"]=final_bundle .get ("justification","Consensus not reached; request revision.")
 
             result =(final_bundle ,final_personas )
             query_cache .put (cache_key ,result )
@@ -1395,10 +1462,10 @@ Respond with JSON containing:
             if stats ["total_tokens"]>0 :
                 logger .info (f"Token usage: {stats }")
 
-            return result 
+            return result
 
 
-USING_STUB =STUB_MODE 
+USING_STUB =STUB_MODE
 
 
 def clear_cache ():
@@ -1416,6 +1483,3 @@ def reset_token_tracking ():
 
 
 __all__ =["MagiProgram","USING_STUB","clear_cache","get_token_stats","reset_token_tracking"]
-
-
-

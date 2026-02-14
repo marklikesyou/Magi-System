@@ -15,7 +15,7 @@ Most modules are lightweight skeletons intended to be fleshed out with real impl
 ## Getting started
 
 1. Create and edit the `.env` file in the repository root with your API credentials.
-2. Install dependencies (DSPy, FastAPI, OpenAI, google-genai, PyTorch if you plan to use calibrators, pytest for tests).
+2. Install dependencies: `pip install -e ".[openai,dspy,dev]"` (add `google` for Gemini support, `torch` for calibrators).
 3. Ingest documents and chat with them from the terminal:
 
 ```bash
@@ -45,4 +45,4 @@ pytest
   - `python magi/eval/run_bench.py --cases /path/to/cases.yaml --features-out artifacts/features.jsonl`
   - `python magi/eval/train_decision_model.py --cases /path/to/cases.yaml --model-out magi/decision/model_weights.json`
 - Enforce the benchmark accuracy threshold in CI: `pytest magi/tests/test_decision_bench.py`
-- See `docs/EVALUATION.md` for dataset guidance and safety integration notes
+- See `magi/eval/cases.template.yaml` for dataset format guidance.
