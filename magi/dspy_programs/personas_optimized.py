@@ -561,9 +561,6 @@ if not STUB_MODE :
             return result
 
 else :
-    import json
-    from typing import Optional
-
     class PersonaStub (dict ):
         def __init__ (self ,**kwargs :Any ):
             super ().__init__ (**kwargs )
@@ -717,7 +714,6 @@ Format your response as JSON with keys: analysis, answer_outline, confidence, ev
             actions =data .get ("actions",[])
             if isinstance (actions ,str ):
                 actions =[actions ]if actions else []
-            communication_plan =_dedupe_lines (data .get ("communication_plan",""))
             answer_outline =_dedupe_lines (data .get ("answer_outline",""))
 
             if data :

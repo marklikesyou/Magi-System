@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable
-
 try:
     import dspy
     from dspy.teleprompt import BootstrapFewShot, MIPROv2

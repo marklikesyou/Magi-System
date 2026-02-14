@@ -189,7 +189,7 @@ if not STUB_MODE :
 
 
         if trace :
-            print (f"Evaluation Breakdown:")
+            print ("Evaluation Breakdown:")
             for key ,score in scores .items ():
                 print (f"  {key .capitalize ()}: {score :.2f} (weight: {weights [key ]})")
             print (f"  Total: {total :.2f}")
@@ -286,9 +286,9 @@ if not STUB_MODE :
         }
 
         if trace :
-            print (f"\n=== MAGI System Evaluation ===")
+            print ("\n=== MAGI System Evaluation ===")
             print (f"Query: {gold .query }")
-            print (f"\nScores:")
+            print ("\nScores:")
             for key ,value in scores .items ():
                 if key !="overall":
                     print (f"  {key .replace ('_',' ').title ()}: {value :.2f}")

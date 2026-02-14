@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
-
-import pytest
 
 from magi.core.embeddings import HashingEmbedder, build_embedder
 from magi.core.config import Settings

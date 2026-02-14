@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any ,Callable ,List ,Optional ,Tuple
 
 from .signatures import STUB_MODE
@@ -17,7 +16,6 @@ if not STUB_MODE :
     )
 
     from .evaluation import (
-    composite_magi_metric ,
     comprehensive_judge_metric ,
     magi_optimization_metric ,
     )

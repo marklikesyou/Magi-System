@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict ,Iterable ,List
+from typing import Dict ,List
 
 _SENTENCE_BOUNDARY_RE = re.compile(r'[.!?]\s+|\n\n+')
 

@@ -5,9 +5,12 @@ __pycache__/
 *.swp
 .DS_Store
 .pytest_cache/
+.pytest_tmp/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.tmp/
+pytest-cache-files-*/
 .venv/
 .claude/
 .env
