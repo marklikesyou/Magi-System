@@ -15,7 +15,7 @@ Most modules are lightweight skeletons intended to be fleshed out with real impl
 ## Getting started
 
 1. Create and edit the `.env` file in the repository root with your API credentials.
-2. Install dependencies: `pip install -e ".[openai,dspy,dev]"` (add `google` for Gemini support, `torch` for calibrators).
+2. Install dependencies: `uv sync --extra dev --extra openai` (add `--extra google` for Gemini support, `--extra torch` for calibrators).
 3. Ingest documents and chat with them from the terminal:
 
 ```bash
@@ -23,7 +23,7 @@ python -m magi.app.cli ingest docs/briefing.pdf
 python -m magi.app.cli chat "Should we deploy the latest patch?" --constraints "Budget <= 50k"
 ```
 
-By default the system stays completely offline using a deterministic hashing embedder and a DSPy stub. To activate the full OpenAI + DSPy stack, set your keys in `.env` and run commands with `MAGI_FORCE_DSPY_STUB=0` (use `MAGI_FORCE_HASH_EMBEDDER=1` if you ever need to fall back to hashing).
+By default the system stays completely offline using a deterministic hashing embedder and a deterministic reasoning fallback. To activate the provider-backed stack, set your keys in `.env` and run commands with `MAGI_FORCE_DSPY_STUB=0` (use `MAGI_FORCE_HASH_EMBEDDER=1` if you ever need to fall back to hashing).
 
 ```bash
 export MAGI_FORCE_DSPY_STUB=0

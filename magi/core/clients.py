@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, TypedDict
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, TypedDict, cast
 
 from httpx import Timeout
 
@@ -99,18 +99,22 @@ class OpenAIClient(LLMClient):
     ) -> Dict[str, Any]:
         normalized_messages = _normalize_messages(messages)
         normalized_tools = _normalize_tools(tools)
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": normalized_messages,
+        }
+        if normalized_tools is not None:
+            kwargs["tools"] = normalized_tools
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=normalized_messages,
-                tools=normalized_tools,
-            )
+            response = self.client.chat.completions.create(**kwargs)
         except Exception as exc:
             raise LLMClientError(str(exc)) from exc
         if hasattr(response, "model_dump"):
-            return response.model_dump()
+            return cast(Dict[str, Any], response.model_dump())
         if hasattr(response, "to_dict"):
-            return response.to_dict()
+            return cast(Dict[str, Any], response.to_dict())
         return json.loads(response.json()) if hasattr(response, "json") else {"response": response}
 
 
@@ -149,6 +153,8 @@ class GeminiClient(LLMClient):
         response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         normalized_messages = _normalize_messages(messages)
+        if response_format is not None:
+            raise LLMClientError("GeminiClient does not support strict response_format contracts.")
         contents = [{"role": m["role"], "parts": [{"text": m["content"]}]} for m in normalized_messages]
         try:
             response = self.client.models.generate_content(
@@ -158,9 +164,9 @@ class GeminiClient(LLMClient):
         except Exception as exc:
             raise LLMClientError(str(exc)) from exc
         if hasattr(response, "to_dict"):
-            return response.to_dict()
+            return cast(Dict[str, Any], response.to_dict())
         if hasattr(response, "model_dump"):
-            return response.model_dump()
+            return cast(Dict[str, Any], response.model_dump())
         return {"response": response}
 
 

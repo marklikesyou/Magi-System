@@ -3,21 +3,18 @@ from __future__ import annotations
 import argparse
 import re
 from pathlib import Path
-from typing import Dict ,Iterable ,List
+from typing import Dict ,Iterable ,List, Literal, cast
 
+from magi.app.service import run_chat_session
 from magi.core.config import get_settings
 from magi.core.embeddings import HashingEmbedder ,build_embedder
 from magi.core.rag import RagRetriever
-from magi.core.safety import analyze_safety
 from magi.core.storage import initialize_store ,save_entries
 from magi.core.vectorstore import VectorEntry
 from magi.data_pipeline.chunkers import sliding_window_chunk
 from magi.data_pipeline.embed import embed_chunks
 from magi.data_pipeline.ingest import ingest_paths
-from magi.decision.aggregator import resolve_verdict
-from magi.decision.schema import FinalDecision ,PersonaOutput
-from magi.dspy_programs.personas import MagiProgram ,USING_STUB
-from magi.dspy_programs.setup import configure_dspy
+from magi.dspy_programs.personas import USING_STUB
 
 DEFAULT_STORE =Path (__file__ ).resolve ().parents [1 ]/"storage"/"vector_store.json"
 
@@ -30,13 +27,13 @@ def _strip_persona_tags(text: str) -> str:
     return _PERSONA_TAG_RE.sub("", text).strip()
 
 
-def _normalize_residual_label (value :object )->str :
+def _normalize_residual_label (value :object )->Literal["low", "medium", "high"] :
     if not value :
         return "medium"
     label =str (value ).strip ().lower ()
     if not label :
         return "medium"
-    mapping ={
+    mapping :dict [str ,Literal ["low","medium","high"]] ={
     "low":"low",
     "minimal":"low",
     "minor":"low",
@@ -60,7 +57,7 @@ def _vector_entries (payload :Iterable [Dict [str ,object ]])->List [VectorEntry
         entries .append (
         VectorEntry (
         document_id =str (record ["id"]),
-        embedding =list (record ["embedding"]),
+        embedding =list (cast(Iterable[float], record ["embedding"])),
         text =str (record ["text"]),
         metadata ={"source":str (record ["id"]).split ("::")[0 ]},
         )
@@ -126,93 +123,22 @@ def command_chat (args :argparse .Namespace )->None :
         store =initialize_store (args .store ,embedder )
         retriever =RagRetriever (embedder ,store )
 
-        if not USING_STUB :
-            configure_dspy (settings )
-        else :
-            if not isinstance (embedder ,HashingEmbedder ):
-                print ("Warning: DSPy stub active; real embeddings will still be used.")
-
         if verbose:
             if isinstance (embedder ,HashingEmbedder ):
                 print ("[verbose] Using hashing embedder (offline mode).")
             else :
                 print (f"[verbose] Using OpenAI embeddings ({settings .openai_embedding_model }).")
+            if USING_STUB and not isinstance(embedder, HashingEmbedder):
+                print ("[verbose] Deterministic reasoning fallback active; embeddings remain provider-backed.")
             print(f"[verbose] Store loaded from {args.store} ({len(store.entries)} entries).")
 
-
-        input_report = analyze_safety(args.query)
-        if input_report.flagged:
-            print(f"Warning: Input flagged by safety check - {', '.join(input_report.reasons)}")
-
-        magi =MagiProgram (retriever =retriever )
-
-        fused ,personas =magi (args .query ,constraints =args .constraints or "")
+        result = run_chat_session(args.query, args.constraints or "", retriever)
+        decision = result.final_decision
+        fused = result.fused
+        personas = result.personas
 
         if verbose:
             print(f"[verbose] Received responses from {len(personas)} persona(s).")
-
-        persona_outputs =[]
-        for name ,result in personas .items ():
-            persona_outputs .append (
-            PersonaOutput (
-            name =name .lower (),
-            text =str (result ),
-            confidence =float (getattr (result ,"confidence",0.0 )or 0.0 ),
-            evidence =[],
-            )
-            )
-
-        fused_final =str (getattr (fused ,"final_answer","")).strip ()
-        fused_justification =str (getattr (fused ,"justification",str (fused ))).strip ()
-        combined_justification =fused_final if fused_final else fused_justification
-        next_steps =getattr (fused ,"next_steps",[])
-        if isinstance (next_steps ,str ):
-            next_steps =[next_steps ]if next_steps else []
-        if next_steps :
-            formatted_steps = []
-            for step in next_steps :
-                s = str(step).strip()
-                if not s :
-                    continue
-
-                if re.match(r"^\d+[\.\)]\s", s) :
-                    formatted_steps.append(s)
-                else :
-                    formatted_steps.append(f"- {s}")
-            if formatted_steps :
-                combined_justification = (
-                    combined_justification + "\n\nNext steps:\n" + "\n".join(formatted_steps)
-                ).strip()
-        if not combined_justification :
-            combined_justification =str (fused )
-        residual_risk_value =_normalize_residual_label (getattr (fused ,"residual_risk",None ))
-
-        def _stringify_items(items):
-            """Coerce list items to strings (LLM may return dicts)."""
-            if not items:
-                return []
-            result = []
-            for item in items:
-                if isinstance(item, dict):
-                    parts = [str(v) for v in item.values() if v]
-                    result.append(" - ".join(parts))
-                else:
-                    result.append(str(item))
-            return result
-
-        decision =FinalDecision (
-        verdict =resolve_verdict (fused ,personas ,persona_outputs ),
-        justification =combined_justification ,
-        persona_outputs =persona_outputs ,
-        risks =_stringify_items(getattr (fused ,"risks",[])),
-        mitigations =_stringify_items(getattr (fused ,"mitigations",[])),
-        residual_risk =residual_risk_value ,
-        )
-
-
-        output_report = analyze_safety(decision.justification)
-        if output_report.flagged:
-            print(f"Warning: Output flagged by safety check - {', '.join(output_report.reasons)}")
 
         print (f"\n{'=' * 60}")
         print (f"Verdict: {decision .verdict .upper ()}")
@@ -243,6 +169,10 @@ def command_chat (args :argparse .Namespace )->None :
                 mit_text = mitigation .strip () if isinstance(mitigation, str) else str(mitigation)
                 if mit_text :
                     print (f"  - {mit_text }")
+        blocked_count = len([item for item in getattr(fused, "consensus_points", []) if "Unsafe retrieved instructions" in item])
+        if blocked_count:
+            print ("\nSafety:")
+            print ("  - Unsafe retrieved instructions were excluded from synthesis.")
         print ()
     except FileNotFoundError as e:
         print(f"Error: File not found - {e}")

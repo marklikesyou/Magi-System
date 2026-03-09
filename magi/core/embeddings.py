@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Iterable ,List
+from typing import Any, Iterable ,List
 
 from httpx import Timeout
 
@@ -70,7 +70,7 @@ class OpenAIEmbedder :
             f"known models: {', '.join (sorted (OPENAI_EMBED_DIMENSIONS ))}."
             )
 
-        kwargs ={"api_key":api_key }
+        kwargs: dict[str, Any] = {"api_key": api_key}
         if api_base :
             kwargs ["base_url"]=api_base
         if organization :

@@ -9,7 +9,7 @@ No external dependencies -- all math is implemented directly.
 from __future__ import annotations
 
 import math
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, cast
 
 DEFAULT_LABELS: List[str] = ["approve", "reject", "revise"]
 
@@ -197,7 +197,7 @@ def classification_report(
     lines: List[str] = [header, separator]
 
     for lbl in resolved_labels:
-        m = metrics[lbl]
+        m = cast(Dict[str, float], metrics[lbl])
         prec = m["precision"]
         rec = m["recall"]
         f1 = m["f1"]
@@ -209,14 +209,14 @@ def classification_report(
     lines.append(separator)
 
 
-    macro_f1 = metrics["macro_f1"]
+    macro_f1 = cast(float, metrics["macro_f1"])
 
     macro_prec = _safe_div(
-        sum(metrics[lbl]["precision"] for lbl in resolved_labels),
+        sum(cast(Dict[str, float], metrics[lbl])["precision"] for lbl in resolved_labels),
         len(resolved_labels),
     )
     macro_rec = _safe_div(
-        sum(metrics[lbl]["recall"] for lbl in resolved_labels),
+        sum(cast(Dict[str, float], metrics[lbl])["recall"] for lbl in resolved_labels),
         len(resolved_labels),
     )
     lines.append(
@@ -224,14 +224,14 @@ def classification_report(
     )
 
 
-    weighted_f1 = metrics["weighted_f1"]
+    weighted_f1 = cast(float, metrics["weighted_f1"])
     total_support = sum(support.values())
     weighted_prec = _safe_div(
-        sum(metrics[lbl]["precision"] * support[lbl] for lbl in resolved_labels),
+        sum(cast(Dict[str, float], metrics[lbl])["precision"] * support[lbl] for lbl in resolved_labels),
         total_support,
     )
     weighted_rec = _safe_div(
-        sum(metrics[lbl]["recall"] * support[lbl] for lbl in resolved_labels),
+        sum(cast(Dict[str, float], metrics[lbl])["recall"] * support[lbl] for lbl in resolved_labels),
         total_support,
     )
     lines.append(

@@ -4,7 +4,7 @@ import json
 import logging
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Literal, Tuple
+from typing import Dict, Iterable, List, Literal, Mapping, Tuple, cast
 
 from .constants import (
     APPROVE_CONSENSUS_BONUS,
@@ -121,7 +121,7 @@ def majority_weighted(votes: Iterable[PersonaVote]) -> Action:
     tally: Dict[Action, float] = {"approve": 0.0, "reject": 0.0, "revise": 0.0}
     for vote in votes:
         tally[vote.action] += _clip_confidence(vote.confidence)
-    return max(tally, key=tally.get)
+    return max(tally, key=lambda label: tally[label])
 
 
 def choose_verdict(personas: List[PersonaOutput]) -> Action:
@@ -147,7 +147,10 @@ def _get_field(source: object, key: str, default: object | None = None) -> objec
 
 def _safe_float(value: object, low: float = 0.0, high: float = 1.0) -> float:
     try:
-        number = float(value)
+        if isinstance(value, (int, float)):
+            number = float(value)
+        else:
+            number = float(str(value))
         if math.isnan(number) or math.isinf(number):
             return low
         return max(low, min(high, number))
@@ -220,7 +223,7 @@ def _persona_reliability(name: str, persona_obj: object) -> float:
 
 def _dirichlet_vote(
     persona_outputs: List[PersonaOutput],
-    persona_objects: Dict[str, object],
+    persona_objects: Mapping[str, object],
 ) -> Tuple[Dict[Action, float], Dict[str, float]]:
     counts: Dict[Action, float] = {"approve": DIRICHLET_PRIOR, "reject": DIRICHLET_PRIOR, "revise": DIRICHLET_PRIOR}
     reliabilities: Dict[str, float] = {}
@@ -241,7 +244,7 @@ def _dirichlet_vote(
 
 def _consensus_action(
     fused: object,
-    persona_objects: Dict[str, object],
+    persona_objects: Mapping[str, object],
     persona_outputs: List[PersonaOutput],
 ) -> Tuple[Action | None, Dict[Action, float], Dict[str, float], Dict[str, object]]:
     mel = persona_objects.get("melchior")
@@ -291,7 +294,7 @@ def _consensus_action(
         "reject": reject_score,
         "revise": revise_score,
     }
-    decision = max(scores, key=scores.get)
+    decision = max(scores, key=lambda label: scores[label])
     sorted_scores = sorted(scores.values(), reverse=True)
     margin = (sorted_scores[0] - sorted_scores[1]) if len(sorted_scores) > 1 else sorted_scores[0]
     if decision == "approve" and safety < SAFETY_APPROVE_THRESHOLD and probabilities["approve"] < PROB_APPROVE_THRESHOLD:
@@ -299,8 +302,8 @@ def _consensus_action(
     elif decision == "reject" and safety > SAFETY_REJECT_THRESHOLD and probabilities["reject"] < PROB_REJECT_THRESHOLD:
         decision = "revise"
     elif decision == "revise" and margin > DECISION_MARGIN_THRESHOLD:
-        alternate = {label: score for label, score in scores.items() if label != "revise"}
-        decision = max(alternate, key=alternate.get)
+        alternate: Dict[Action, float] = {label: score for label, score in scores.items() if label != "revise"}
+        decision = max(alternate, key=lambda label: alternate[label])
     if base_conf < LOW_CONFIDENCE_THRESHOLD and decision == "approve":
         decision = "revise"
     features: Dict[str, object] = {
@@ -331,11 +334,11 @@ def prepare_model_features(features: Dict[str, object]) -> Dict[str, float]:
     probabilities = features.get("probabilities", {})
     if isinstance(probabilities, dict):
         for label, value in probabilities.items():
-            mapping[f"prob_{label}"] = float(value)
+            mapping[f"prob_{label}"] = _safe_float(value, low=-1_000_000.0, high=1_000_000.0)
     reliabilities = features.get("reliabilities", {})
     if isinstance(reliabilities, dict):
         for label, value in reliabilities.items():
-            mapping[f"rel_{label}"] = float(value)
+            mapping[f"rel_{label}"] = _safe_float(value, low=-1_000_000.0, high=1_000_000.0)
     for key in (
         "safety",
         "evidence",
@@ -352,7 +355,7 @@ def prepare_model_features(features: Dict[str, object]) -> Dict[str, float]:
     ):
         value = features.get(key)
         if value is not None:
-            mapping[key] = float(value)
+            mapping[key] = _safe_float(value, low=-1_000_000.0, high=1_000_000.0)
     return mapping
 
 
@@ -382,7 +385,7 @@ def _extract_verdict(source: object) -> Action | None:
 
 def resolve_verdict_with_details(
     fused: object,
-    persona_objects: Dict[str, object],
+    persona_objects: Mapping[str, object],
     persona_outputs: List[PersonaOutput],
 ) -> Tuple[Action, Dict[str, object]]:
     determined = _extract_verdict(fused)
@@ -400,10 +403,14 @@ def resolve_verdict_with_details(
         model_inputs = prepare_model_features(features)
         model_probabilities = model.predict(model_inputs)
         combined_probabilities = {
-            label: HEURISTIC_WEIGHT * probabilities.get(label, 0.0) + MODEL_WEIGHT * model_probabilities.get(label, 0.0)
+            cast(Action, label): HEURISTIC_WEIGHT * probabilities.get(cast(Action, label), 0.0)
+            + MODEL_WEIGHT * model_probabilities.get(label, 0.0)
             for label in ("approve", "reject", "revise")
         }
-        combined_choice = max(combined_probabilities, key=combined_probabilities.get)
+        combined_choice = max(
+            cast(Dict[Action, float], combined_probabilities),
+            key=lambda label: combined_probabilities[label],
+        )
         base_choice = computed or combined_choice
         if combined_probabilities[combined_choice] - combined_probabilities.get(base_choice, 0.0) >= MODEL_OVERRIDE_MARGIN:
             computed = combined_choice
@@ -418,7 +425,7 @@ def resolve_verdict_with_details(
             computed = "revise"
 
     if fused_answer:
-        safety = features.get("safety", 0.5)
+        safety = _safe_float(features.get("safety", 0.5))
         if (
             all(stance not in {"reject"} for stance in persona_stances)
             and safety >= SAFETY_APPROVE_THRESHOLD
@@ -475,7 +482,7 @@ def resolve_verdict_with_details(
 
 def resolve_verdict(
     fused: object,
-    persona_objects: Dict[str, object],
+    persona_objects: Mapping[str, object],
     persona_outputs: List[PersonaOutput],
 ) -> Action:
     verdict, _ = resolve_verdict_with_details(fused, persona_objects, persona_outputs)

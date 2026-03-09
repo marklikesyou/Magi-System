@@ -22,14 +22,17 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync --extra dev --extra openai
 
       - name: Lint
-        run: ruff check magi/
+        run: uv run ruff check magi/
 
       - name: Type check
-        run: mypy magi/ --ignore-missing-imports
+        run: uv run mypy magi/ --ignore-missing-imports
 
       - name: Run tests
-        run: pytest magi/tests/ -v --tb=short
+        run: uv run pytest magi/tests/ -v --tb=short

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     openai_api_base: str = ""
     openai_organization: str = ""
     openai_request_timeout: float = 60.0
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-4o-mini-2024-07-18"
     gemini_model: str = "gemini-2.5-flash-lite"
     openai_embedding_model: str = "text-embedding-3-small"
     langfuse_public_key: str = ""

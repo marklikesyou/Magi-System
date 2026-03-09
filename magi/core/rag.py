@@ -29,9 +29,14 @@ class RagRetriever :
         self .store =store
         self .formatter =formatter
 
-    def __call__ (self ,query :str ,*,persona :str |None =None ,top_k :int =8 )->str :
+    @staticmethod
+    def _dedupe_key(chunk: RetrievedChunk) -> tuple[str, str]:
+        source = str(chunk.metadata.get("source", chunk.document_id))
+        return source, chunk.text
+
+    def retrieve(self, query: str, *, persona: str | None = None, top_k: int = 8) -> list[RetrievedChunk]:
         if not query :
-            return ""
+            return []
         enriched_query =f"[{persona }] {query }"if persona else query
         embedding =self .embedder (enriched_query )
         results =self .store .search (embedding ,top_k =top_k )
@@ -70,7 +75,7 @@ class RagRetriever :
                 seen :set [tuple [str ,str ]]=set ()
                 combined :list [RetrievedChunk ]=[]
                 for chunk in matched +results :
-                    key =(chunk .document_id ,chunk .text )
+                    key =self._dedupe_key (chunk )
                     if key in seen :
                         continue
                     seen .add (key )
@@ -100,14 +105,18 @@ class RagRetriever :
             key =lambda chunk :(page_match_score (chunk ),chunk .score ),
             reverse =True ,
             )
+        unique :list [RetrievedChunk ]=[]
+        seen_keys :set [tuple [str ,str ]]=set ()
+        for chunk in results :
+            key =self._dedupe_key (chunk )
+            if key in seen_keys :
+                continue
+            seen_keys .add (key )
+            unique .append (chunk )
+        return unique
+
+    def __call__ (self ,query :str ,*,persona :str |None =None ,top_k :int =8 )->str :
+        results =self .retrieve (query ,persona =persona ,top_k =top_k )
         if not results :
             return ""
-        unique :list [RetrievedChunk ]=[]
-        seen :set [tuple [str ,str ]]=set ()
-        for chunk in results :
-            key =(chunk .document_id ,chunk .text )
-            if key in seen :
-                continue
-            seen .add (key )
-            unique .append (chunk )
-        return self .formatter (unique )
+        return self .formatter (results )

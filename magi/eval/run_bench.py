@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Mapping, Tuple, cast
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -28,7 +28,7 @@ def evaluate_dataset(dataset: EvaluationDataset) -> Tuple[List[str], List[str], 
     feature_rows: List[Dict[str, object]] = []
     for case in dataset.cases:
         persona_outputs = build_persona_outputs(case)
-        verdict, details = resolve_verdict_with_details(case.fused, case.personas, persona_outputs)
+        verdict, details = resolve_verdict_with_details(case.fused, cast(Mapping[str, object], case.personas), persona_outputs)
         predictions.append(verdict)
         gold.append(case.expected_verdict)
         rows.append((case.id, case.expected_verdict, verdict))

@@ -24,7 +24,7 @@ logger =logging .getLogger (__name__ )
 
 class LRUCache :
     def __init__ (self ,max_size :int =100 ):
-        self .cache =OrderedDict ()
+        self .cache :OrderedDict [str ,Any ]=OrderedDict ()
         self .max_size =max_size
 
     def get (self ,key :str )->Optional [Any ]:
@@ -53,13 +53,13 @@ def retry_with_backoff (
 max_retries :int =3 ,
 initial_delay :float =1.0 ,
 backoff_factor :float =2.0 ,
-exceptions :tuple =(Exception ,),
+exceptions :tuple [type [BaseException ],...]=(Exception ,),
 ):
     def decorator (func :Callable [...,T ])->Callable [...,T ]:
         @wraps (func )
         def wrapper (*args ,**kwargs )->T :
             delay =initial_delay
-            last_exception =None
+            last_exception :BaseException |None =None
 
             for attempt in range (max_retries ):
                 try :
@@ -78,7 +78,9 @@ exceptions :tuple =(Exception ,),
                         f"All {max_retries } attempts failed for {func .__name__ }: {e }"
                         )
 
-            raise last_exception
+            if last_exception is not None :
+                raise last_exception
+            raise RuntimeError (f"{func .__name__ } failed without raising a tracked exception")
 
         return wrapper
 
@@ -233,13 +235,13 @@ class CircuitBreaker :
     self ,
     failure_threshold :int =5 ,
     recovery_timeout :float =60.0 ,
-    expected_exception :type =Exception ,
+    expected_exception :type [BaseException ]=Exception ,
     ):
         self .failure_threshold =failure_threshold
         self .recovery_timeout =recovery_timeout
         self .expected_exception =expected_exception
         self .failure_count =0
-        self .last_failure_time =None
+        self .last_failure_time :float |None =None
         self .state ="closed"
 
     def call (self ,func :Callable [...,T ],*args ,**kwargs )->T :

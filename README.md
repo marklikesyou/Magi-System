@@ -15,10 +15,9 @@ MAGI is a multi persona reasoning engine for assessing user requests against an 
 - Optional: OpenAI API credentials when running with real embeddings and DSPy.
 
 ## Setup
-1. Create a virtual environment with uv: `uv venv`
+1. Sync the pinned environment with uv: `uv sync --extra dev --extra openai`
 2. Activate the environment: `source .venv/bin/activate` (or `.\.venv\Scripts\activate` on Windows)
-3. Install the project: `uv pip install -e .`
-4. Copy `.env` and populate any required keys (see `magi/core/config.py` for supported variables).
+3. Copy `.env` and populate any required keys (see `magi/core/config.py` for supported variables).
 
 ## Usage
 ### Ingest documents and ask a question
@@ -37,8 +36,8 @@ python -m magi.app.cli chat "What risks should I consider?"
 ```
 
 ### Toggling DSPy
-- Default behavior uses DSPy personas when dependencies and API keys are available.
-- Set `MAGI_FORCE_DSPY_STUB=1` to run in stub mode without external LLM calls.
+- Default behavior uses strict OpenAI structured outputs when API keys are available.
+- Set `MAGI_FORCE_DSPY_STUB=1` to force the deterministic offline fallback without external LLM calls.
 - Set `MAGI_FORCE_HASH_EMBEDDER=1` to use the deterministic hashing embedder instead of OpenAI embeddings.
 
 ## Testing

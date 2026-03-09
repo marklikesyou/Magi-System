@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Tuple
 
 from .config import get_settings
 
@@ -36,6 +36,8 @@ class SafetyReport:
     flagged: bool
     reasons: List[str]
     metadata: Dict[str, Any]
+    stage: Literal["input", "retrieval", "output"] = "input"
+    blocked: bool = False
 
 
 def moderate_text(text: str, client: Any | None) -> Tuple[bool, Dict[str, Any]]:
@@ -84,7 +86,16 @@ def detect_malicious_markup(text: str) -> bool:
     return bool(_HTML_PATTERN.search(text))
 
 
-def analyze_safety(text: str, client: Any | None = None) -> SafetyReport:
+def is_blocked(report: SafetyReport) -> bool:
+    return report.blocked
+
+
+def analyze_safety(
+    text: str,
+    client: Any | None = None,
+    *,
+    stage: Literal["input", "retrieval", "output"] = "input",
+) -> SafetyReport:
     if client is None:
         settings = get_settings()
         if settings.openai_api_key:
@@ -115,7 +126,16 @@ def analyze_safety(text: str, client: Any | None = None) -> SafetyReport:
         reasons.append("provider_moderation")
     flagged = bool(reasons)
     metadata: Dict[str, Any] = {"moderation": moderation_payload}
-    return SafetyReport(flagged=flagged, reasons=reasons, metadata=metadata)
+    blocked = False
+    if stage == "retrieval":
+        blocked = any(reason in {"prompt_injection", "malicious_markup", "sensitive_leak"} for reason in reasons)
+    elif stage == "input":
+        blocked = any(reason in {"provider_moderation", "malicious_markup", "sensitive_leak"} for reason in reasons)
+        if "prompt_injection" in reasons and not text.strip().lower().startswith(("explain", "describe", "summarize")):
+            blocked = True
+    else:
+        blocked = any(reason in {"provider_moderation", "malicious_markup", "sensitive_leak"} for reason in reasons)
+    return SafetyReport(flagged=flagged, reasons=reasons, metadata=metadata, stage=stage, blocked=blocked)
 
 
 __all__ = [
@@ -125,4 +145,5 @@ __all__ = [
     "detect_sensitive_leak",
     "detect_malicious_markup",
     "analyze_safety",
+    "is_blocked",
 ]

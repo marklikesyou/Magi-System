@@ -8,7 +8,7 @@ import math
 import random
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Mapping, Tuple, cast
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -38,12 +38,13 @@ def collect_samples(dataset: EvaluationDataset) -> Tuple[List[List[float]], List
     heuristics: List[Dict[str, float]] = []
     for case in dataset.cases:
         persona_outputs = build_persona_outputs(case)
-        _, details = resolve_verdict_with_details(case.fused, case.personas, persona_outputs)
+        _, details = resolve_verdict_with_details(case.fused, cast(Mapping[str, object], case.personas), persona_outputs)
         features = prepare_model_features(details)
         feature_rows.append(features)
         labels.append(to_label_index(case.expected_verdict))
         base = details.get("probabilities", {}) or {}
-        heuristics.append({label: float(base.get(label, 0.0)) for label in CLASSES})
+        base_probs = cast(Mapping[str, object], base)
+        heuristics.append({label: float(str(base_probs.get(label, 0.0))) for label in CLASSES})
     feature_names = sorted({name for row in feature_rows for name in row})
     samples: List[List[float]] = []
     for row in feature_rows:
@@ -136,15 +137,15 @@ def evaluate_split(indices: List[int], weights: List[List[float]], bias: List[fl
     for idx in indices:
         label = CLASSES[labels[idx]]
         base_probs = heuristics[idx]
-        base_choice = max(base_probs, key=base_probs.get)
+        base_choice = max(base_probs, key=lambda label_name: base_probs[label_name])
         if base_choice == label:
             base_correct += 1
         model_probs = model_predict(weights, bias, samples[idx])
-        model_choice = max(model_probs, key=model_probs.get)
+        model_choice = max(model_probs, key=lambda label_name: model_probs[label_name])
         if model_choice == label:
             model_correct += 1
         blended_probs = {cls: 0.5 * base_probs.get(cls, 0.0) + 0.5 * model_probs.get(cls, 0.0) for cls in CLASSES}
-        blended_choice = max(blended_probs, key=blended_probs.get)
+        blended_choice = max(blended_probs, key=lambda label_name: blended_probs[label_name])
         if blended_choice == label:
             blended_correct += 1
     total = len(indices)

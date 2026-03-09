@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Literal, Sequence, cast
 
 import json
-import yaml
+import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from magi.decision.schema import PersonaOutput
 
 VALID_VERDICTS = {"approve", "reject", "revise"}
+VALID_PERSONAS = {"melchior", "balthasar", "casper"}
 
 
 class PersonaCase(BaseModel):
@@ -52,6 +53,8 @@ class EvaluationCase(BaseModel):
         normalized_personas: Dict[str, PersonaCase] = {}
         for key, value in self.personas.items():
             alias = key.strip().lower()
+            if alias not in VALID_PERSONAS:
+                raise ValueError(f"invalid persona '{key}'")
             normalized_personas[alias] = value
         if not normalized_personas:
             raise ValueError("at least one persona is required")
@@ -90,7 +93,7 @@ def build_persona_outputs(case: EvaluationCase) -> List[PersonaOutput]:
     for name, data in case.personas.items():
         outputs.append(
             PersonaOutput(
-                name=name,
+                name=cast(Literal["melchior", "balthasar", "casper"], name),
                 text=data.text,
                 confidence=data.confidence,
                 evidence=[],

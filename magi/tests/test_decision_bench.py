@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 
 def parse_accuracy(output: str) -> float:
