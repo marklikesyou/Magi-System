@@ -86,6 +86,30 @@ from .schema import PersonaOutput
 logger = logging.getLogger(__name__)
 
 Action = Literal["approve", "reject", "revise"]
+_INSUFFICIENT_PATTERNS = (
+    "insufficient",
+    "does not specify",
+    "doesn't specify",
+    "not specified",
+    "not enough evidence",
+    "not enough information",
+    "missing information",
+    "need additional",
+    "need more evidence",
+    "cannot determine",
+    "can't determine",
+    "not directly supported",
+    "not explicitly stated",
+)
+_REFUSAL_PATTERNS = (
+    "i can't assist",
+    "i cannot assist",
+    "can't help with that request",
+    "cannot help with that request",
+    "decline the request",
+    "do not operationalize",
+    "refuse the request",
+)
 
 
 @dataclass
@@ -383,6 +407,11 @@ def _extract_verdict(source: object) -> Action | None:
     return None
 
 
+def _contains_pattern(text: str, patterns: Tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(pattern in lowered for pattern in patterns)
+
+
 def resolve_verdict_with_details(
     fused: object,
     persona_objects: Mapping[str, object],
@@ -419,10 +448,41 @@ def resolve_verdict_with_details(
     fused_answer = str(_get_field(fused, "final_answer") or "").strip()
     fused_steps = _get_field(fused, "next_steps") or []
     persona_stances = [str(_get_field(obj, "stance") or "").lower() for obj in persona_objects.values()]
+    approve_votes = sum(1 for stance in persona_stances if stance == "approve")
+    reject_votes = sum(1 for stance in persona_stances if stance == "reject")
+    revise_votes = sum(1 for stance in persona_stances if stance == "revise")
+    combined_text = " ".join(
+        part
+        for part in (
+            fused_answer,
+            str(_get_field(fused, "justification") or "").strip(),
+            " ".join(persona.text for persona in persona_outputs),
+        )
+        if part
+    )
+    insufficient_information = _contains_pattern(combined_text, _INSUFFICIENT_PATTERNS)
+    refusal_signal = _contains_pattern(combined_text, _REFUSAL_PATTERNS)
 
     if determined == "revise" and computed == "reject":
         if all(stance != "reject" for stance in persona_stances if stance):
             computed = "revise"
+
+    if insufficient_information and not refusal_signal:
+        if determined == "reject":
+            determined = "revise"
+        if computed == "reject":
+            computed = "revise"
+    if reject_votes == 0 and revise_votes >= 2:
+        computed = "revise"
+
+    if (
+        reject_votes == 0
+        and approve_votes >= 2
+        and fused_answer
+        and not insufficient_information
+        and _risk_to_score(_get_field(fused, "residual_risk")) > RISK_SCORE_HIGH
+    ):
+        computed = "approve"
 
     if fused_answer:
         safety = _safe_float(features.get("safety", 0.5))
@@ -457,6 +517,19 @@ def resolve_verdict_with_details(
         final = determined
     else:
         final = choose_verdict(persona_outputs)
+    if final == "reject" and insufficient_information and not refusal_signal:
+        final = "revise"
+    if reject_votes == 0 and revise_votes >= 2:
+        final = "revise"
+    if (
+        final != "reject"
+        and reject_votes == 0
+        and approve_votes >= 2
+        and fused_answer
+        and not insufficient_information
+        and _risk_to_score(_get_field(fused, "residual_risk")) > RISK_SCORE_HIGH
+    ):
+        final = "approve"
     features.update(
         {
             "computed_verdict": computed,
@@ -469,6 +542,10 @@ def resolve_verdict_with_details(
             "selected_probabilities": probabilities,
             "persona_names": [persona.name for persona in persona_outputs],
             "persona_stances": persona_stances,
+            "approve_votes": approve_votes,
+            "reject_votes": reject_votes,
+            "revise_votes": revise_votes,
+            "insufficient_information": insufficient_information,
             "persona_count": len(persona_outputs),
             "fallback_vote": determined is None and computed is None,
             "model_probabilities": model_probabilities,
