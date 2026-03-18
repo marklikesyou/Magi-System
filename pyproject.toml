@@ -46,3 +46,7 @@ magi = "magi.app.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["magi", "magi.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["magi/tests"]
+addopts = ["--strict-config", "--strict-markers"]
