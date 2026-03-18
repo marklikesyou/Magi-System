@@ -65,7 +65,7 @@ def _vector_entries (payload :Iterable [Dict [str ,object ]])->List [VectorEntry
     return entries
 
 
-def command_ingest (args :argparse .Namespace )->None :
+def command_ingest (args :argparse .Namespace )->int :
     verbose = getattr(args, "verbose", False)
     try:
         settings =get_settings ()
@@ -101,21 +101,22 @@ def command_ingest (args :argparse .Namespace )->None :
                 print ("[verbose] Using hashing embedder (offline mode).")
             else :
                 print (f"[verbose] Using OpenAI embeddings ({settings .openai_embedding_model }).")
+        return 0
     except FileNotFoundError as e:
         print(f"Error: File not found - {e}")
-        return
+        return 1
     except RuntimeError as e:
         print(f"Error: {e}")
-        return
+        return 1
     except ValueError as e:
         print(f"Error: Invalid value - {e}")
-        return
+        return 1
     except Exception as e:
         print(f"Error: Unexpected error - {e}")
-        return
+        return 1
 
 
-def command_chat (args :argparse .Namespace )->None :
+def command_chat (args :argparse .Namespace )->int :
     verbose = getattr(args, "verbose", False)
     try:
         settings =get_settings ()
@@ -174,18 +175,19 @@ def command_chat (args :argparse .Namespace )->None :
             print ("\nSafety:")
             print ("  - Unsafe retrieved instructions were excluded from synthesis.")
         print ()
+        return 0
     except FileNotFoundError as e:
         print(f"Error: File not found - {e}")
-        return
+        return 1
     except RuntimeError as e:
         print(f"Error: {e}")
-        return
+        return 1
     except ValueError as e:
         print(f"Error: Invalid value - {e}")
-        return
+        return 1
     except Exception as e:
         print(f"Error: Unexpected error - {e}")
-        return
+        return 1
 
 
 def build_parser ()->argparse .ArgumentParser :
@@ -228,9 +230,8 @@ def main (argv :List [str ]|None =None )->int :
         parser .print_help ()
         return 0
     args .store .parent .mkdir (parents =True ,exist_ok =True )
-    args .handler (args )
-    return 0
+    return args .handler (args )
 
 
 if __name__ =="__main__":
-    main ()
+    raise SystemExit(main ())
