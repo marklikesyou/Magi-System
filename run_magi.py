@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Iterable, List
 
 from magi.app.cli import DEFAULT_STORE, command_chat, command_ingest
@@ -55,21 +54,25 @@ def main(argv: List[str] | None = None) -> int:
     docs = args.docs or prompt_list("Enter document paths (comma-separated), or leave blank: ")
     normalized = normalize_paths(docs) if docs else []
     if normalized:
-        ingest_args = SimpleNamespace(
+        ingest_args = argparse.Namespace(
             paths=normalized,
             chunk_size=args.chunk_size,
             chunk_overlap=args.chunk_overlap,
             store=args.store,
         )
-        command_ingest(ingest_args)
+        ingest_status = command_ingest(ingest_args)
+        if ingest_status:
+            return ingest_status
 
+    interactive_query = args.query is None
     query = args.query or prompt_text("Enter your query: ")
     if not query:
         return 0
-    constraints = args.constraints if args.constraints is not None else prompt_text("Enter constraints (optional): ")
-    chat_args = SimpleNamespace(query=query, constraints=constraints or "", store=args.store)
-    command_chat(chat_args)
-    return 0
+    constraints = args.constraints if args.constraints is not None else ""
+    if interactive_query and args.constraints is None:
+        constraints = prompt_text("Enter constraints (optional): ")
+    chat_args = argparse.Namespace(query=query, constraints=constraints or "", store=args.store)
+    return command_chat(chat_args)
 
 
 if __name__ == "__main__":
