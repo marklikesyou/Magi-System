@@ -1,30 +1,41 @@
-from magi.decision.aggregator import choose_verdict ,majority_weighted ,parse_vote ,PersonaVote, resolve_verdict
+from magi.decision.aggregator import (
+    choose_verdict,
+    majority_weighted,
+    parse_vote,
+    PersonaVote,
+    resolve_verdict,
+)
 from magi.decision.schema import PersonaOutput
-from magi.dspy_programs.schemas import BalthasarResponse, CasperResponse, FusionResponse, MelchiorResponse
+from magi.dspy_programs.schemas import (
+    BalthasarResponse,
+    CasperResponse,
+    FusionResponse,
+    MelchiorResponse,
+)
 
 
-def test_majority_weighted_prefers_high_confidence ():
-    votes =[
-    PersonaVote (name ="melchior",action ="approve",confidence =0.2 ),
-    PersonaVote (name ="balthasar",action ="reject",confidence =0.9 ),
-    PersonaVote (name ="casper",action ="approve",confidence =0.1 ),
+def test_majority_weighted_prefers_high_confidence():
+    votes = [
+        PersonaVote(name="melchior", action="approve", confidence=0.2),
+        PersonaVote(name="balthasar", action="reject", confidence=0.9),
+        PersonaVote(name="casper", action="approve", confidence=0.1),
     ]
-    assert majority_weighted (votes )=="reject"
+    assert majority_weighted(votes) == "reject"
 
 
-def test_parse_vote_defaults_to_revise_when_no_tag ():
-    persona =PersonaOutput (name ="melchior",text ="Need more data",confidence =0.5 )
-    vote =parse_vote (persona )
-    assert vote .action =="revise"
+def test_parse_vote_defaults_to_revise_when_no_tag():
+    persona = PersonaOutput(name="melchior", text="Need more data", confidence=0.5)
+    vote = parse_vote(persona)
+    assert vote.action == "revise"
 
 
-def test_choose_verdict_uses_tags ():
-    personas =[
-    PersonaOutput (name ="melchior",text ="[APPROVE] looks good",confidence =0.7 ),
-    PersonaOutput (name ="balthasar",text ="[REJECT] too risky",confidence =0.8 ),
-    PersonaOutput (name ="casper",text ="[REVISE] add guardrails",confidence =0.9 ),
+def test_choose_verdict_uses_tags():
+    personas = [
+        PersonaOutput(name="melchior", text="[APPROVE] looks good", confidence=0.7),
+        PersonaOutput(name="balthasar", text="[REJECT] too risky", confidence=0.8),
+        PersonaOutput(name="casper", text="[REVISE] add guardrails", confidence=0.9),
     ]
-    assert choose_verdict (personas )=="revise"
+    assert choose_verdict(personas) == "revise"
 
 
 def test_resolve_verdict_prefers_approve_when_two_personas_approve_and_none_reject():
@@ -70,12 +81,28 @@ def test_resolve_verdict_prefers_approve_when_two_personas_approve_and_none_reje
         mitigations=casper.mitigations,
     )
     persona_outputs = [
-        PersonaOutput(name="melchior", text=melchior.text, confidence=melchior.confidence, evidence=[]),
-        PersonaOutput(name="balthasar", text=balthasar.text, confidence=balthasar.confidence, evidence=[]),
-        PersonaOutput(name="casper", text=casper.text, confidence=casper.confidence, evidence=[]),
+        PersonaOutput(
+            name="melchior",
+            text=melchior.text,
+            confidence=melchior.confidence,
+            evidence=[],
+        ),
+        PersonaOutput(
+            name="balthasar",
+            text=balthasar.text,
+            confidence=balthasar.confidence,
+            evidence=[],
+        ),
+        PersonaOutput(
+            name="casper", text=casper.text, confidence=casper.confidence, evidence=[]
+        ),
     ]
 
-    verdict = resolve_verdict(fused, {"melchior": melchior, "balthasar": balthasar, "casper": casper}, persona_outputs)
+    verdict = resolve_verdict(
+        fused,
+        {"melchior": melchior, "balthasar": balthasar, "casper": casper},
+        persona_outputs,
+    )
 
     assert verdict == "approve"
 
@@ -123,11 +150,27 @@ def test_resolve_verdict_downgrades_insufficient_information_reject_to_revise():
         mitigations=casper.mitigations,
     )
     persona_outputs = [
-        PersonaOutput(name="melchior", text=melchior.text, confidence=melchior.confidence, evidence=[]),
-        PersonaOutput(name="balthasar", text=balthasar.text, confidence=balthasar.confidence, evidence=[]),
-        PersonaOutput(name="casper", text=casper.text, confidence=casper.confidence, evidence=[]),
+        PersonaOutput(
+            name="melchior",
+            text=melchior.text,
+            confidence=melchior.confidence,
+            evidence=[],
+        ),
+        PersonaOutput(
+            name="balthasar",
+            text=balthasar.text,
+            confidence=balthasar.confidence,
+            evidence=[],
+        ),
+        PersonaOutput(
+            name="casper", text=casper.text, confidence=casper.confidence, evidence=[]
+        ),
     ]
 
-    verdict = resolve_verdict(fused, {"melchior": melchior, "balthasar": balthasar, "casper": casper}, persona_outputs)
+    verdict = resolve_verdict(
+        fused,
+        {"melchior": melchior, "balthasar": balthasar, "casper": casper},
+        persona_outputs,
+    )
 
     assert verdict == "revise"

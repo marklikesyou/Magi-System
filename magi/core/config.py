@@ -1,5 +1,3 @@
-
-
 from functools import lru_cache
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,7 +13,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-
     openai_api_key: str = ""
     google_api_key: str = ""
     openai_api_base: str = ""
@@ -30,16 +27,16 @@ class Settings(BaseSettings):
     google_location: str = ""
     google_use_vertex: bool = False
 
-
     force_hash_embeddings: bool = Field(
         default=False,
-        validation_alias=AliasChoices("force_hash_embeddings", "MAGI_FORCE_HASH_EMBEDDER"),
+        validation_alias=AliasChoices(
+            "force_hash_embeddings", "MAGI_FORCE_HASH_EMBEDDER"
+        ),
     )
     vector_db_url: str = Field(
         default="",
         validation_alias=AliasChoices("vector_db_url", "DATABASE_URL"),
     )
-
 
 
 @lru_cache(maxsize=1)

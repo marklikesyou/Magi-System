@@ -39,9 +39,6 @@ def test_accuracy_partial():
     assert accuracy(preds, refs) == 0.5
 
 
-
-
-
 def test_accuracy_length_mismatch_raises():
     """accuracy raises ValueError when lists differ in length."""
     with pytest.raises(ValueError, match="Length mismatch"):
@@ -66,9 +63,6 @@ def test_classification_report_length_mismatch_raises():
         classification_report(["approve", "reject"], ["approve"])
 
 
-
-
-
 def test_precision_recall_f1_perfect():
     """Perfect predictions produce all 1.0 scores."""
     preds = ["approve", "reject", "revise"]
@@ -86,9 +80,6 @@ def test_precision_recall_f1_empty():
     assert result["macro_f1"] == 0.0
 
 
-
-
-
 def test_confusion_matrix_correct():
     """Confusion matrix diagonal holds all counts for perfect predictions."""
     preds = ["approve", "reject", "revise", "approve"]
@@ -98,9 +89,6 @@ def test_confusion_matrix_correct():
     assert matrix["reject"]["reject"] == 1
     assert matrix["revise"]["revise"] == 1
     assert matrix["approve"]["reject"] == 0
-
-
-
 
 
 def test_confidence_interval_bounds():
@@ -115,9 +103,6 @@ def test_confidence_interval_perfect():
     lo, hi = confidence_interval(1.0, 20, confidence=0.95)
     assert lo > 0.8
     assert hi == 1.0
-
-
-
 
 
 def test_classification_report_returns_string():

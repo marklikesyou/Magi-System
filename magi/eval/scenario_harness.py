@@ -12,7 +12,11 @@ from magi.app.service import run_chat_session
 from magi.core.rag import default_formatter
 from magi.core.safety import analyze_safety, is_blocked
 from magi.core.vectorstore import RetrievedChunk
-from magi.dspy_programs.personas import clear_cache, get_token_stats, reset_token_tracking
+from magi.dspy_programs.personas import (
+    clear_cache,
+    get_token_stats,
+    reset_token_tracking,
+)
 from magi.eval.metrics import accuracy
 
 VALID_VERDICTS = {"approve", "reject", "revise"}
@@ -63,10 +67,21 @@ class ScenarioChecks(BaseModel):
 
     @model_validator(mode="after")
     def _normalize(self) -> "ScenarioChecks":
-        for field_name in ("required_terms_all", "required_terms_any", "forbidden_terms"):
-            values = [str(item).strip() for item in getattr(self, field_name) if str(item).strip()]
+        for field_name in (
+            "required_terms_all",
+            "required_terms_any",
+            "forbidden_terms",
+        ):
+            values = [
+                str(item).strip()
+                for item in getattr(self, field_name)
+                if str(item).strip()
+            ]
             object.__setattr__(self, field_name, values)
-        if self.blocked_evidence_max is not None and self.blocked_evidence_max < self.blocked_evidence_min:
+        if (
+            self.blocked_evidence_max is not None
+            and self.blocked_evidence_max < self.blocked_evidence_min
+        ):
             raise ValueError("blocked_evidence_max must be >= blocked_evidence_min")
         return self
 
@@ -92,7 +107,9 @@ class ScenarioCase(BaseModel):
             raise ValueError(f"invalid expected verdict '{self.expected_verdict}'")
         risk = (self.expected_residual_risk or "").strip().lower()
         if risk and risk not in VALID_RISK_LEVELS:
-            raise ValueError(f"invalid expected residual risk '{self.expected_residual_risk}'")
+            raise ValueError(
+                f"invalid expected residual risk '{self.expected_residual_risk}'"
+            )
         query = self.query.strip()
         if not query:
             raise ValueError("scenario query must not be empty")
@@ -102,7 +119,9 @@ class ScenarioCase(BaseModel):
         object.__setattr__(self, "constraints", self.constraints.strip())
         object.__setattr__(self, "expected_verdict", verdict)
         object.__setattr__(self, "expected_residual_risk", risk or None)
-        object.__setattr__(self, "tags", [str(tag).strip() for tag in self.tags if str(tag).strip()])
+        object.__setattr__(
+            self, "tags", [str(tag).strip() for tag in self.tags if str(tag).strip()]
+        )
         return self
 
 
@@ -186,7 +205,9 @@ class ScenarioRetriever:
     def __init__(self, evidence: Sequence[ScenarioEvidence]):
         self._evidence = list(evidence)
 
-    def retrieve(self, query: str, *, persona: str | None = None, top_k: int = 8) -> list[RetrievedChunk]:
+    def retrieve(
+        self, query: str, *, persona: str | None = None, top_k: int = 8
+    ) -> list[RetrievedChunk]:
         del query
         persona_key = (persona or "").strip().lower() or None
         chunks: list[RetrievedChunk] = []
@@ -203,7 +224,9 @@ class ScenarioRetriever:
             )
         return chunks[:top_k]
 
-    def __call__(self, query: str, *, persona: str | None = None, top_k: int = 8) -> str:
+    def __call__(
+        self, query: str, *, persona: str | None = None, top_k: int = 8
+    ) -> str:
         return default_formatter(self.retrieve(query, persona=persona, top_k=top_k))
 
 
@@ -235,8 +258,12 @@ def _evidence_safety_counts(evidence: Sequence[ScenarioEvidence]) -> tuple[int, 
     return safe, blocked
 
 
-def _combined_answer_text(final_answer: str, justification: str, next_steps: Sequence[str]) -> str:
-    return "\n".join(part for part in (final_answer, justification, " ".join(next_steps)) if part).strip()
+def _combined_answer_text(
+    final_answer: str, justification: str, next_steps: Sequence[str]
+) -> str:
+    return "\n".join(
+        part for part in (final_answer, justification, " ".join(next_steps)) if part
+    ).strip()
 
 
 def _evaluate_checks(
@@ -265,17 +292,27 @@ def _evaluate_checks(
         )
 
     if case.checks.required_terms_all:
-        missing = [term for term in case.checks.required_terms_all if _normalize_text(term) not in lowered]
+        missing = [
+            term
+            for term in case.checks.required_terms_all
+            if _normalize_text(term) not in lowered
+        ]
         checks.append(
             ScenarioCheckResult(
                 name="required_terms_all",
                 passed=not missing,
-                details="all required terms present" if not missing else f"missing: {', '.join(missing)}",
+                details="all required terms present"
+                if not missing
+                else f"missing: {', '.join(missing)}",
             )
         )
 
     if case.checks.required_terms_any:
-        matches = [term for term in case.checks.required_terms_any if _normalize_text(term) in lowered]
+        matches = [
+            term
+            for term in case.checks.required_terms_any
+            if _normalize_text(term) in lowered
+        ]
         checks.append(
             ScenarioCheckResult(
                 name="required_terms_any",
@@ -289,12 +326,18 @@ def _evaluate_checks(
         )
 
     if case.checks.forbidden_terms:
-        offending = [term for term in case.checks.forbidden_terms if _normalize_text(term) in lowered]
+        offending = [
+            term
+            for term in case.checks.forbidden_terms
+            if _normalize_text(term) in lowered
+        ]
         checks.append(
             ScenarioCheckResult(
                 name="forbidden_terms",
                 passed=not offending,
-                details="no forbidden terms detected" if not offending else f"found: {', '.join(offending)}",
+                details="no forbidden terms detected"
+                if not offending
+                else f"found: {', '.join(offending)}",
             )
         )
 
@@ -353,7 +396,9 @@ def run_scenario_suite(
     resolved_model = model or ""
 
     for case in dataset.cases:
-        safe_evidence_count, blocked_evidence_count = _evidence_safety_counts(case.evidence)
+        safe_evidence_count, blocked_evidence_count = _evidence_safety_counts(
+            case.evidence
+        )
         session = run_chat_session(
             case.query,
             case.constraints,
@@ -366,7 +411,9 @@ def run_scenario_suite(
 
         final_answer = session.fused.final_answer
         justification = session.fused.justification
-        next_steps = [str(item).strip() for item in session.fused.next_steps if str(item).strip()]
+        next_steps = [
+            str(item).strip() for item in session.fused.next_steps if str(item).strip()
+        ]
         combined_text = _combined_answer_text(final_answer, justification, next_steps)
         citation_count = len(_CITATION_RE.findall(combined_text))
         check_results = _evaluate_checks(
@@ -379,7 +426,8 @@ def run_scenario_suite(
         verdict_match = session.final_decision.verdict == case.expected_verdict
         passed = verdict_match and all(check.passed for check in check_results)
         persona_stances = {
-            name: str(getattr(payload, "stance", "unknown")).strip().lower() or "unknown"
+            name: str(getattr(payload, "stance", "unknown")).strip().lower()
+            or "unknown"
             for name, payload in session.personas.items()
         }
 
@@ -409,8 +457,12 @@ def run_scenario_suite(
     predictions = [item.predicted_verdict for item in case_results]
     gold = [item.expected_verdict for item in case_results]
     total_requirements = sum(len(item.checks) for item in case_results)
-    passed_requirements = sum(sum(1 for check in item.checks if check.passed) for item in case_results)
-    requirement_pass_rate = 1.0 if total_requirements == 0 else passed_requirements / total_requirements
+    passed_requirements = sum(
+        sum(1 for check in item.checks if check.passed) for item in case_results
+    )
+    requirement_pass_rate = (
+        1.0 if total_requirements == 0 else passed_requirements / total_requirements
+    )
     passed_cases = sum(1 for item in case_results if item.passed)
 
     summary = ScenarioSummary(
@@ -463,8 +515,7 @@ def render_scenario_report(report: ScenarioReport) -> str:
     token_stats = report.summary.token_stats
     if token_stats:
         lines.append(
-            "token_stats\t"
-            + json.dumps(token_stats, ensure_ascii=True, sort_keys=True)
+            "token_stats\t" + json.dumps(token_stats, ensure_ascii=True, sort_keys=True)
         )
     return "\n".join(lines)
 

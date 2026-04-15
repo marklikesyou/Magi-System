@@ -45,7 +45,9 @@ def test_magi_program_generates_decision():
         persona_outputs=persona_outputs,
         risks=risks,
         mitigations=mitigations,
-        residual_risk=residual_risk_value if residual_risk_value in {"low", "medium", "high"} else "medium",
+        residual_risk=residual_risk_value
+        if residual_risk_value in {"low", "medium", "high"}
+        else "medium",
     )
     assert decision.verdict == verdict
 
@@ -62,7 +64,10 @@ def test_magi_program_revises_without_evidence():
     program = MagiProgram(retriever=lambda *_args, **_kwargs: "")
     fused, _ = program(query="Explain the rollout status", constraints="")
     assert fused.verdict == "revise"
-    assert "insufficient" in fused.final_answer.lower() or "insufficient" in fused.justification.lower()
+    assert (
+        "insufficient" in fused.final_answer.lower()
+        or "insufficient" in fused.justification.lower()
+    )
 
 
 def test_chat_session_ignores_unsafe_retrieved_content():

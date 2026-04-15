@@ -21,9 +21,10 @@ Most modules are lightweight skeletons intended to be fleshed out with real impl
 ```bash
 python -m magi.app.cli ingest docs/briefing.pdf
 python -m magi.app.cli chat "Should we deploy the latest patch?" --constraints "Budget <= 50k"
+python -m magi.app.cli chat "Should we deploy the latest patch?" --json
 ```
 
-By default the system stays completely offline using a deterministic hashing embedder and a deterministic reasoning fallback. To activate the provider-backed stack, set your keys in `.env` and run commands with `MAGI_FORCE_DSPY_STUB=0` (use `MAGI_FORCE_HASH_EMBEDDER=1` if you ever need to fall back to hashing).
+By default the system stays completely offline using a deterministic hashing embedder and a deterministic reasoning fallback. To activate provider-backed reasoning, set OpenAI or Google credentials in `.env` and run commands with `MAGI_FORCE_DSPY_STUB=0`; OpenAI credentials are still required for provider-backed embeddings. Use `MAGI_FORCE_HASH_EMBEDDER=1` if you ever need to fall back to hashing.
 
 ```bash
 export MAGI_FORCE_DSPY_STUB=0

@@ -20,7 +20,9 @@ from magi.eval.scenario_harness import (
 
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run reusable end-to-end MAGI scenario evaluations.")
+    parser = argparse.ArgumentParser(
+        description="Run reusable end-to-end MAGI scenario evaluations."
+    )
     parser.add_argument(
         "--cases",
         type=Path,

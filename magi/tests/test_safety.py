@@ -1,4 +1,9 @@
-from magi.core.safety import analyze_safety, detect_malicious_markup, detect_prompt_injection, detect_sensitive_leak
+from magi.core.safety import (
+    analyze_safety,
+    detect_malicious_markup,
+    detect_prompt_injection,
+    detect_sensitive_leak,
+)
 
 
 def test_detect_prompt_injection_identifies_marker():

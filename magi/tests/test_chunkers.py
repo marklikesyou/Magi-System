@@ -7,16 +7,8 @@ import pytest
 from magi.data_pipeline.chunkers import sliding_window_chunk
 
 
-
-
-
-
 def _make_doc(text: str, doc_id: str = "doc-1") -> dict[str, str]:
     return {"id": doc_id, "text": text}
-
-
-
-
 
 
 def test_sliding_window_basic():
@@ -33,7 +25,6 @@ def test_sliding_window_basic():
 def test_sliding_window_overlap():
     """Consecutive chunks share overlapping content."""
 
-
     text = "abcdefgh" * 200
     chunks = sliding_window_chunk(_make_doc(text), chunk_size=400, overlap=100)
     assert len(chunks) >= 2
@@ -41,9 +32,7 @@ def test_sliding_window_overlap():
     for i in range(len(chunks) - 1):
         tail = chunks[i]["text"][-100:]
         head = chunks[i + 1]["text"][:100]
-        assert tail == head, (
-            f"Overlap mismatch between chunk {i} and {i + 1}"
-        )
+        assert tail == head, f"Overlap mismatch between chunk {i} and {i + 1}"
 
 
 def test_sliding_window_sentence_boundary():
@@ -58,11 +47,10 @@ def test_sliding_window_sentence_boundary():
     text = "".join(sentences * 10)
     chunks = sliding_window_chunk(_make_doc(text), chunk_size=150, overlap=30)
 
-    ends_at_sentence = sum(
-        1 for c in chunks[:-1]
-        if c["text"].rstrip().endswith(".")
+    ends_at_sentence = sum(1 for c in chunks[:-1] if c["text"].rstrip().endswith("."))
+    assert ends_at_sentence > 0, (
+        "Expected at least one chunk to end on a sentence boundary"
     )
-    assert ends_at_sentence > 0, "Expected at least one chunk to end on a sentence boundary"
 
 
 def test_sliding_window_small_document():
@@ -98,6 +86,14 @@ def test_overlap_larger_than_chunk_raises():
 
     with pytest.raises(ValueError, match="overlap must be smaller than chunk_size"):
         sliding_window_chunk(_make_doc("some text"), chunk_size=100, overlap=150)
+
+
+def test_invalid_chunk_parameters_raise():
+    with pytest.raises(ValueError, match="chunk_size must be positive"):
+        sliding_window_chunk(_make_doc("some text"), chunk_size=0, overlap=0)
+
+    with pytest.raises(ValueError, match="overlap must be non-negative"):
+        sliding_window_chunk(_make_doc("some text"), chunk_size=100, overlap=-1)
 
 
 def test_sliding_window_chunk_ids_are_sequential():

@@ -29,8 +29,14 @@ def build_sample_dataset(path: Path) -> None:
                     "residual_risk": "low",
                 },
                 "personas": {
-                    "melchior": {"text": "[APPROVE] evidence supports release", "confidence": 0.7},
-                    "balthasar": {"text": "[APPROVE] stakeholders ready", "confidence": 0.7},
+                    "melchior": {
+                        "text": "[APPROVE] evidence supports release",
+                        "confidence": 0.7,
+                    },
+                    "balthasar": {
+                        "text": "[APPROVE] stakeholders ready",
+                        "confidence": 0.7,
+                    },
                     "casper": {"text": "[APPROVE] risks mitigated", "confidence": 0.6},
                 },
             }

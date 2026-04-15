@@ -6,6 +6,9 @@ import pytest
 
 from magi.core.clients import LLMClient, LLMClientError
 from magi.core.config import Settings
+from magi.core.embeddings import HashingEmbedder
+from magi.core.rag import RagRetriever
+from magi.core.vectorstore import InMemoryVectorStore, VectorEntry
 from magi.dspy_programs import runtime
 from magi.dspy_programs.runtime import (
     MagiProgram,
@@ -17,7 +20,14 @@ from magi.dspy_programs.runtime import (
     _normalize_persona_stance,
     _normalize_responder_response,
 )
-from magi.dspy_programs.schemas import BalthasarResponse, CasperResponse, FusionResponse, MelchiorResponse, ResponderResponse, RetrievedEvidence
+from magi.dspy_programs.schemas import (
+    BalthasarResponse,
+    CasperResponse,
+    FusionResponse,
+    MelchiorResponse,
+    ResponderResponse,
+    RetrievedEvidence,
+)
 
 
 class _MalformedClient(LLMClient):
@@ -97,7 +107,9 @@ def test_magi_program_passes_no_openai_default_to_google_only_client(monkeypatch
     )
     captured: dict[str, object] = {}
 
-    def fake_build_default_client(settings_arg: Settings, *, model: str | None = None) -> LLMClient:
+    def fake_build_default_client(
+        settings_arg: Settings, *, model: str | None = None
+    ) -> LLMClient:
         captured["model"] = model
         captured["settings"] = settings_arg
         return _NoopClient()
@@ -110,6 +122,40 @@ def test_magi_program_passes_no_openai_default_to_google_only_client(monkeypatch
     assert captured["model"] is None
     assert program.model_name == "gemini-default"
     assert program.effective_mode == "live"
+
+
+def test_supports_llm_when_google_key_is_configured(monkeypatch):
+    settings = Settings(openai_api_key="", google_api_key="google-key")
+
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    monkeypatch.setattr(runtime, "_FORCE_STUB", False)
+
+    assert runtime._supports_llm()
+
+
+def test_magi_program_cache_invalidates_when_store_changes():
+    runtime.clear_cache()
+    embedder = HashingEmbedder(dimension=32)
+    store = InMemoryVectorStore(dim=32)
+    retriever = RagRetriever(embedder, store)
+    program = MagiProgram(retriever=retriever, force_stub=True)
+
+    first, _ = program("What does page 1 say?", constraints="")
+    store.add(
+        [
+            VectorEntry(
+                document_id="doc#page-1",
+                embedding=embedder("[Page 1] MAGI now has supporting evidence."),
+                text="[Page 1] MAGI now has supporting evidence.",
+                metadata={"source": "doc"},
+            )
+        ]
+    )
+    second, _ = program("What does page 1 say?", constraints="")
+
+    assert first.verdict == "revise"
+    assert second.verdict == "approve"
+    assert "supporting evidence" in second.final_answer
 
 
 def test_normalize_persona_stance_rewrites_evidence_gap_reject_to_revise():
@@ -135,7 +181,11 @@ def test_normalize_casper_response_relaxes_benign_informational_revision():
     )
     normalized = _normalize_casper_response(
         "Summarize MAGI in one sentence.",
-        [RetrievedEvidence(citation="[1]", source="README", text="MAGI overview", score=1.0)],
+        [
+            RetrievedEvidence(
+                citation="[1]", source="README", text="MAGI overview", score=1.0
+            )
+        ],
         [],
         response,
     )
@@ -145,7 +195,11 @@ def test_normalize_casper_response_relaxes_benign_informational_revision():
 
 
 def test_normalize_summary_synthesis_promotes_melchior_and_balthasar_to_approve():
-    evidence = [RetrievedEvidence(citation="[1]", source="README", text="MAGI overview", score=1.0)]
+    evidence = [
+        RetrievedEvidence(
+            citation="[1]", source="README", text="MAGI overview", score=1.0
+        )
+    ]
     melchior = MelchiorResponse(
         text="[REVISE] [MELCHIOR] The evidence does not provide a one-sentence summary.",
         analysis="The evidence does not provide a one-sentence summary, but a summary can be derived from the available material.",
@@ -165,15 +219,23 @@ def test_normalize_summary_synthesis_promotes_melchior_and_balthasar_to_approve(
         actions=["Summarize the core function."],
     )
 
-    normalized_melchior = _normalize_melchior_response("Summarize MAGI in one sentence.", evidence, melchior)
-    normalized_balthasar = _normalize_balthasar_response("Summarize MAGI in one sentence.", evidence, balthasar)
+    normalized_melchior = _normalize_melchior_response(
+        "Summarize MAGI in one sentence.", evidence, melchior
+    )
+    normalized_balthasar = _normalize_balthasar_response(
+        "Summarize MAGI in one sentence.", evidence, balthasar
+    )
 
     assert normalized_melchior.stance == "approve"
     assert normalized_balthasar.stance == "approve"
 
 
 def test_normalize_guardrailed_recommendation_promotes_revise_to_approve():
-    evidence = [RetrievedEvidence(citation="[1]", source="brief", text="Pilot proposal", score=1.0)]
+    evidence = [
+        RetrievedEvidence(
+            citation="[1]", source="brief", text="Pilot proposal", score=1.0
+        )
+    ]
     melchior = MelchiorResponse(
         text="[REVISE] [MELCHIOR] The proposal includes scope, budget, timeline, and controls.",
         analysis="The proposal includes scope, budget, timeline, controls, and human reviewer guardrails for a pilot.",
@@ -234,7 +296,11 @@ def test_normalize_responder_response_falls_back_when_answer_conflicts_with_appr
     normalized = _normalize_responder_response(
         "Should we pilot MAGI for internal policy triage next month?",
         fusion,
-        [RetrievedEvidence(citation="[1]", source="brief", text="Pilot proposal", score=1.0)],
+        [
+            RetrievedEvidence(
+                citation="[1]", source="brief", text="Pilot proposal", score=1.0
+            )
+        ],
         response,
     )
 

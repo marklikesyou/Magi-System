@@ -16,7 +16,7 @@ MAGI is a multi persona reasoning engine for assessing user requests against an 
 ## Requirements
 - Python 3.11 or newer (the project targets Python 3.13 in development).
 - uv package manager.
-- Optional: OpenAI API credentials when running with real embeddings and DSPy.
+- Optional: OpenAI or Google credentials when running live reasoning; OpenAI is required for provider-backed embeddings.
 
 ## Setup
 1. Sync the pinned environment with uv: `uv sync --extra dev --extra openai`
@@ -37,10 +37,11 @@ Interactive mode is also available by invoking `python run_magi.py` with no argu
 ```bash
 python -m magi.app.cli ingest path/to/doc.txt
 python -m magi.app.cli chat "What risks should I consider?"
+python -m magi.app.cli chat "What risks should I consider?" --json
 ```
 
 ### Toggling DSPy
-- Default behavior uses strict OpenAI structured outputs when API keys are available.
+- Default behavior uses structured provider outputs when OpenAI or Google credentials are available.
 - Set `MAGI_FORCE_DSPY_STUB=1` to force the deterministic offline fallback without external LLM calls.
 - Set `MAGI_FORCE_HASH_EMBEDDER=1` to use the deterministic hashing embedder instead of OpenAI embeddings.
 

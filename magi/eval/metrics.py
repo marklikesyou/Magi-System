@@ -21,8 +21,6 @@ _Z_VALUES: Dict[float, float] = {
 }
 
 
-
-
 def _resolve_labels(
     predictions: List[str],
     references: List[str],
@@ -43,15 +41,14 @@ def _safe_div(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
-
-
-
 def accuracy(predictions: Iterable[str], references: Iterable[str]) -> float:
     """Simple accuracy: fraction of predictions that match the references."""
     preds = list(predictions)
     refs = list(references)
     if len(preds) != len(refs):
-        raise ValueError(f"Length mismatch: {len(preds)} predictions vs {len(refs)} references")
+        raise ValueError(
+            f"Length mismatch: {len(preds)} predictions vs {len(refs)} references"
+        )
     if not preds:
         return 0.0
     matches = sum(1 for pred, ref in zip(preds, refs) if pred == ref)
@@ -81,9 +78,10 @@ def precision_recall_f1(
     preds = list(predictions)
     refs = list(references)
     if len(preds) != len(refs):
-        raise ValueError(f"Length mismatch: {len(preds)} predictions vs {len(refs)} references")
+        raise ValueError(
+            f"Length mismatch: {len(preds)} predictions vs {len(refs)} references"
+        )
     resolved_labels = _resolve_labels(preds, refs, labels)
-
 
     tp: Dict[str, int] = {lbl: 0 for lbl in resolved_labels}
     fp: Dict[str, int] = {lbl: 0 for lbl in resolved_labels}
@@ -112,13 +110,10 @@ def precision_recall_f1(
         result[lbl] = {"precision": prec, "recall": rec, "f1": f1}
         f1_scores.append(f1)
 
-
     result["macro_f1"] = _safe_div(sum(f1_scores), len(f1_scores))
 
-
     weighted_sum = sum(
-        f1_scores[i] * support[lbl]
-        for i, lbl in enumerate(resolved_labels)
+        f1_scores[i] * support[lbl] for i, lbl in enumerate(resolved_labels)
     )
     result["weighted_f1"] = _safe_div(weighted_sum, total_support)
 
@@ -146,7 +141,9 @@ def confusion_matrix(
     preds = list(predictions)
     refs = list(references)
     if len(preds) != len(refs):
-        raise ValueError(f"Length mismatch: {len(preds)} predictions vs {len(refs)} references")
+        raise ValueError(
+            f"Length mismatch: {len(preds)} predictions vs {len(refs)} references"
+        )
     resolved_labels = _resolve_labels(preds, refs, labels)
 
     matrix: Dict[str, Dict[str, int]] = {
@@ -174,19 +171,19 @@ def classification_report(
     preds = list(predictions)
     refs = list(references)
     if len(preds) != len(refs):
-        raise ValueError(f"Length mismatch: {len(preds)} predictions vs {len(refs)} references")
+        raise ValueError(
+            f"Length mismatch: {len(preds)} predictions vs {len(refs)} references"
+        )
     resolved_labels = _resolve_labels(preds, refs, labels)
 
     metrics = precision_recall_f1(preds, refs, resolved_labels)
     acc = accuracy(preds, refs)
     total = len(preds)
 
-
     support: Dict[str, int] = {lbl: 0 for lbl in resolved_labels}
     for ref in refs:
         if ref in support:
             support[ref] += 1
-
 
     max_lbl_len = max((len(lbl) for lbl in resolved_labels), default=12)
     max_lbl_len = max(max_lbl_len, len("weighted avg"))
@@ -208,11 +205,12 @@ def classification_report(
 
     lines.append(separator)
 
-
     macro_f1 = cast(float, metrics["macro_f1"])
 
     macro_prec = _safe_div(
-        sum(cast(Dict[str, float], metrics[lbl])["precision"] for lbl in resolved_labels),
+        sum(
+            cast(Dict[str, float], metrics[lbl])["precision"] for lbl in resolved_labels
+        ),
         len(resolved_labels),
     )
     macro_rec = _safe_div(
@@ -223,15 +221,20 @@ def classification_report(
         f"{'macro avg':<{max_lbl_len}}  {macro_prec:>9.4f}  {macro_rec:>9.4f}  {macro_f1:>9.4f}  {total:>9d}"
     )
 
-
     weighted_f1 = cast(float, metrics["weighted_f1"])
     total_support = sum(support.values())
     weighted_prec = _safe_div(
-        sum(cast(Dict[str, float], metrics[lbl])["precision"] * support[lbl] for lbl in resolved_labels),
+        sum(
+            cast(Dict[str, float], metrics[lbl])["precision"] * support[lbl]
+            for lbl in resolved_labels
+        ),
         total_support,
     )
     weighted_rec = _safe_div(
-        sum(cast(Dict[str, float], metrics[lbl])["recall"] * support[lbl] for lbl in resolved_labels),
+        sum(
+            cast(Dict[str, float], metrics[lbl])["recall"] * support[lbl]
+            for lbl in resolved_labels
+        ),
         total_support,
     )
     lines.append(
@@ -239,7 +242,9 @@ def classification_report(
     )
 
     lines.append(separator)
-    lines.append(f"{'accuracy':<{max_lbl_len}}  {' ':>9}  {' ':>9}  {acc:>9.4f}  {total:>9d}")
+    lines.append(
+        f"{'accuracy':<{max_lbl_len}}  {' ':>9}  {' ':>9}  {acc:>9.4f}  {total:>9d}"
+    )
 
     return "\n".join(lines)
 
@@ -280,9 +285,7 @@ def confidence_interval(
     z2 = z * z
     denominator = 1 + z2 / n
     centre = (score + z2 / (2 * n)) / denominator
-    margin = (z / denominator) * math.sqrt(
-        (score * (1 - score)) / n + z2 / (4 * n * n)
-    )
+    margin = (z / denominator) * math.sqrt((score * (1 - score)) / n + z2 / (4 * n * n))
 
     lower = max(0.0, centre - margin)
     upper = min(1.0, centre + margin)

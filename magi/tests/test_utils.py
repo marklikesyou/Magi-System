@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from magi.core.utils import CircuitBreaker, LRUCache, TokenTracker, retry_with_backoff, sanitize_input
-
-
-
-
+from magi.core.utils import (
+    CircuitBreaker,
+    LRUCache,
+    TokenTracker,
+    retry_with_backoff,
+    sanitize_input,
+)
 
 
 def test_lru_cache_hit():
@@ -45,10 +47,6 @@ def test_lru_cache_access_refreshes():
     assert cache.get("c") == 3
 
 
-
-
-
-
 def test_retry_with_backoff_succeeds():
     """A function that fails once then succeeds is retried and returns the result."""
     call_count = {"n": 0}
@@ -66,16 +64,13 @@ def test_retry_with_backoff_succeeds():
 
 def test_retry_with_backoff_exhausted():
     """When all retries fail the last exception is re-raised."""
+
     @retry_with_backoff(max_retries=2, initial_delay=0.0, exceptions=(RuntimeError,))
     def always_fails():
         raise RuntimeError("permanent")
 
     with pytest.raises(RuntimeError, match="permanent"):
         always_fails()
-
-
-
-
 
 
 def test_sanitize_input_strips_control_characters():
@@ -102,10 +97,6 @@ def test_sanitize_input_truncates():
     assert len(result) <= 100
 
 
-
-
-
-
 def test_circuit_breaker_opens():
     """After reaching the failure threshold the breaker transitions to 'open'."""
     breaker = CircuitBreaker(
@@ -123,7 +114,6 @@ def test_circuit_breaker_opens():
 
     assert breaker.state == "open"
 
-
     with pytest.raises(Exception, match="Circuit breaker is open"):
         breaker.call(bad)
 
@@ -132,7 +122,6 @@ def test_circuit_breaker_closes_on_success():
     """A successful call after threshold is not reached keeps the breaker closed."""
     breaker = CircuitBreaker(failure_threshold=5, expected_exception=ValueError)
 
-
     for _ in range(2):
         with pytest.raises(ValueError):
             breaker.call(lambda: (_ for _ in ()).throw(ValueError("oops")))
@@ -140,10 +129,6 @@ def test_circuit_breaker_closes_on_success():
     result = breaker.call(lambda: "ok")
     assert result == "ok"
     assert breaker.state == "closed"
-
-
-
-
 
 
 def test_token_tracker_accumulates():
@@ -155,7 +140,10 @@ def test_token_tracker_accumulates():
     stats = tracker.get_stats()
     assert stats["total_input_tokens"] > 0
     assert stats["total_output_tokens"] > 0
-    assert stats["total_tokens"] == stats["total_input_tokens"] + stats["total_output_tokens"]
+    assert (
+        stats["total_tokens"]
+        == stats["total_input_tokens"] + stats["total_output_tokens"]
+    )
 
 
 def test_token_tracker_reset():

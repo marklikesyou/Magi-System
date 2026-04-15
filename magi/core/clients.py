@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import json
@@ -47,7 +45,9 @@ def _normalize_messages(messages: Sequence[LLMMessage]) -> List[Dict[str, Any]]:
     return payload
 
 
-def _normalize_tools(tools: Optional[Sequence[ToolSpec]]) -> Optional[List[Dict[str, Any]]]:
+def _normalize_tools(
+    tools: Optional[Sequence[ToolSpec]],
+) -> Optional[List[Dict[str, Any]]]:
     if not tools:
         return None
     normalized: List[Dict[str, Any]] = []
@@ -115,7 +115,11 @@ class OpenAIClient(LLMClient):
             return cast(Dict[str, Any], response.model_dump())
         if hasattr(response, "to_dict"):
             return cast(Dict[str, Any], response.to_dict())
-        return json.loads(response.json()) if hasattr(response, "json") else {"response": response}
+        return (
+            json.loads(response.json())
+            if hasattr(response, "json")
+            else {"response": response}
+        )
 
 
 class GeminiClient(LLMClient):
@@ -132,7 +136,9 @@ class GeminiClient(LLMClient):
         try:
             from google import genai
         except ImportError as exc:
-            raise RuntimeError("google-genai package is required for GeminiClient") from exc
+            raise RuntimeError(
+                "google-genai package is required for GeminiClient"
+            ) from exc
 
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if vertex:
@@ -154,7 +160,9 @@ class GeminiClient(LLMClient):
     ) -> Dict[str, Any]:
         normalized_messages = _normalize_messages(messages)
         del tools
-        contents = "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in normalized_messages)
+        contents = "\n\n".join(
+            f"{m['role'].upper()}: {m['content']}" for m in normalized_messages
+        )
         kwargs: Dict[str, Any] = {"model": self.model, "contents": contents}
         if response_format is not None:
             schema = response_format.get("json_schema", {}).get("schema", {})
@@ -191,7 +199,9 @@ class GeminiClient(LLMClient):
         return {"response": response}
 
 
-def build_default_client(settings: "Settings", *, model: Optional[str] = None) -> Optional[LLMClient]:
+def build_default_client(
+    settings: "Settings", *, model: Optional[str] = None
+) -> Optional[LLMClient]:
     if settings.openai_api_key:
         preferred_model = model or settings.openai_model
         return OpenAIClient(

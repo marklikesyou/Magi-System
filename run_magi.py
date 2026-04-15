@@ -36,13 +36,23 @@ def normalize_paths(paths: Iterable[str]) -> List[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run MAGI once with optional ingestion prompts.")
-    parser.add_argument("--docs", nargs="*", help="Documents to ingest before answering.")
+    parser = argparse.ArgumentParser(
+        description="Run MAGI once with optional ingestion prompts."
+    )
+    parser.add_argument(
+        "--docs", nargs="*", help="Documents to ingest before answering."
+    )
     parser.add_argument("--query", help="Question to send to the MAGI system.")
     parser.add_argument("--constraints", help="Constraint string applied to personas.")
-    parser.add_argument("--chunk-size", type=int, default=512, help="Chunk size used for ingestion.")
-    parser.add_argument("--chunk-overlap", type=int, default=64, help="Overlap used for ingestion.")
-    parser.add_argument("--store", type=Path, default=DEFAULT_STORE, help="Vector store path.")
+    parser.add_argument(
+        "--chunk-size", type=int, default=512, help="Chunk size used for ingestion."
+    )
+    parser.add_argument(
+        "--chunk-overlap", type=int, default=64, help="Overlap used for ingestion."
+    )
+    parser.add_argument(
+        "--store", type=Path, default=DEFAULT_STORE, help="Vector store path."
+    )
     return parser
 
 
@@ -51,7 +61,9 @@ def main(argv: List[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.store.parent.mkdir(parents=True, exist_ok=True)
 
-    docs = args.docs or prompt_list("Enter document paths (comma-separated), or leave blank: ")
+    docs = args.docs or prompt_list(
+        "Enter document paths (comma-separated), or leave blank: "
+    )
     normalized = normalize_paths(docs) if docs else []
     if normalized:
         ingest_args = argparse.Namespace(
@@ -71,7 +83,9 @@ def main(argv: List[str] | None = None) -> int:
     constraints = args.constraints if args.constraints is not None else ""
     if interactive_query and args.constraints is None:
         constraints = prompt_text("Enter constraints (optional): ")
-    chat_args = argparse.Namespace(query=query, constraints=constraints or "", store=args.store)
+    chat_args = argparse.Namespace(
+        query=query, constraints=constraints or "", store=args.store
+    )
     return command_chat(chat_args)
 
 

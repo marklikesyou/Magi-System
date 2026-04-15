@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from magi.core.embeddings import HashingEmbedder, build_embedder
 from magi.core.config import Settings
-
-
-
-
+from magi.data_pipeline.embed import embed_chunks
 
 
 def test_hashing_embedder_deterministic():
@@ -54,8 +53,18 @@ def test_hashing_embedder_embed_batch():
         assert batch_vec == embedder(text)
 
 
+def test_embed_chunks_rejects_short_batch_results():
+    class ShortBatchEmbedder:
+        def __call__(self, text: str) -> list[float]:
+            return [1.0]
 
+        def embed_batch(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0]]
 
+    chunks = [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}]
+
+    with pytest.raises(RuntimeError, match="returned 1 vector"):
+        embed_chunks(chunks, ShortBatchEmbedder())
 
 
 def test_build_embedder_forces_hash(monkeypatch):

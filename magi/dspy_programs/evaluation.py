@@ -154,7 +154,9 @@ def decision_quality_metric(gold: Any, pred: Any, trace: Optional[Any] = None) -
     return min(1.0, score)
 
 
-def personality_consistency_metric(gold: Any, pred: Any, trace: Optional[Any] = None) -> float:
+def personality_consistency_metric(
+    gold: Any, pred: Any, trace: Optional[Any] = None
+) -> float:
     del gold, trace
     personas = _persona_map(pred)
     markers = {
@@ -197,7 +199,9 @@ def composite_magi_metric(gold: Any, pred: Any, trace: Optional[Any] = None) -> 
     return sum(scores) / len(scores)
 
 
-def comprehensive_judge_metric(gold: Any, pred: Any, trace: Optional[Any] = None) -> Dict[str, float]:
+def comprehensive_judge_metric(
+    gold: Any, pred: Any, trace: Optional[Any] = None
+) -> Dict[str, float]:
     del trace
     return {
         "scientific_rigor": consensus_metric(gold, pred),
@@ -215,7 +219,9 @@ def create_magi_evaluator(
     num_threads: int = 1,
 ) -> Any:
     if STUB_MODE or Evaluate is None:
-        raise RuntimeError("DSPy evaluation requires the dspy dependency and non-stub mode.")
+        raise RuntimeError(
+            "DSPy evaluation requires the dspy dependency and non-stub mode."
+        )
     return Evaluate(devset=devset, metric=metric, num_threads=num_threads)
 
 

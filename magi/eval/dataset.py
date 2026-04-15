@@ -32,7 +32,9 @@ class FusedCase(BaseModel):
         if verdict not in VALID_VERDICTS:
             raise ValueError(f"invalid fused verdict '{self.verdict}'")
         object.__setattr__(self, "verdict", verdict)
-        object.__setattr__(self, "residual_risk", self.residual_risk.strip().lower() or "medium")
+        object.__setattr__(
+            self, "residual_risk", self.residual_risk.strip().lower() or "medium"
+        )
         return self
 
 

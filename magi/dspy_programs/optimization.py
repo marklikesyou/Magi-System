@@ -6,14 +6,20 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .compile import bootstrap_program, compile_program
-from .evaluation import comprehensive_judge_metric, create_magi_evaluator, magi_optimization_metric
+from .evaluation import (
+    comprehensive_judge_metric,
+    create_magi_evaluator,
+    magi_optimization_metric,
+)
 from .personas import MagiProgram
 from .signatures import STUB_MODE
 
 
 def _require_dspy() -> None:
     if STUB_MODE:
-        raise RuntimeError("DSPy optimization requires the dspy dependency and non-stub mode.")
+        raise RuntimeError(
+            "DSPy optimization requires the dspy dependency and non-stub mode."
+        )
 
 
 @dataclass
@@ -33,7 +39,9 @@ class MAGIOptimizer:
         metric: Optional[Callable[[Any, Any, Optional[Any]], Any]] = None,
     ) -> MagiProgram:
         _require_dspy()
-        return bootstrap_program(self.base_program, self.trainset, metric or self.metric, shots=shots)
+        return bootstrap_program(
+            self.base_program, self.trainset, metric or self.metric, shots=shots
+        )
 
     def optimize_with_random_search(
         self,
@@ -42,7 +50,9 @@ class MAGIOptimizer:
         metric: Optional[Callable[[Any, Any, Optional[Any]], Any]] = None,
     ) -> MagiProgram:
         _require_dspy()
-        return bootstrap_program(self.base_program, self.trainset, metric or self.metric, shots=shots)
+        return bootstrap_program(
+            self.base_program, self.trainset, metric or self.metric, shots=shots
+        )
 
     def optimize_with_mipro(
         self,
@@ -51,7 +61,9 @@ class MAGIOptimizer:
         metric: Optional[Callable[[Any, Any, Optional[Any]], Any]] = None,
     ) -> MagiProgram:
         _require_dspy()
-        return compile_program(self.base_program, self.trainset, metric or self.metric, heavy=heavy)
+        return compile_program(
+            self.base_program, self.trainset, metric or self.metric, heavy=heavy
+        )
 
     def optimize_signatures(
         self,
@@ -60,7 +72,9 @@ class MAGIOptimizer:
         metric: Optional[Callable[[Any, Any, Optional[Any]], Any]] = None,
     ) -> MagiProgram:
         _require_dspy()
-        return compile_program(self.base_program, self.trainset, metric or self.metric, heavy=heavy)
+        return compile_program(
+            self.base_program, self.trainset, metric or self.metric, heavy=heavy
+        )
 
     def evaluate_optimization(
         self,
@@ -90,13 +104,26 @@ class AdaptiveMAGI:
         self.feedback_history: list[dict[str, Any]] = []
         self.adaptation_count = 0
 
-    def __call__(self, query: str, constraints: str = "", collect_feedback: bool = True) -> tuple[Any, dict[str, Any]]:
-        return self.forward(query, constraints=constraints, collect_feedback=collect_feedback)
+    def __call__(
+        self, query: str, constraints: str = "", collect_feedback: bool = True
+    ) -> tuple[Any, dict[str, Any]]:
+        return self.forward(
+            query, constraints=constraints, collect_feedback=collect_feedback
+        )
 
-    def forward(self, query: str, constraints: str = "", collect_feedback: bool = True) -> tuple[Any, dict[str, Any]]:
+    def forward(
+        self, query: str, constraints: str = "", collect_feedback: bool = True
+    ) -> tuple[Any, dict[str, Any]]:
         fused, personas = self.base_program(query, constraints)
         if collect_feedback:
-            self.feedback_history.append({"query": query, "constraints": constraints, "fused": fused, "personas": personas})
+            self.feedback_history.append(
+                {
+                    "query": query,
+                    "constraints": constraints,
+                    "fused": fused,
+                    "personas": personas,
+                }
+            )
             self.feedback_history = self.feedback_history[-self.max_history_size :]
             if len(self.feedback_history) >= self.adaptation_threshold:
                 self.adaptation_count += 1
@@ -110,7 +137,9 @@ def create_optimization_pipeline(
     optimization_method: str = "mipro",
     **kwargs: Any,
 ) -> MagiProgram:
-    optimizer = MAGIOptimizer(retriever=retriever, trainset=trainset, valset=valset or [])
+    optimizer = MAGIOptimizer(
+        retriever=retriever, trainset=trainset, valset=valset or []
+    )
     method = optimization_method.strip().lower()
     if method == "bootstrap":
         return optimizer.optimize_with_bootstrap(**kwargs)

@@ -23,11 +23,16 @@ def test_openai_client_forwards_response_format():
     completions = _FakeCompletions()
     client = object.__new__(OpenAIClient)
     client.model = "gpt-4o-mini-2024-07-18"
-    client.client = type("FakeOpenAI", (), {"chat": type("FakeChat", (), {"completions": completions})()})()
+    client.client = type(
+        "FakeOpenAI", (), {"chat": type("FakeChat", (), {"completions": completions})()}
+    )()
 
     response = client.complete(
         [{"role": "user", "content": "Return JSON"}],
-        response_format={"type": "json_schema", "json_schema": {"name": "demo", "strict": True, "schema": {}}},
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": "demo", "strict": True, "schema": {}},
+        },
     )
 
     assert completions.kwargs is not None
@@ -61,7 +66,9 @@ def test_gemini_client_forwards_response_schema():
         [{"role": "user", "content": "Return JSON"}],
         response_format={
             "type": "json_schema",
-            "json_schema": {"schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}},
+            "json_schema": {
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+            },
         },
     )
 

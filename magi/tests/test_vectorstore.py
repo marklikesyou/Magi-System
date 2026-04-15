@@ -14,10 +14,6 @@ from magi.core.vectorstore import (
 )
 
 
-
-
-
-
 def test_cosine_similarity_identical():
     """Identical vectors have cosine similarity of 1.0."""
     vec = [0.3, 0.4, 0.5]
@@ -36,10 +32,6 @@ def test_cosine_similarity_opposite():
     a = [1.0, 0.0]
     b = [-1.0, 0.0]
     assert math.isclose(cosine_similarity(a, b), -1.0, abs_tol=1e-9)
-
-
-
-
 
 
 def test_add_and_search(small_embedder, sample_entries):
@@ -99,7 +91,6 @@ def test_dump_and_load(small_embedder, sample_entries):
     dumped = store.dump()
     assert len(dumped) == len(sample_entries)
 
-
     restored_entries = [VectorEntry.from_dict(d) for d in dumped]
     store2 = InMemoryVectorStore(dim=32)
     store2.load(restored_entries)
@@ -110,6 +101,30 @@ def test_dump_and_load(small_embedder, sample_entries):
         assert original.document_id == restored.document_id
         assert original.text == restored.text
         assert original.embedding == restored.embedding
+
+
+def test_revision_changes_when_entries_change(sample_entries):
+    store = InMemoryVectorStore(dim=32)
+    initial_revision = store.revision
+
+    store.add(sample_entries[:1])
+    after_add = store.revision
+    store.load(sample_entries)
+
+    assert after_add > initial_revision
+    assert store.revision > after_add
+
+
+def test_add_replaces_existing_document_id(small_embedder):
+    store = InMemoryVectorStore(dim=32)
+    first = VectorEntry(document_id="doc", embedding=small_embedder("old"), text="old")
+    second = VectorEntry(document_id="doc", embedding=small_embedder("new"), text="new")
+
+    store.add([first])
+    store.add([second])
+
+    assert len(store.entries) == 1
+    assert store.entries[0].text == "new"
 
 
 def test_search_results_sorted_by_score(small_embedder, sample_entries):

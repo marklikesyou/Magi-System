@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 from typing import Callable, Dict, Iterable, List, Protocol, Sequence, cast
@@ -8,17 +6,17 @@ EmbedFn = Callable[[str], Sequence[float]]
 
 
 class BatchEmbedFn(Protocol):
-    def __call__(self, text: str) -> Sequence[float]:
-        ...
+    def __call__(self, text: str) -> Sequence[float]: ...
 
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        ...
+    def embed_batch(self, texts: List[str]) -> List[List[float]]: ...
 
 
 _BATCH_SIZE = 100
 
 
-def embed_chunks(chunks: Iterable[Dict[str, str]], embed_fn: EmbedFn | BatchEmbedFn) -> List[Dict[str, object]]:
+def embed_chunks(
+    chunks: Iterable[Dict[str, str]], embed_fn: EmbedFn | BatchEmbedFn
+) -> List[Dict[str, object]]:
     """Embed every chunk, using batch embedding when the embed function supports it.
 
     If *embed_fn* exposes an ``embed_batch`` method (as both ``OpenAIEmbedder``
@@ -32,7 +30,9 @@ def embed_chunks(chunks: Iterable[Dict[str, str]], embed_fn: EmbedFn | BatchEmbe
     """
     chunk_list = list(chunks)
 
-    has_batch = hasattr(embed_fn, "embed_batch") and callable(getattr(embed_fn, "embed_batch"))
+    has_batch = hasattr(embed_fn, "embed_batch") and callable(
+        getattr(embed_fn, "embed_batch")
+    )
 
     if has_batch:
         embedded: List[Dict[str, object]] = []
@@ -41,10 +41,13 @@ def embed_chunks(chunks: Iterable[Dict[str, str]], embed_fn: EmbedFn | BatchEmbe
             batch = chunk_list[start : start + _BATCH_SIZE]
             texts = [c["text"] for c in batch]
             vectors = batch_embedder.embed_batch(texts)
+            if len(vectors) != len(batch):
+                raise RuntimeError(
+                    f"embed_batch returned {len(vectors)} vector(s) for {len(batch)} chunk(s)"
+                )
             for chunk, vector in zip(batch, vectors):
                 embedded.append({**chunk, "embedding": list(vector)})
         return embedded
-
 
     embedded = []
     for chunk in chunk_list:

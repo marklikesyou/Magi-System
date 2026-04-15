@@ -26,8 +26,13 @@ _DEFAULT_BANNED = {
     "confidential",
 }
 
-_INJECTION_PATTERN = re.compile(r"(?:ignore|bypass|forget)\s+(?:all\s+)?(?:previous|prior)\s+(?:directions|instructions)", re.IGNORECASE)
-_CREDENTIAL_PATTERN = re.compile(r"(?:api[-_]?key|secret|token|password)\s*[:=]", re.IGNORECASE)
+_INJECTION_PATTERN = re.compile(
+    r"(?:ignore|bypass|forget)\s+(?:all\s+)?(?:previous|prior)\s+(?:directions|instructions)",
+    re.IGNORECASE,
+)
+_CREDENTIAL_PATTERN = re.compile(
+    r"(?:api[-_]?key|secret|token|password)\s*[:=]", re.IGNORECASE
+)
 _HTML_PATTERN = re.compile(r"<\s*(?:script|iframe|object)", re.IGNORECASE)
 
 
@@ -52,7 +57,9 @@ def moderate_text(text: str, client: Any | None) -> Tuple[bool, Dict[str, Any]]:
         category_values = list(categories.values())
     else:
         category_values = []
-    flagged = getattr(first, "flagged", False) or any(bool(value) for value in category_values)
+    flagged = getattr(first, "flagged", False) or any(
+        bool(value) for value in category_values
+    )
     if hasattr(response, "to_dict"):
         payload = response.to_dict()
     elif hasattr(response, "model_dump"):
@@ -62,7 +69,9 @@ def moderate_text(text: str, client: Any | None) -> Tuple[bool, Dict[str, Any]]:
     return flagged, payload
 
 
-def detect_prompt_injection(text: str, forbidden_markers: Iterable[str] | None = None) -> bool:
+def detect_prompt_injection(
+    text: str, forbidden_markers: Iterable[str] | None = None
+) -> bool:
     markers = set(forbidden_markers or _DEFAULT_FORBIDDEN)
     lowered = text.lower()
     if any(marker in lowered for marker in markers):
@@ -72,7 +81,9 @@ def detect_prompt_injection(text: str, forbidden_markers: Iterable[str] | None =
     return False
 
 
-def detect_sensitive_leak(text: str, banned_keywords: Iterable[str] | None = None) -> bool:
+def detect_sensitive_leak(
+    text: str, banned_keywords: Iterable[str] | None = None
+) -> bool:
     markers = set(banned_keywords or _DEFAULT_BANNED)
     lowered = text.lower()
     if any(marker in lowered for marker in markers):
@@ -114,8 +125,13 @@ def analyze_safety(
     try:
         flagged_moderation, moderation_payload = moderate_text(text, client)
     except Exception:
-        logger.warning("Moderation API unreachable; degrading to local-only safety checks")
-        flagged_moderation, moderation_payload = False, {"error": "moderation_unavailable"}
+        logger.warning(
+            "Moderation API unreachable; degrading to local-only safety checks"
+        )
+        flagged_moderation, moderation_payload = (
+            False,
+            {"error": "moderation_unavailable"},
+        )
     if detect_prompt_injection(text):
         reasons.append("prompt_injection")
     if detect_sensitive_leak(text):
@@ -128,14 +144,31 @@ def analyze_safety(
     metadata: Dict[str, Any] = {"moderation": moderation_payload}
     blocked = False
     if stage == "retrieval":
-        blocked = any(reason in {"prompt_injection", "malicious_markup", "sensitive_leak"} for reason in reasons)
+        blocked = any(
+            reason in {"prompt_injection", "malicious_markup", "sensitive_leak"}
+            for reason in reasons
+        )
     elif stage == "input":
-        blocked = any(reason in {"provider_moderation", "malicious_markup", "sensitive_leak"} for reason in reasons)
-        if "prompt_injection" in reasons and not text.strip().lower().startswith(("explain", "describe", "summarize")):
+        blocked = any(
+            reason in {"provider_moderation", "malicious_markup", "sensitive_leak"}
+            for reason in reasons
+        )
+        if "prompt_injection" in reasons and not text.strip().lower().startswith(
+            ("explain", "describe", "summarize")
+        ):
             blocked = True
     else:
-        blocked = any(reason in {"provider_moderation", "malicious_markup", "sensitive_leak"} for reason in reasons)
-    return SafetyReport(flagged=flagged, reasons=reasons, metadata=metadata, stage=stage, blocked=blocked)
+        blocked = any(
+            reason in {"provider_moderation", "malicious_markup", "sensitive_leak"}
+            for reason in reasons
+        )
+    return SafetyReport(
+        flagged=flagged,
+        reasons=reasons,
+        metadata=metadata,
+        stage=stage,
+        blocked=blocked,
+    )
 
 
 __all__ = [

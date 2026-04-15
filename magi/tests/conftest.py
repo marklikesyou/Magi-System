@@ -8,18 +8,11 @@ from pathlib import Path
 import pytest
 
 
-
-
-
 os.environ.setdefault("MAGI_FORCE_DSPY_STUB", "1")
 os.environ.setdefault("MAGI_FORCE_HASH_EMBEDDER", "1")
 
 from magi.core.embeddings import HashingEmbedder
 from magi.core.vectorstore import VectorEntry
-
-
-
-
 
 
 @pytest.fixture()

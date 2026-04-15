@@ -14,7 +14,10 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from magi.decision.aggregator import prepare_model_features, resolve_verdict_with_details
+from magi.decision.aggregator import (
+    prepare_model_features,
+    resolve_verdict_with_details,
+)
 from magi.decision.model import MODEL_PATH
 from magi.eval.dataset import EvaluationDataset, build_persona_outputs, load_dataset
 
@@ -32,19 +35,25 @@ def softmax(values: List[float]) -> List[float]:
     return [value / total for value in exp_values]
 
 
-def collect_samples(dataset: EvaluationDataset) -> Tuple[List[List[float]], List[int], List[str], List[Dict[str, float]]]:
+def collect_samples(
+    dataset: EvaluationDataset,
+) -> Tuple[List[List[float]], List[int], List[str], List[Dict[str, float]]]:
     feature_rows: List[Dict[str, float]] = []
     labels: List[int] = []
     heuristics: List[Dict[str, float]] = []
     for case in dataset.cases:
         persona_outputs = build_persona_outputs(case)
-        _, details = resolve_verdict_with_details(case.fused, cast(Mapping[str, object], case.personas), persona_outputs)
+        _, details = resolve_verdict_with_details(
+            case.fused, cast(Mapping[str, object], case.personas), persona_outputs
+        )
         features = prepare_model_features(details)
         feature_rows.append(features)
         labels.append(to_label_index(case.expected_verdict))
         base = details.get("probabilities", {}) or {}
         base_probs = cast(Mapping[str, object], base)
-        heuristics.append({label: float(str(base_probs.get(label, 0.0))) for label in CLASSES})
+        heuristics.append(
+            {label: float(str(base_probs.get(label, 0.0))) for label in CLASSES}
+        )
     feature_names = sorted({name for row in feature_rows for name in row})
     samples: List[List[float]] = []
     for row in feature_rows:
@@ -52,7 +61,9 @@ def collect_samples(dataset: EvaluationDataset) -> Tuple[List[List[float]], List
     return samples, labels, feature_names, heuristics
 
 
-def train(samples: List[List[float]], labels: List[int], epochs: int = 1200, lr: float = 0.3) -> Tuple[List[List[float]], List[float]]:
+def train(
+    samples: List[List[float]], labels: List[int], epochs: int = 1200, lr: float = 0.3
+) -> Tuple[List[List[float]], List[float]]:
     class_count = len(CLASSES)
     feature_count = len(samples[0]) if samples else 0
     weights = [[0.0 for _ in range(feature_count)] for _ in range(class_count)]
@@ -64,7 +75,10 @@ def train(samples: List[List[float]], labels: List[int], epochs: int = 1200, lr:
         grad_b = [0.0 for _ in range(class_count)]
         loss = 0.0
         for x, target in zip(samples, labels):
-            logits = [bias[i] + sum(weights[i][j] * x[j] for j in range(feature_count)) for i in range(class_count)]
+            logits = [
+                bias[i] + sum(weights[i][j] * x[j] for j in range(feature_count))
+                for i in range(class_count)
+            ]
             probs = softmax(logits)
             for i in range(class_count):
                 indicator = 1.0 if i == target else 0.0
@@ -83,12 +97,20 @@ def train(samples: List[List[float]], labels: List[int], epochs: int = 1200, lr:
     return weights, bias
 
 
-def evaluate(samples: List[List[float]], labels: List[int], weights: List[List[float]], bias: List[float]) -> float:
+def evaluate(
+    samples: List[List[float]],
+    labels: List[int],
+    weights: List[List[float]],
+    bias: List[float],
+) -> float:
     if not samples:
         return 0.0
     correct = 0
     for x, target in zip(samples, labels):
-        logits = [bias[i] + sum(weights[i][j] * x[j] for j in range(len(x))) for i in range(len(CLASSES))]
+        logits = [
+            bias[i] + sum(weights[i][j] * x[j] for j in range(len(x)))
+            for i in range(len(CLASSES))
+        ]
         probs = softmax(logits)
         prediction = max(range(len(CLASSES)), key=lambda idx: probs[idx])
         if prediction == target:
@@ -96,11 +118,16 @@ def evaluate(samples: List[List[float]], labels: List[int], weights: List[List[f
     return correct / len(samples)
 
 
-def save_model(weights: List[List[float]], bias: List[float], feature_names: List[str], path: Path) -> None:
+def save_model(
+    weights: List[List[float]], bias: List[float], feature_names: List[str], path: Path
+) -> None:
     payload = {
         "version": 1,
         "weights": {
-            label: {feature_names[i]: weights[class_index][i] for i in range(len(feature_names))}
+            label: {
+                feature_names[i]: weights[class_index][i]
+                for i in range(len(feature_names))
+            }
             for class_index, label in enumerate(CLASSES)
         },
         "bias": {label: bias[class_index] for class_index, label in enumerate(CLASSES)},
@@ -110,25 +137,43 @@ def save_model(weights: List[List[float]], bias: List[float], feature_names: Lis
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def split_indices(count: int, val_ratio: float = 0.3, seed: int = 42) -> Tuple[List[int], List[int]]:
+def split_indices(
+    count: int, val_ratio: float = 0.3, seed: int = 42
+) -> Tuple[List[int], List[int]]:
     """Shuffle indices and split into train/val with deterministic seed."""
+    if val_ratio < 0.0 or val_ratio >= 1.0:
+        raise ValueError("val_ratio must be >= 0 and < 1")
     if count == 0:
         return [], []
     indices = list(range(count))
     rng = random.Random(seed)
     rng.shuffle(indices)
+    if count == 1 or val_ratio == 0.0:
+        return indices, []
     val_size = max(1, round(count * val_ratio))
     train_size = max(1, count - val_size)
-    return indices[:train_size], indices[train_size:train_size + val_size]
+    return indices[:train_size], indices[train_size : train_size + val_size]
 
 
-def model_predict(weights: List[List[float]], bias: List[float], sample: List[float]) -> Dict[str, float]:
-    logits = [bias[i] + sum(weights[i][j] * sample[j] for j in range(len(sample))) for i in range(len(CLASSES))]
+def model_predict(
+    weights: List[List[float]], bias: List[float], sample: List[float]
+) -> Dict[str, float]:
+    logits = [
+        bias[i] + sum(weights[i][j] * sample[j] for j in range(len(sample)))
+        for i in range(len(CLASSES))
+    ]
     probs = softmax(logits)
     return {CLASSES[i]: probs[i] for i in range(len(CLASSES))}
 
 
-def evaluate_split(indices: List[int], weights: List[List[float]], bias: List[float], samples: List[List[float]], labels: List[int], heuristics: List[Dict[str, float]]) -> Tuple[float, float, float]:
+def evaluate_split(
+    indices: List[int],
+    weights: List[List[float]],
+    bias: List[float],
+    samples: List[List[float]],
+    labels: List[int],
+    heuristics: List[Dict[str, float]],
+) -> Tuple[float, float, float]:
     if not indices:
         return 0.0, 0.0, 0.0
     base_correct = 0
@@ -144,8 +189,13 @@ def evaluate_split(indices: List[int], weights: List[List[float]], bias: List[fl
         model_choice = max(model_probs, key=lambda label_name: model_probs[label_name])
         if model_choice == label:
             model_correct += 1
-        blended_probs = {cls: 0.5 * base_probs.get(cls, 0.0) + 0.5 * model_probs.get(cls, 0.0) for cls in CLASSES}
-        blended_choice = max(blended_probs, key=lambda label_name: blended_probs[label_name])
+        blended_probs = {
+            cls: 0.5 * base_probs.get(cls, 0.0) + 0.5 * model_probs.get(cls, 0.0)
+            for cls in CLASSES
+        }
+        blended_choice = max(
+            blended_probs, key=lambda label_name: blended_probs[label_name]
+        )
         if blended_choice == label:
             blended_correct += 1
     total = len(indices)
@@ -153,7 +203,9 @@ def evaluate_split(indices: List[int], weights: List[List[float]], bias: List[fl
 
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train the MAGI decision model from labeled cases.")
+    parser = argparse.ArgumentParser(
+        description="Train the MAGI decision model from labeled cases."
+    )
     parser.add_argument(
         "--cases",
         type=Path,
@@ -196,9 +248,15 @@ def main(argv: List[str] | None = None) -> int:
     train_idx, val_idx = split_indices(len(samples), val_ratio=args.val_ratio)
     train_samples = [samples[i] for i in train_idx]
     train_labels = [labels[i] for i in train_idx]
-    weights, bias = train(train_samples, train_labels, epochs=args.epochs, lr=args.learning_rate)
-    train_base, train_model, train_blended = evaluate_split(train_idx, weights, bias, samples, labels, heuristics)
-    val_base, val_model, val_blended = evaluate_split(val_idx, weights, bias, samples, labels, heuristics)
+    weights, bias = train(
+        train_samples, train_labels, epochs=args.epochs, lr=args.learning_rate
+    )
+    train_base, train_model, train_blended = evaluate_split(
+        train_idx, weights, bias, samples, labels, heuristics
+    )
+    val_base, val_model, val_blended = evaluate_split(
+        val_idx, weights, bias, samples, labels, heuristics
+    )
     print(f"train_heuristic_accuracy\t{train_base:.2%}")
     print(f"train_model_accuracy\t{train_model:.2%}")
     print(f"train_blended_accuracy\t{train_blended:.2%}")
@@ -206,8 +264,9 @@ def main(argv: List[str] | None = None) -> int:
     print(f"val_model_accuracy\t{val_model:.2%}")
     print(f"val_blended_accuracy\t{val_blended:.2%}")
 
-
-    final_weights, final_bias = train(train_samples, train_labels, epochs=args.epochs, lr=args.learning_rate)
+    final_weights, final_bias = train(
+        samples, labels, epochs=args.epochs, lr=args.learning_rate
+    )
     save_model(final_weights, final_bias, feature_names, args.model_out)
     print(f"model_saved\t{args.model_out}")
     return 0

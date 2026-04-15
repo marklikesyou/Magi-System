@@ -21,14 +21,18 @@ from magi.eval.dataset import (
 from magi.eval.metrics import accuracy, classification_report, confidence_interval
 
 
-def evaluate_dataset(dataset: EvaluationDataset) -> Tuple[List[str], List[str], List[Tuple[str, str, str]], List[Dict[str, object]]]:
+def evaluate_dataset(
+    dataset: EvaluationDataset,
+) -> Tuple[List[str], List[str], List[Tuple[str, str, str]], List[Dict[str, object]]]:
     predictions: List[str] = []
     gold: List[str] = []
     rows: List[Tuple[str, str, str]] = []
     feature_rows: List[Dict[str, object]] = []
     for case in dataset.cases:
         persona_outputs = build_persona_outputs(case)
-        verdict, details = resolve_verdict_with_details(case.fused, cast(Mapping[str, object], case.personas), persona_outputs)
+        verdict, details = resolve_verdict_with_details(
+            case.fused, cast(Mapping[str, object], case.personas), persona_outputs
+        )
         predictions.append(verdict)
         gold.append(case.expected_verdict)
         rows.append((case.id, case.expected_verdict, verdict))
@@ -51,17 +55,17 @@ def report(
         print(f"{case_id}\t{g}\t{predicted}")
     print(f"\naccuracy\t{score:.2%}\ncount\t{total}")
 
-
     print("\n--- Classification Report ---")
     print(classification_report(predictions, gold))
-
 
     lower, upper = confidence_interval(score, total)
     print(f"\n95% confidence interval for accuracy: [{lower:.4f}, {upper:.4f}]")
 
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate MAGI decisions against a labeled dataset.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate MAGI decisions against a labeled dataset."
+    )
     parser.add_argument(
         "--cases",
         type=Path,

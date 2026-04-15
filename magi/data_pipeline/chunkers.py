@@ -1,11 +1,9 @@
-
-
 from __future__ import annotations
 
 import re
-from typing import Dict ,List
+from typing import Dict, List
 
-_SENTENCE_BOUNDARY_RE = re.compile(r'[.!?]\s+|\n\n+')
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?]\s+|\n\n+")
 
 
 def _find_sentence_break(text: str, max_pos: int, min_pos: int) -> int:
@@ -26,35 +24,33 @@ def _find_sentence_break(text: str, max_pos: int, min_pos: int) -> int:
     return best
 
 
-def sliding_window_chunk (
-document :Dict [str ,str ],
-*,
-chunk_size :int =1500 ,
-overlap :int =200 ,
-)->List [Dict [str ,str ]]:
+def sliding_window_chunk(
+    document: Dict[str, str],
+    *,
+    chunk_size: int = 1500,
+    overlap: int = 200,
+) -> List[Dict[str, str]]:
 
-
-    text =document ["text"]
-    doc_id =document ["id"]
-    if overlap >=chunk_size :
-        raise ValueError ("overlap must be smaller than chunk_size")
-
-
-
+    text = document["text"]
+    doc_id = document["id"]
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if overlap < 0:
+        raise ValueError("overlap must be non-negative")
+    if overlap >= chunk_size:
+        raise ValueError("overlap must be smaller than chunk_size")
 
     min_ratio = 0.80
 
-    chunks =[]
-    start =0
-    idx =0
-    while start <len (text ):
+    chunks = []
+    start = 0
+    idx = 0
+    while start < len(text):
         raw_end = start + chunk_size
         if raw_end >= len(text):
-
             chunk_text = text[start:]
             chunks.append({"id": f"{doc_id}::chunk-{idx}", "text": chunk_text})
             break
-
 
         min_break = start + int(chunk_size * min_ratio)
         break_pos = _find_sentence_break(text, raw_end, min_break)
