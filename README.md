@@ -1,5 +1,9 @@
 # MAGI System
 
+<p align="center">
+  <img src="assets/magi-hero.svg" alt="MAGI terminal hero image with a self-destruct warning" width="720">
+</p>
+
 ## Overview
 MAGI is a multi persona reasoning engine for assessing user requests against an evidence base. It retrieves context from a local vector store, convenes three specialized personas (scientist, pragmatist, guardian), negotiates consensus, and returns a final verdict along with an explanation.
 
@@ -46,12 +50,21 @@ Run the full suite with:
 pytest
 ```
 
+Run the reusable scenario harness with:
+```bash
+python magi/eval/run_scenarios.py \
+  --cases magi/eval/live_scenarios.yaml \
+  --mode auto \
+  --report-out artifacts/live_scenarios.json
+```
+
 ## Project Structure
 - `run_magi.py` entry point for one shot runs.
 - `magi/app/cli.py` reusable CLI with ingest and chat commands.
 - `magi/dspy_programs/` persona definitions, consensus logic, and DSPy wiring.
 - `magi/decision/` verdict aggregation logic and optional learned calibrators.
 - `magi/core/` embeddings, storage, retrieval, and utilities.
+- `magi/eval/` reusable benchmark and scenario harness tooling.
 
 ## Notes
 - Vector store artifacts live in `magi/storage/` and are ignored by git.

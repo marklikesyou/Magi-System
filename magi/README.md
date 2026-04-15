@@ -44,5 +44,8 @@ pytest
 - Provide your own dataset matching `magi/eval/cases.template.yaml` and run:
   - `python magi/eval/run_bench.py --cases /path/to/cases.yaml --features-out artifacts/features.jsonl`
   - `python magi/eval/train_decision_model.py --cases /path/to/cases.yaml --model-out magi/decision/model_weights.json`
+- Run the end-to-end scenario harness against prompt-sensitive live scenarios:
+  - `python magi/eval/run_scenarios.py --cases magi/eval/live_scenarios.yaml --mode auto --report-out artifacts/live_scenarios.json`
+  - `python magi/eval/run_scenarios.py --cases /path/to/scenarios.yaml --mode live --model gpt-4o-mini-2024-07-18`
 - Enforce the benchmark accuracy threshold in CI: `pytest magi/tests/test_decision_bench.py`
-- See `magi/eval/cases.template.yaml` for dataset format guidance.
+- See `magi/eval/cases.template.yaml` and `magi/eval/scenarios.template.yaml` for dataset format guidance.

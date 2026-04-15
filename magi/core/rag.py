@@ -113,7 +113,7 @@ class RagRetriever :
                 continue
             seen_keys .add (key )
             unique .append (chunk )
-        return unique
+        return unique [:top_k]
 
     def __call__ (self ,query :str ,*,persona :str |None =None ,top_k :int =8 )->str :
         results =self .retrieve (query ,persona =persona ,top_k =top_k )

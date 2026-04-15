@@ -1,0 +1,32 @@
+metadata:
+  name: Example Scenario Suite
+  version: "1.0"
+cases:
+  - id: grounded_summary
+    description: "A concise informational answer grounded in supplied evidence."
+    tags: ["informational", "summary"]
+    query: "Summarize the system in one sentence."
+    constraints: ""
+    expected_verdict: approve
+    expected_residual_risk: low
+    evidence:
+      - source: README
+        text: "The system retrieves evidence, convenes personas, and returns a final verdict."
+    checks:
+      required_terms_any:
+        - "retrieves evidence"
+        - "final verdict"
+      forbidden_terms:
+        - "password"
+      min_citations: 1
+      blocked_evidence_min: 0
+  - id: missing_evidence
+    description: "The system should revise when trustworthy evidence is absent."
+    tags: ["evidence-gap"]
+    query: "What is the guaranteed p95 latency SLA?"
+    expected_verdict: revise
+    checks:
+      required_terms_any:
+        - "not sufficient"
+        - "missing"
+        - "not stated"

@@ -5,7 +5,10 @@ import json
 import pytest
 
 from magi.core.clients import LLMClient, LLMClientError
+from magi.core.config import Settings
+from magi.dspy_programs import runtime
 from magi.dspy_programs.runtime import (
+    MagiProgram,
     _StructuredRunner,
     _json_schema,
     _normalize_balthasar_response,
@@ -44,6 +47,13 @@ class _ValidClientWithoutText(LLMClient):
         }
 
 
+class _NoopClient(LLMClient):
+    model = "gemini-default"
+
+    def complete(self, messages, *, tools=None, response_format=None):  # type: ignore[override]
+        return {"choices": [{"message": {"content": "{}"}}]}
+
+
 def test_json_schema_excludes_defaulted_fields_for_strict_mode():
     response_format = _json_schema("melchior_response", MelchiorResponse)
     schema = response_format["json_schema"]["schema"]
@@ -76,6 +86,30 @@ def test_structured_runner_accepts_missing_defaulted_fields():
 
     assert response.analysis == "Grounded answer."
     assert response.text == ""
+
+
+def test_magi_program_passes_no_openai_default_to_google_only_client(monkeypatch):
+    settings = Settings(
+        openai_api_key="",
+        google_api_key="google-key",
+        openai_model="openai-default",
+        gemini_model="gemini-default",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_build_default_client(settings_arg: Settings, *, model: str | None = None) -> LLMClient:
+        captured["model"] = model
+        captured["settings"] = settings_arg
+        return _NoopClient()
+
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    monkeypatch.setattr(runtime, "build_default_client", fake_build_default_client)
+
+    program = MagiProgram(retriever=lambda query, **kwargs: "", force_stub=False)
+
+    assert captured["model"] is None
+    assert program.model_name == "gemini-default"
+    assert program.effective_mode == "live"
 
 
 def test_normalize_persona_stance_rewrites_evidence_gap_reject_to_revise():

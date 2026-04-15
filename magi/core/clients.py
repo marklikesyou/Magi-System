@@ -153,16 +153,37 @@ class GeminiClient(LLMClient):
         response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         normalized_messages = _normalize_messages(messages)
+        del tools
+        contents = "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in normalized_messages)
+        kwargs: Dict[str, Any] = {"model": self.model, "contents": contents}
         if response_format is not None:
-            raise LLMClientError("GeminiClient does not support strict response_format contracts.")
-        contents = [{"role": m["role"], "parts": [{"text": m["content"]}]} for m in normalized_messages]
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=contents,
+            schema = response_format.get("json_schema", {}).get("schema", {})
+            kwargs["contents"] = "\n\n".join(
+                [
+                    contents,
+                    "Return only JSON matching this JSON Schema:",
+                    json.dumps(schema, ensure_ascii=True),
+                ]
             )
+            try:
+                from google.genai import types
+
+                kwargs["config"] = types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                )
+            except Exception:
+                kwargs["config"] = {
+                    "response_mime_type": "application/json",
+                    "response_schema": schema,
+                }
+        try:
+            response = self.client.models.generate_content(**kwargs)
         except Exception as exc:
             raise LLMClientError(str(exc)) from exc
+        text = getattr(response, "text", None)
+        if isinstance(text, str):
+            return {"choices": [{"message": {"content": text}}]}
         if hasattr(response, "to_dict"):
             return cast(Dict[str, Any], response.to_dict())
         if hasattr(response, "model_dump"):
@@ -171,8 +192,8 @@ class GeminiClient(LLMClient):
 
 
 def build_default_client(settings: "Settings", *, model: Optional[str] = None) -> Optional[LLMClient]:
-    preferred_model = model or settings.openai_model
     if settings.openai_api_key:
+        preferred_model = model or settings.openai_model
         return OpenAIClient(
             preferred_model,
             settings.openai_api_key,
@@ -181,8 +202,9 @@ def build_default_client(settings: "Settings", *, model: Optional[str] = None) -
             timeout=settings.openai_request_timeout,
         )
     if settings.google_api_key:
+        preferred_model = model or settings.gemini_model
         return GeminiClient(
-            settings.gemini_model if model is None else preferred_model,
+            preferred_model,
             settings.google_api_key,
             vertex=settings.google_use_vertex,
             project=settings.google_project or None,

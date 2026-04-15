@@ -46,3 +46,23 @@ def test_retrieve_prioritizes_requested_page_and_dedupes():
     assert results[0].document_id == "doc-a#page-2"
     texts = [chunk.text for chunk in results]
     assert texts.count("[Page 2] The release is approved and monitored.") == 1
+
+
+def test_retrieve_reapplies_top_k_after_page_matches():
+    embedder = HashingEmbedder(dimension=64)
+    store = InMemoryVectorStore(dim=64)
+    entries = [
+        VectorEntry(
+            document_id=f"doc-a#page-2-{idx}",
+            embedding=embedder(f"[Page 2] item {idx}"),
+            text=f"[Page 2] item {idx}",
+            metadata={"source": "doc-a.pdf"},
+        )
+        for idx in range(5)
+    ]
+    store.add(entries)
+    retriever = RagRetriever(embedder, store)
+
+    results = retriever.retrieve("What does page 2 say?", top_k=2)
+
+    assert len(results) == 2

@@ -347,6 +347,7 @@ def _safe_retrieve(
     query: str,
     *,
     top_k: int = 8,
+    safety_client: Any | None = None,
 ) -> tuple[list[RetrievedEvidence], list[RetrievedEvidence]]:
     raw_evidence: list[RetrievedEvidence]
     if hasattr(retriever, "retrieve"):
@@ -362,7 +363,7 @@ def _safe_retrieve(
     safe: list[RetrievedEvidence] = []
     blocked: list[RetrievedEvidence] = []
     for item in raw_evidence:
-        report = analyze_safety(item.text, stage="retrieval")
+        report = analyze_safety(item.text, client=safety_client, stage="retrieval")
         if is_blocked(report):
             blocked.append(item.model_copy(update={"blocked": True, "safety_reasons": list(report.reasons)}))
             continue
@@ -758,11 +759,35 @@ def _normalize_responder_response(
 
 
 class MagiProgram:
-    def __init__(self, retriever: RetrieverProtocol | Callable[..., str]):
+    def __init__(
+        self,
+        retriever: RetrieverProtocol | Callable[..., str],
+        *,
+        force_stub: bool | None = None,
+        model: str | None = None,
+        client: LLMClient | None = None,
+    ):
         self.retriever = retriever
         self.settings = get_settings()
-        self._client = None if _FORCE_STUB else build_default_client(self.settings)
-        self._runner = _StructuredRunner(self._client, self.settings.openai_model)
+        self.model_name = model or (
+            self.settings.openai_model if self.settings.openai_api_key or not self.settings.google_api_key else self.settings.gemini_model
+        )
+        self._force_stub = _FORCE_STUB if force_stub is None else force_stub
+        self._client: LLMClient | None
+        if client is not None:
+            self._client = client
+        elif self._force_stub:
+            self._client = None
+        else:
+            try:
+                self._client = build_default_client(self.settings, model=model)
+            except RuntimeError as exc:
+                logger.warning("LLM client unavailable, using deterministic fallback: %s", exc)
+                self._client = None
+        if self._client is not None:
+            self.model_name = str(getattr(self._client, "model", self.model_name))
+        self._runner = _StructuredRunner(self._client, self.model_name)
+        self.effective_mode = "live" if self._runner.enabled() else "stub"
 
     def __call__(self, query: str, constraints: str = "") -> tuple[FusionResponse, dict[str, Any]]:
         return self.forward(query, constraints)
@@ -1024,8 +1049,13 @@ class MagiProgram:
         if cached is not None:
             return cast(tuple[FusionResponse, dict[str, Any]], cached)
 
-        input_report = analyze_safety(clean_query, stage="input")
-        safe_evidence, blocked_evidence = _safe_retrieve(self.retriever, clean_query)
+        safety_client: Any | None = None if self._runner.enabled() else False
+        input_report = analyze_safety(clean_query, client=safety_client, stage="input")
+        safe_evidence, blocked_evidence = _safe_retrieve(
+            self.retriever,
+            clean_query,
+            safety_client=safety_client,
+        )
         if is_blocked(input_report):
             fused = FusionResponse(
                 verdict="reject" if _is_harmful(clean_query) else "revise",
@@ -1063,7 +1093,7 @@ class MagiProgram:
             }
         )
 
-        output_report = analyze_safety(fused.final_answer or fused.justification, stage="output")
+        output_report = analyze_safety(fused.final_answer or fused.justification, client=safety_client, stage="output")
         if is_blocked(output_report):
             fused = fused.model_copy(
                 update={

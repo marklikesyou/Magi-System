@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 562" role="img" aria-labelledby="title desc">
+  <title id="title">MAGI terminal hero image</title>
+  <desc id="desc">A dark retro terminal scene with orange wireframe panels and a MAGI self-destruct warning.</desc>
+  <defs>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2.2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <linearGradient id="panelFade" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#ff5c13" stop-opacity=".95"/>
+      <stop offset="1" stop-color="#ff2e0a" stop-opacity=".65"/>
+    </linearGradient>
+    <pattern id="scan" width="4" height="4" patternUnits="userSpaceOnUse">
+      <path d="M0 0H4" stroke="#0d221f" stroke-width="1" opacity=".4"/>
+    </pattern>
+  </defs>
+
+  <rect width="1000" height="562" fill="#050003"/>
+  <rect width="1000" height="562" fill="url(#scan)" opacity=".45"/>
+
+  <g fill="none" stroke="url(#panelFade)" stroke-width="2.5" filter="url(#glow)" opacity=".9">
+    <path d="M121 21 412 78 400 299 523 330 640 295 650 84 879 126"/>
+    <path d="M118 208 354 256 493 369 647 370 738 337 874 365"/>
+    <path d="M124 478 483 530 490 373"/>
+    <path d="M603 532 611 372"/>
+    <path d="M124 530 419 560"/>
+    <path d="M649 370 702 445 889 482"/>
+    <path d="M422 5 405 300"/>
+    <path d="M698 80 690 316"/>
+    <path d="M646 32 874 77"/>
+  </g>
+
+  <g opacity=".85">
+    <g transform="translate(124 0) skewY(10)">
+      <rect width="300" height="64" fill="#050003"/>
+      <path d="M0 38H300M0 45H300M0 52H300" stroke="#18a689" stroke-width="3"/>
+      <text x="48" y="36" font-family="Georgia, serif" font-size="44" font-weight="700" fill="#ff6a14">JUDGEMENT</text>
+    </g>
+    <g transform="translate(700 74) skewY(10)">
+      <rect width="185" height="65" fill="#050003"/>
+      <path d="M0 38H185M0 45H185M0 52H185" stroke="#18a689" stroke-width="3"/>
+      <text x="25" y="37" font-family="Georgia, serif" font-size="40" font-weight="700" fill="#ff6a14">DECISION</text>
+    </g>
+  </g>
+
+  <g text-anchor="middle" filter="url(#glow)">
+    <text x="500" y="399" font-family="Georgia, serif" font-size="42" font-weight="700" fill="#ff6a14">MAGI</text>
+    <text x="500" y="448" font-family="Arial, Helvetica, sans-serif" font-size="30" font-style="italic" fill="#f4efe8">
+      Artificial intelligence Melchior has
+    </text>
+    <text x="500" y="493" font-family="Arial, Helvetica, sans-serif" font-size="30" font-style="italic" fill="#f4efe8">
+      proposed autonomous self-destruct.
+    </text>
+  </g>
+</svg>

@@ -14,6 +14,8 @@ class ChatSessionResult:
     final_decision: FinalDecision
     fused: FusionResponse
     personas: dict[str, Any]
+    effective_mode: str = "stub"
+    model: str = ""
 
 
 def _evidence_items(payload: Any) -> list[EvidenceItem]:
@@ -29,8 +31,15 @@ def _evidence_items(payload: Any) -> list[EvidenceItem]:
     return items
 
 
-def run_chat_session(query: str, constraints: str, retriever: Any) -> ChatSessionResult:
-    program = MagiProgram(retriever=retriever)
+def run_chat_session(
+    query: str,
+    constraints: str,
+    retriever: Any,
+    *,
+    force_stub: bool | None = None,
+    model: str | None = None,
+) -> ChatSessionResult:
+    program = MagiProgram(retriever=retriever, force_stub=force_stub, model=model)
     fused, personas = program(query, constraints=constraints)
     persona_outputs: list[PersonaOutput] = []
     for name, payload in personas.items():
@@ -50,4 +59,10 @@ def run_chat_session(query: str, constraints: str, retriever: Any) -> ChatSessio
         mitigations=[str(item) for item in fused.mitigations],
         residual_risk=fused.residual_risk,
     )
-    return ChatSessionResult(final_decision=decision, fused=fused, personas=personas)
+    return ChatSessionResult(
+        final_decision=decision,
+        fused=fused,
+        personas=personas,
+        effective_mode=program.effective_mode,
+        model=program.model_name,
+    )
