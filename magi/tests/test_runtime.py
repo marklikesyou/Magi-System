@@ -64,6 +64,21 @@ class _NoopClient(LLMClient):
         return {"choices": [{"message": {"content": "{}"}}]}
 
 
+class _SequenceClient(LLMClient):
+    model = "gpt-4o-mini-2024-07-18"
+
+    def __init__(self, payloads: list[dict[str, object]]) -> None:
+        self._payloads = list(payloads)
+
+    def complete(self, messages, *, tools=None, response_format=None):  # type: ignore[override]
+        assert messages
+        assert response_format is not None
+        if not self._payloads:
+            raise AssertionError("unexpected extra client call")
+        payload = self._payloads.pop(0)
+        return {"choices": [{"message": {"content": json.dumps(payload)}}]}
+
+
 def test_json_schema_excludes_defaulted_fields_for_strict_mode():
     response_format = _json_schema("melchior_response", MelchiorResponse)
     schema = response_format["json_schema"]["schema"]
@@ -305,3 +320,65 @@ def test_normalize_responder_response_falls_back_when_answer_conflicts_with_appr
     )
 
     assert normalized.final_answer == fusion.final_answer
+
+
+def test_live_program_falls_back_to_grounded_approve_answer_when_model_is_uncited():
+    runtime.clear_cache()
+    client = _SequenceClient(
+        [
+            {
+                "analysis": "The evidence defines MAGI.",
+                "answer_outline": ["Summarize MAGI."],
+                "confidence": 0.8,
+                "evidence_quotes": ['[1] "MAGI is a multi persona reasoning engine."'],
+                "stance": "approve",
+                "actions": ["Answer directly."],
+            },
+            {
+                "plan": "Answer directly.",
+                "communication_plan": ["Keep it short."],
+                "cost_estimate": "low",
+                "confidence": 0.8,
+                "stance": "approve",
+                "actions": ["Answer directly."],
+            },
+            {
+                "risks": ["Low risk of over-claiming."],
+                "mitigations": ["Stay within the evidence."],
+                "residual_risk": "low",
+                "confidence": 0.8,
+                "stance": "approve",
+                "actions": ["Stay within the evidence."],
+                "outstanding_questions": [],
+            },
+            {
+                "verdict": "approve",
+                "justification": "This is enough to answer.",
+                "confidence": 0.8,
+                "final_answer": "MAGI means Modified Adjusted Gross Income.",
+                "next_steps": ["Answer directly."],
+                "consensus_points": ["Enough evidence."],
+                "disagreements": [],
+                "residual_risk": "low",
+                "risks": ["Low risk of over-claiming."],
+                "mitigations": ["Stay within the evidence."],
+            },
+            {
+                "final_answer": "MAGI means Modified Adjusted Gross Income.",
+                "justification": "This is enough to answer.",
+                "next_steps": ["Answer directly."],
+            },
+        ]
+    )
+
+    program = MagiProgram(
+        retriever=lambda query, **kwargs: "MAGI is a multi persona reasoning engine.",
+        force_stub=False,
+        client=client,
+    )
+    fused, _ = program("What is MAGI?", constraints="")
+
+    assert fused.verdict == "approve"
+    assert "[1]" in fused.final_answer
+    assert "multi persona reasoning engine" in fused.final_answer.lower()
+    assert "modified adjusted gross income" not in fused.final_answer.lower()
