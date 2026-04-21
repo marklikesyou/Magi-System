@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
-from magi.decision.aggregator import resolve_verdict
 from magi.decision.schema import EvidenceItem, FinalDecision, PersonaOutput
 from magi.dspy_programs.runtime import MagiProgram
 from magi.dspy_programs.schemas import FusionResponse
@@ -38,8 +37,14 @@ def run_chat_session(
     *,
     force_stub: bool | None = None,
     model: str | None = None,
+    client: Any | None = None,
 ) -> ChatSessionResult:
-    program = MagiProgram(retriever=retriever, force_stub=force_stub, model=model)
+    program = MagiProgram(
+        retriever=retriever,
+        force_stub=force_stub,
+        model=model,
+        client=client,
+    )
     fused, personas = program(query, constraints=constraints)
     persona_outputs: list[PersonaOutput] = []
     for name, payload in personas.items():
@@ -52,7 +57,7 @@ def run_chat_session(
             )
         )
     decision = FinalDecision(
-        verdict=resolve_verdict(fused, personas, persona_outputs),
+        verdict=fused.verdict,
         justification=fused.final_answer or fused.justification,
         persona_outputs=persona_outputs,
         risks=[str(item) for item in fused.risks],
