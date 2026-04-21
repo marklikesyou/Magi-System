@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from magi.core.embeddings import HashingEmbedder
 from magi.core.storage import initialize_store, load_entries, save_entries
 from magi.core.vectorstore import VectorEntry
@@ -48,7 +50,7 @@ def test_initialize_store_fresh(tmp_path):
 
 
 def test_initialize_store_dimension_mismatch(tmp_path):
-    """When stored embeddings have a different dimension the store starts fresh."""
+    """When stored embeddings have a different dimension the store fails loudly."""
     path = tmp_path / "mismatch_store.json"
 
     old_embedder = HashingEmbedder(dimension=64)
@@ -60,7 +62,5 @@ def test_initialize_store_dimension_mismatch(tmp_path):
     save_entries(path, [old_entry])
 
     new_embedder = HashingEmbedder(dimension=32)
-    store = initialize_store(path, new_embedder)
-
-    assert store.dim == 32
-    assert len(store.entries) == 0
+    with pytest.raises(RuntimeError, match="active embedder expects 32"):
+        initialize_store(path, new_embedder)
