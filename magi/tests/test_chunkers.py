@@ -104,6 +104,22 @@ def test_sliding_window_chunk_ids_are_sequential():
         assert chunk["id"] == f"mydoc::chunk-{idx}"
 
 
+def test_sliding_window_preserves_metadata():
+    chunks = sliding_window_chunk(
+        {
+            "id": "doc-1",
+            "text": "hello world. " * 40,
+            "metadata": {"source": "doc.txt", "content_hash": "abc"},
+        },
+        chunk_size=100,
+        overlap=20,
+    )
+
+    assert chunks[0]["metadata"]["source"] == "doc.txt"
+    assert chunks[0]["metadata"]["content_hash"] == "abc"
+    assert chunks[0]["metadata"]["chunk_id"] == "chunk-0"
+
+
 def test_sliding_window_no_data_loss():
     """All characters of the original text appear in at least one chunk."""
     text = "The quick brown fox jumps over the lazy dog. " * 50

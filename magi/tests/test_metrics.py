@@ -6,6 +6,8 @@ import pytest
 
 from magi.eval.metrics import (
     accuracy,
+    answer_support_score,
+    citation_hit_rate,
     classification_report,
     confidence_interval,
     confusion_matrix,
@@ -113,3 +115,19 @@ def test_classification_report_returns_string():
     assert isinstance(report, str)
     assert "precision" in report.lower()
     assert "approve" in report
+
+
+def test_citation_hit_rate_counts_only_valid_indices():
+    assert citation_hit_rate("Supported by [1] and [3].", 2) == 0.5
+
+
+def test_answer_support_score_reflects_lexical_overlap():
+    score = answer_support_score(
+        "MAGI uses evidence-backed reasoning for approvals.",
+        [
+            "MAGI is a reasoning engine with evidence-backed decisions.",
+            "It supports approvals when evidence is sufficient.",
+        ],
+    )
+
+    assert score > 0.3

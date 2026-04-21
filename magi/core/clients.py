@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, TypedDict
 
 from httpx import Timeout
 
+from .utils import RateLimiter, retry_with_backoff
+
 
 if TYPE_CHECKING:
     from magi.core.config import Settings
@@ -74,6 +76,9 @@ class OpenAIClient(LLMClient):
         api_base: str | None = None,
         organization: str | None = None,
         timeout: float | None = None,
+        max_retries: int = 3,
+        retry_initial_delay: float = 1.0,
+        requests_per_minute: int = 0,
     ):
         try:
             from openai import OpenAI
@@ -89,6 +94,9 @@ class OpenAIClient(LLMClient):
             kwargs["timeout"] = Timeout(timeout)
         self.model = model
         self.client = OpenAI(**kwargs)
+        self.max_retries = max(1, int(max_retries))
+        self.retry_initial_delay = max(0.0, float(retry_initial_delay))
+        self.rate_limiter = RateLimiter(requests_per_minute)
 
     def complete(
         self,
@@ -107,8 +115,20 @@ class OpenAIClient(LLMClient):
             kwargs["tools"] = normalized_tools
         if response_format is not None:
             kwargs["response_format"] = response_format
+        rate_limiter = getattr(self, "rate_limiter", None)
+        if rate_limiter is not None:
+            rate_limiter.acquire()
+        max_retries = max(1, int(getattr(self, "max_retries", 3)))
+        retry_initial_delay = max(
+            0.0, float(getattr(self, "retry_initial_delay", 1.0))
+        )
+        call = retry_with_backoff(
+            max_retries=max_retries,
+            initial_delay=retry_initial_delay,
+            exceptions=(Exception,),
+        )(lambda: self.client.chat.completions.create(**kwargs))
         try:
-            response = self.client.chat.completions.create(**kwargs)
+            response = call()
         except Exception as exc:
             raise LLMClientError(str(exc)) from exc
         if hasattr(response, "model_dump"):
@@ -132,6 +152,9 @@ class GeminiClient(LLMClient):
         project: Optional[str] = None,
         location: Optional[str] = None,
         timeout: float | None = None,
+        max_retries: int = 3,
+        retry_initial_delay: float = 1.0,
+        requests_per_minute: int = 0,
     ):
         try:
             from google import genai
@@ -150,6 +173,9 @@ class GeminiClient(LLMClient):
         self.model = model
         self.client = genai.Client(**kwargs)
         self.timeout = timeout
+        self.max_retries = max(1, int(max_retries))
+        self.retry_initial_delay = max(0.0, float(retry_initial_delay))
+        self.rate_limiter = RateLimiter(requests_per_minute)
 
     def complete(
         self,
@@ -185,8 +211,20 @@ class GeminiClient(LLMClient):
                     "response_mime_type": "application/json",
                     "response_schema": schema,
                 }
+        rate_limiter = getattr(self, "rate_limiter", None)
+        if rate_limiter is not None:
+            rate_limiter.acquire()
+        max_retries = max(1, int(getattr(self, "max_retries", 3)))
+        retry_initial_delay = max(
+            0.0, float(getattr(self, "retry_initial_delay", 1.0))
+        )
+        call = retry_with_backoff(
+            max_retries=max_retries,
+            initial_delay=retry_initial_delay,
+            exceptions=(Exception,),
+        )(lambda: self.client.models.generate_content(**kwargs))
         try:
-            response = self.client.models.generate_content(**kwargs)
+            response = call()
         except Exception as exc:
             raise LLMClientError(str(exc)) from exc
         text = getattr(response, "text", None)
@@ -210,6 +248,9 @@ def build_default_client(
             api_base=settings.openai_api_base or None,
             organization=settings.openai_organization or None,
             timeout=settings.openai_request_timeout,
+            max_retries=settings.provider_max_retries,
+            retry_initial_delay=settings.provider_retry_initial_delay,
+            requests_per_minute=settings.provider_requests_per_minute,
         )
     if settings.google_api_key:
         preferred_model = model or settings.gemini_model
@@ -220,5 +261,8 @@ def build_default_client(
             project=settings.google_project or None,
             location=settings.google_location or None,
             timeout=settings.openai_request_timeout,
+            max_retries=settings.provider_max_retries,
+            retry_initial_delay=settings.provider_retry_initial_delay,
+            requests_per_minute=settings.provider_requests_per_minute,
         )
     return None

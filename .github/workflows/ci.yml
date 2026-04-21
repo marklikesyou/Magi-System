@@ -5,10 +5,15 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  workflow_dispatch:
 
 jobs:
   lint-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
 
     env:
       MAGI_FORCE_DSPY_STUB: "1"
@@ -17,10 +22,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.13
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -29,10 +34,52 @@ jobs:
         run: uv sync --extra dev --extra openai
 
       - name: Lint
+        if: ${{ matrix.python-version == '3.10' }}
         run: uv run ruff check magi/
 
       - name: Type check
+        if: ${{ matrix.python-version == '3.10' }}
         run: uv run mypy magi/ --ignore-missing-imports
 
       - name: Run tests
         run: uv run pytest magi/tests/ -v --tb=short
+
+      - name: Run live provider smoke test
+        if: ${{ matrix.python-version == '3.13' && (secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') }}
+        env:
+          MAGI_FORCE_DSPY_STUB: "0"
+          MAGI_FORCE_HASH_EMBEDDER: "1"
+          MAGI_RUN_LIVE_SMOKE: "1"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: uv run pytest magi/tests/test_live_provider_smoke.py -v --tb=short
+
+      - name: Run live scenario suite
+        if: ${{ matrix.python-version == '3.13' && (secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') }}
+        env:
+          MAGI_FORCE_DSPY_STUB: "0"
+          MAGI_FORCE_HASH_EMBEDDER: "1"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          uv run python magi/eval/run_scenarios.py \
+            --cases magi/eval/live_scenarios.yaml \
+            --mode live \
+            --report-out live_scenario_report.json \
+            --min-overall-score 0.80 \
+            --min-verdict-accuracy 0.80 \
+            --min-requirement-pass-rate 0.80 \
+            --min-retrieval-hit-rate 1.0 \
+            --min-retrieval-top-source-accuracy 1.0 \
+            --min-retrieval-source-recall 1.0 \
+            --min-average-citation-hit-rate 1.0 \
+            --min-average-answer-support-score 0.20 \
+            --min-supported-answer-rate 1.0
+
+      - name: Upload live scenario report
+        if: ${{ always() && matrix.python-version == '3.13' && (secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-scenario-report
+          path: live_scenario_report.json
+          if-no-files-found: ignore

@@ -1,0 +1,3 @@
+The rollout status is green.
+The release is approved and monitored by ops.
+No production incidents were recorded during the latest review window.

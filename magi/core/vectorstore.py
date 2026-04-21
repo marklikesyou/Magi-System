@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Protocol, Sequence
 
 
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
@@ -15,6 +15,47 @@ def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
     if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def _is_filter_sequence(value: object) -> bool:
+    return isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    )
+
+
+def metadata_matches_filters(
+    metadata: Mapping[str, Any],
+    metadata_filters: Mapping[str, object] | None,
+) -> bool:
+    if not metadata_filters:
+        return True
+    for key, expected in metadata_filters.items():
+        if key not in metadata:
+            return False
+        actual = metadata.get(key)
+        if _is_filter_sequence(expected):
+            options = list(expected)
+            if not options:
+                return False
+            if not any(
+                metadata_matches_filters(metadata, {key: option}) for option in options
+            ):
+                return False
+            continue
+        if _is_filter_sequence(actual):
+            values = list(actual)
+            if not values:
+                return False
+            if not any(metadata_matches_filters({key: item}, {key: expected}) for item in values):
+                return False
+            continue
+        if actual == expected:
+            continue
+        if actual is None or expected is None:
+            return False
+        if str(actual) != str(expected):
+            return False
+    return True
 
 
 @dataclass
@@ -48,6 +89,28 @@ class RetrievedChunk:
     text: str
     score: float
     metadata: Dict[str, Any]
+
+
+class VectorStore(Protocol):
+    dim: int
+
+    def add(self, entries: Iterable[VectorEntry]) -> None: ...
+
+    def load(self, entries: Iterable[VectorEntry]) -> None: ...
+
+    @property
+    def revision(self) -> int: ...
+
+    @property
+    def entries(self) -> List[VectorEntry]: ...
+
+    def search(
+        self,
+        query_embedding: Sequence[float],
+        top_k: int = 5,
+        *,
+        metadata_filters: Mapping[str, object] | None = None,
+    ) -> List[RetrievedChunk]: ...
 
 
 class InMemoryVectorStore:
@@ -94,7 +157,11 @@ class InMemoryVectorStore:
         return list(self._entries)
 
     def search(
-        self, query_embedding: Sequence[float], top_k: int = 5
+        self,
+        query_embedding: Sequence[float],
+        top_k: int = 5,
+        *,
+        metadata_filters: Mapping[str, object] | None = None,
     ) -> List[RetrievedChunk]:
         if len(query_embedding) != self.dim:
             raise ValueError("query dimension mismatch.")
@@ -107,6 +174,7 @@ class InMemoryVectorStore:
                 metadata=entry.metadata,
             )
             for entry in self._entries
+            if metadata_matches_filters(entry.metadata, metadata_filters)
         ]
         scored.sort(key=lambda chunk: chunk.score, reverse=True)
         return scored[:top_k]

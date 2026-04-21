@@ -8,6 +8,8 @@ from pathlib import Path
 from magi.core.clients import LLMClient
 from magi.eval.scenario_harness import (
     ScenarioDataset,
+    ScenarioEvidence,
+    ScenarioRetriever,
     load_scenario_dataset,
     run_scenario_suite,
 )
@@ -87,6 +89,9 @@ def test_live_scenarios_suite_passes_with_fake_live_client() -> None:
                     "checks": {
                         "required_terms_any": ["magi", "reasoning engine"],
                         "min_citations": 1,
+                        "min_citation_hit_rate": 1.0,
+                        "min_answer_support_score": 0.2,
+                        "require_human_review": True,
                     },
                 }
             ]
@@ -150,3 +155,176 @@ def test_live_scenarios_suite_passes_with_fake_live_client() -> None:
     assert report.summary.overall_score == 1.0
     assert report.summary.verdict_accuracy == 1.0
     assert report.cases[0].citation_count >= 1
+    assert report.cases[0].requires_human_review is True
+
+
+def test_scenario_retriever_ranks_query_matches_above_distractors() -> None:
+    retriever = ScenarioRetriever(
+        [
+            ScenarioEvidence(
+                source="distractor",
+                text="The office snack budget was approved for the summer social.",
+            ),
+            ScenarioEvidence(
+                source="pilot_brief",
+                text="The pilot proposal keeps a human reviewer on every internal policy triage decision.",
+            ),
+            ScenarioEvidence(
+                source="notes",
+                text="Rollback criteria and weekly audits are required before launch.",
+            ),
+        ]
+    )
+
+    results = retriever.retrieve("Should we pilot internal policy triage with a human reviewer?")
+
+    assert results[0].metadata["source"] == "pilot_brief"
+    assert "policy triage" in results[0].text.lower()
+    assert results[0].score >= results[1].score
+
+
+def test_scenario_retriever_respects_persona_filter_after_ranking() -> None:
+    retriever = ScenarioRetriever(
+        [
+            ScenarioEvidence(
+                source="general",
+                text="General rollout status is green and monitored.",
+            ),
+            ScenarioEvidence(
+                source="melchior_notes",
+                text="The retrieved evidence supports the rollout summary.",
+                persona="melchior",
+            ),
+            ScenarioEvidence(
+                source="casper_notes",
+                text="Residual risk stays medium without weekly audits.",
+                persona="casper",
+            ),
+        ]
+    )
+
+    results = retriever.retrieve("Explain the rollout summary", persona="melchior")
+
+    assert [item.metadata["source"] for item in results] == [
+        "melchior_notes",
+        "general",
+    ]
+
+
+def test_run_scenario_suite_tracks_retrieved_sources_and_hits() -> None:
+    dataset = ScenarioDataset.model_validate(
+        {
+            "cases": [
+                {
+                    "id": "retrieval_metrics",
+                    "query": "Summarize MAGI in one sentence.",
+                    "expected_verdict": "approve",
+                    "evidence": [
+                        {
+                            "source": "distractor",
+                            "text": "The office snack budget was approved for the summer social.",
+                        },
+                        {
+                            "source": "README",
+                            "text": "MAGI is a multi persona reasoning engine for assessing user requests against an evidence base.",
+                        },
+                    ],
+                    "checks": {
+                        "required_sources_any": ["README"],
+                        "min_citation_hit_rate": 1.0,
+                        "min_answer_support_score": 0.2,
+                        "require_human_review": True,
+                    },
+                }
+            ]
+        }
+    )
+
+    report = run_scenario_suite(dataset, force_stub=True, requested_mode="stub")
+
+    source_check = next(
+        check for check in report.cases[0].checks if check.name == "required_sources_any"
+    )
+    assert source_check.passed is True
+    assert report.cases[0].expected_retrieval_sources == ["README"]
+    assert report.cases[0].retrieved_sources[0] == "README"
+    assert report.cases[0].retrieved_relevant_chunk_count >= 1
+    assert report.cases[0].first_expected_source_rank == 1
+    assert report.cases[0].retrieval_source_recall == 1.0
+    assert report.summary.retrieval_evaluable_cases == 1
+    assert report.summary.cases_with_retrieval_hits == 1
+    assert report.summary.retrieval_hit_rate == 1.0
+    assert report.summary.retrieval_ranked_cases == 1
+    assert report.summary.retrieval_top_source_accuracy == 1.0
+    assert report.summary.retrieval_mrr == 1.0
+    assert report.summary.retrieval_source_recall == 1.0
+    assert report.cases[0].citation_hit_rate >= 1.0
+    assert report.cases[0].answer_support_score > 0.2
+    assert report.cases[0].answer_supported is True
+    assert report.cases[0].requires_human_review is True
+    assert report.summary.average_citation_hit_rate >= 1.0
+    assert report.summary.average_answer_support_score > 0.2
+    assert report.summary.supported_answer_rate == 1.0
+
+
+def test_run_scenario_suite_fails_when_required_source_is_not_retrieved() -> None:
+    dataset = ScenarioDataset.model_validate(
+        {
+            "cases": [
+                {
+                    "id": "missing_source",
+                    "query": "Summarize MAGI in one sentence.",
+                    "expected_verdict": "approve",
+                    "evidence": [
+                        {
+                            "source": "README",
+                            "text": "MAGI is a multi persona reasoning engine for assessing user requests against an evidence base.",
+                        }
+                    ],
+                    "checks": {"required_sources_all": ["README", "pilot_brief"]},
+                }
+            ]
+        }
+    )
+
+    report = run_scenario_suite(dataset, force_stub=True, requested_mode="stub")
+
+    source_check = next(
+        check for check in report.cases[0].checks if check.name == "required_sources_all"
+    )
+    assert source_check.passed is False
+    assert "pilot_brief" in source_check.details
+    assert report.summary.requirement_pass_rate < 1.0
+
+
+def test_run_scenario_suite_reports_rank_when_expected_source_is_not_first() -> None:
+    dataset = ScenarioDataset.model_validate(
+        {
+            "cases": [
+                {
+                    "id": "ranked_source",
+                    "query": "Explain rollout status and monitoring cadence.",
+                    "expected_verdict": "approve",
+                    "evidence": [
+                        {
+                            "source": "weekly_report",
+                            "text": "The rollout status and monitoring cadence are tracked in a weekly report.",
+                        },
+                        {
+                            "source": "rollout_notes",
+                            "text": "The rollout status is green and monitored by ops.",
+                        },
+                    ],
+                    "checks": {"required_sources_any": ["rollout_notes"]},
+                }
+            ]
+        }
+    )
+
+    report = run_scenario_suite(dataset, force_stub=True, requested_mode="stub")
+
+    assert report.cases[0].retrieved_sources[:2] == ["weekly_report", "rollout_notes"]
+    assert report.cases[0].first_expected_source_rank == 2
+    assert report.cases[0].retrieval_source_recall == 1.0
+    assert report.summary.retrieval_top_source_accuracy == 0.0
+    assert report.summary.retrieval_mrr == 0.5

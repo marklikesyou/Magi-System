@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import re
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
-from .vectorstore import InMemoryVectorStore, RetrievedChunk
+from .vectorstore import RetrievedChunk, VectorStore, metadata_matches_filters
 
 Formatter = Callable[[Iterable[RetrievedChunk]], str]
 Embedder = Callable[[str], Sequence[float]]
@@ -21,7 +21,7 @@ class RagRetriever:
     def __init__(
         self,
         embedder: Embedder,
-        store: InMemoryVectorStore,
+        store: VectorStore,
         *,
         formatter: Formatter = default_formatter,
     ):
@@ -39,13 +39,22 @@ class RagRetriever:
         return f"{id(self.store)}:{revision}"
 
     def retrieve(
-        self, query: str, *, persona: str | None = None, top_k: int = 8
+        self,
+        query: str,
+        *,
+        persona: str | None = None,
+        top_k: int = 8,
+        metadata_filters: Mapping[str, object] | None = None,
     ) -> list[RetrievedChunk]:
         if not query:
             return []
         enriched_query = f"[{persona}] {query}" if persona else query
         embedding = self.embedder(enriched_query)
-        results = self.store.search(embedding, top_k=top_k)
+        results = self.store.search(
+            embedding,
+            top_k=top_k,
+            metadata_filters=metadata_filters,
+        )
         page_numbers = {
             match.group(1)
             for match in re.finditer(r"page\s+(\d+)", query, re.IGNORECASE)
@@ -55,6 +64,8 @@ class RagRetriever:
             page_suffixes = {f"#page-{value}" for value in page_numbers}
             matched: list[RetrievedChunk] = []
             for entry in self.store.entries:
+                if not metadata_matches_filters(entry.metadata, metadata_filters):
+                    continue
                 entry_id = entry.document_id.lower()
                 lower_text = entry.text.lower()
                 matched_request = False
@@ -122,9 +133,19 @@ class RagRetriever:
         return unique[:top_k]
 
     def __call__(
-        self, query: str, *, persona: str | None = None, top_k: int = 8
+        self,
+        query: str,
+        *,
+        persona: str | None = None,
+        top_k: int = 8,
+        metadata_filters: Mapping[str, object] | None = None,
     ) -> str:
-        results = self.retrieve(query, persona=persona, top_k=top_k)
+        results = self.retrieve(
+            query,
+            persona=persona,
+            top_k=top_k,
+            metadata_filters=metadata_filters,
+        )
         if not results:
             return ""
         return self.formatter(results)

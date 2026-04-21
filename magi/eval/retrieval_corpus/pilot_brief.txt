@@ -1,0 +1,3 @@
+The pilot proposal scopes MAGI to internal policy triage for four weeks.
+Every decision keeps a human reviewer in the loop.
+Weekly evidence refreshes, rollback criteria, and audit logs are required guardrails before launch.

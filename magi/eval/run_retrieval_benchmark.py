@@ -11,11 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from magi.eval.scenario_harness import (
-    load_scenario_dataset,
-    render_scenario_report,
-    run_scenario_suite,
-    write_scenario_report,
+from magi.eval.retrieval_benchmark import (
+    load_retrieval_benchmark_dataset,
+    render_retrieval_benchmark_report,
+    run_retrieval_benchmark,
+    write_retrieval_benchmark_report,
 )
 
 
@@ -32,14 +32,10 @@ def _threshold_failures(
     summary = report.summary
     thresholds = {
         "overall_score": args.min_overall_score,
-        "verdict_accuracy": args.min_verdict_accuracy,
-        "requirement_pass_rate": args.min_requirement_pass_rate,
         "retrieval_hit_rate": args.min_retrieval_hit_rate,
         "retrieval_top_source_accuracy": args.min_retrieval_top_source_accuracy,
+        "retrieval_mrr": args.min_retrieval_mrr,
         "retrieval_source_recall": args.min_retrieval_source_recall,
-        "average_citation_hit_rate": args.min_average_citation_hit_rate,
-        "average_answer_support_score": args.min_average_answer_support_score,
-        "supported_answer_rate": args.min_supported_answer_rate,
     }
     failures: list[tuple[str, float, float]] = []
     for field, minimum in thresholds.items():
@@ -53,23 +49,18 @@ def _threshold_failures(
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run reusable end-to-end MAGI scenario evaluations."
+        description="Run a corpus-backed MAGI retrieval benchmark."
     )
     parser.add_argument(
         "--cases",
         type=Path,
         required=True,
-        help="Path to YAML dataset containing scenario cases.",
+        help="Path to YAML dataset describing the retrieval benchmark corpus and cases.",
     )
     parser.add_argument(
-        "--mode",
-        choices=("auto", "stub", "live"),
-        default="auto",
-        help="Execution mode: auto uses live reasoning when credentials are available, otherwise stub.",
-    )
-    parser.add_argument(
-        "--model",
-        help="Optional model override for live runs.",
+        "--store",
+        type=Path,
+        help="Optional logical store path to use for the benchmark corpus.",
     )
     parser.add_argument(
         "--report-out",
@@ -82,16 +73,6 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Fail if overall_score falls below this threshold.",
     )
     parser.add_argument(
-        "--min-verdict-accuracy",
-        type=_bounded_rate,
-        help="Fail if verdict_accuracy falls below this threshold.",
-    )
-    parser.add_argument(
-        "--min-requirement-pass-rate",
-        type=_bounded_rate,
-        help="Fail if requirement_pass_rate falls below this threshold.",
-    )
-    parser.add_argument(
         "--min-retrieval-hit-rate",
         type=_bounded_rate,
         help="Fail if retrieval_hit_rate falls below this threshold.",
@@ -102,46 +83,29 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Fail if retrieval_top_source_accuracy falls below this threshold.",
     )
     parser.add_argument(
+        "--min-retrieval-mrr",
+        type=_bounded_rate,
+        help="Fail if retrieval_mrr falls below this threshold.",
+    )
+    parser.add_argument(
         "--min-retrieval-source-recall",
         type=_bounded_rate,
         help="Fail if retrieval_source_recall falls below this threshold.",
-    )
-    parser.add_argument(
-        "--min-average-citation-hit-rate",
-        type=_bounded_rate,
-        help="Fail if average_citation_hit_rate falls below this threshold.",
-    )
-    parser.add_argument(
-        "--min-average-answer-support-score",
-        type=_bounded_rate,
-        help="Fail if average_answer_support_score falls below this threshold.",
-    )
-    parser.add_argument(
-        "--min-supported-answer-rate",
-        type=_bounded_rate,
-        help="Fail if supported_answer_rate falls below this threshold.",
     )
     return parser.parse_args(argv)
 
 
 def main(argv: List[str] | None = None) -> int:
     args = parse_args(argv)
-    dataset = load_scenario_dataset(args.cases)
-    force_stub = None
-    if args.mode == "stub":
-        force_stub = True
-    elif args.mode == "live":
-        force_stub = False
-
-    report = run_scenario_suite(
+    dataset = load_retrieval_benchmark_dataset(args.cases)
+    report = run_retrieval_benchmark(
         dataset,
-        force_stub=force_stub,
-        model=args.model,
-        requested_mode=args.mode,
+        args.cases,
+        store_path=args.store,
     )
-    print(render_scenario_report(report))
+    print(render_retrieval_benchmark_report(report))
     if args.report_out:
-        write_scenario_report(report, args.report_out)
+        write_retrieval_benchmark_report(report, args.report_out)
         print(f"report_saved\t{args.report_out}")
     failures = _threshold_failures(report, args)
     if failures:

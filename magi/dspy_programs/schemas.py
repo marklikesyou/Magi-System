@@ -21,6 +21,7 @@ class StrictModel(BaseModel):
 class RetrievedEvidence(StrictModel):
     citation: str
     source: str
+    document_id: str = ""
     text: str
     score: float = Field(default=0.0, ge=0.0)
     blocked: bool = False

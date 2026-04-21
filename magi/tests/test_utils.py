@@ -7,6 +7,7 @@ import pytest
 from magi.core.utils import (
     CircuitBreaker,
     LRUCache,
+    RateLimiter,
     TokenTracker,
     retry_with_backoff,
     sanitize_input,
@@ -71,6 +72,25 @@ def test_retry_with_backoff_exhausted():
 
     with pytest.raises(RuntimeError, match="permanent"):
         always_fails()
+
+
+def test_rate_limiter_waits_between_calls():
+    now = {"t": 0.0}
+    sleeps: list[float] = []
+
+    def fake_clock() -> float:
+        return now["t"]
+
+    def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        now["t"] += delay
+
+    limiter = RateLimiter(60, clock=fake_clock, sleeper=fake_sleep)
+
+    limiter.acquire()
+    limiter.acquire()
+
+    assert sleeps == [1.0]
 
 
 def test_sanitize_input_strips_control_characters():

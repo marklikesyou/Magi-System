@@ -15,7 +15,7 @@ _BATCH_SIZE = 100
 
 
 def embed_chunks(
-    chunks: Iterable[Dict[str, str]], embed_fn: EmbedFn | BatchEmbedFn
+    chunks: Iterable[Dict[str, object]], embed_fn: EmbedFn | BatchEmbedFn
 ) -> List[Dict[str, object]]:
     """Embed every chunk, using batch embedding when the embed function supports it.
 
@@ -39,7 +39,7 @@ def embed_chunks(
         batch_embedder = cast(BatchEmbedFn, embed_fn)
         for start in range(0, len(chunk_list), _BATCH_SIZE):
             batch = chunk_list[start : start + _BATCH_SIZE]
-            texts = [c["text"] for c in batch]
+            texts = [str(c["text"]) for c in batch]
             vectors = batch_embedder.embed_batch(texts)
             if len(vectors) != len(batch):
                 raise RuntimeError(
@@ -51,6 +51,6 @@ def embed_chunks(
 
     embedded = []
     for chunk in chunk_list:
-        vector = list(embed_fn(chunk["text"]))
+        vector = list(embed_fn(str(chunk["text"])))
         embedded.append({**chunk, "embedding": vector})
     return embedded

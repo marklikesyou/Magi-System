@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
+from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
@@ -10,7 +12,12 @@ from magi.app.service import run_chat_session
 from magi.core.config import get_settings
 from magi.core.embeddings import HashingEmbedder, build_embedder
 from magi.core.rag import RagRetriever
-from magi.core.storage import initialize_store, save_entries
+from magi.core.storage import (
+    describe_store_destination,
+    initialize_store,
+    persist_store,
+    save_json_document,
+)
 from magi.core.vectorstore import VectorEntry
 from magi.data_pipeline.chunkers import sliding_window_chunk
 from magi.data_pipeline.embed import embed_chunks
@@ -55,18 +62,63 @@ def _normalize_residual_label(value: object) -> Literal["low", "medium", "high"]
     return "medium"
 
 
+def _truncate_trace_text(text: object, limit: int = 120) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact) <= limit:
+        return compact
+    trimmed = compact[:limit]
+    if " " in trimmed:
+        trimmed = trimmed.rsplit(" ", 1)[0]
+    return trimmed + "..."
+
+
 def _vector_entries(payload: Iterable[Dict[str, object]]) -> List[VectorEntry]:
     entries = []
     for record in payload:
+        metadata = dict(cast(Dict[str, object], record.get("metadata", {})))
+        metadata.setdefault("source", str(record["id"]).split("::")[0])
         entries.append(
             VectorEntry(
                 document_id=str(record["id"]),
                 embedding=list(cast(Iterable[float], record["embedding"])),
                 text=str(record["text"]),
-                metadata={"source": str(record["id"]).split("::")[0]},
+                metadata=metadata,
             )
         )
     return entries
+
+
+def _decision_record_payload(result) -> Dict[str, object]:
+    return {
+        "decision": result.final_decision.model_dump(mode="json"),
+        "fused": result.fused.model_dump(mode="json"),
+        "decision_trace": asdict(result.decision_trace),
+        "effective_mode": result.effective_mode,
+        "model": result.model,
+    }
+
+
+def _decision_record_path(
+    args: argparse.Namespace, settings, result
+) -> Path | None:
+    explicit = getattr(args, "decision_record_out", None)
+    if explicit:
+        return explicit
+    trace_dir = str(getattr(settings, "decision_trace_dir", "") or "").strip()
+    if not trace_dir:
+        return None
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return Path(trace_dir) / f"{result.decision_trace.query_hash}-{timestamp}.json"
+
+
+def _persist_decision_record(
+    args: argparse.Namespace, settings, result
+) -> Path | None:
+    path = _decision_record_path(args, settings, result)
+    if path is None:
+        return None
+    save_json_document(path, _decision_record_payload(result))
+    return path
 
 
 def command_ingest(args: argparse.Namespace) -> int:
@@ -78,6 +130,26 @@ def command_ingest(args: argparse.Namespace) -> int:
 
         doc_paths = [Path(p) for p in args.paths]
         documents = ingest_paths(doc_paths)
+        existing_hashes = {
+            str(entry.metadata.get("content_hash", "")).strip()
+            for entry in store.entries
+            if str(entry.metadata.get("content_hash", "")).strip()
+        }
+        skipped_existing = 0
+        fresh_documents = []
+        for document in documents:
+            metadata = cast(Dict[str, object], document.get("metadata", {}))
+            content_hash = str(metadata.get("content_hash", "")).strip()
+            if content_hash and content_hash in existing_hashes:
+                skipped_existing += 1
+                continue
+            if content_hash:
+                existing_hashes.add(content_hash)
+            fresh_documents.append(document)
+        documents = fresh_documents
+        if not documents:
+            print("No new documents to ingest; all content already exists in the store.")
+            return 0
 
         chunks = []
         for doc in documents:
@@ -98,10 +170,14 @@ def command_ingest(args: argparse.Namespace) -> int:
         embedded = embed_chunks(chunks, embedder)
         entries = _vector_entries(embedded)
         store.add(entries)
-        save_entries(args.store, store.entries)
+        persist_store(args.store, store)
 
         print(f"Ingested {len(entries)} chunks from {len(documents)} document(s).")
-        print(f"Store persisted to {args.store}")
+        if skipped_existing:
+            print(
+                f"Skipped {skipped_existing} duplicate document(s) already present in the store."
+            )
+        print(describe_store_destination(args.store, store))
         if verbose:
             if isinstance(embedder, HashingEmbedder):
                 print("[verbose] Using hashing embedder (offline mode).")
@@ -152,30 +228,58 @@ def command_chat(args: argparse.Namespace) -> int:
         decision = result.final_decision
         fused = result.fused
         personas = result.personas
+        decision_record_path = _persist_decision_record(args, settings, result)
 
         if verbose and not json_output:
             print(f"[verbose] Received responses from {len(personas)} persona(s).")
+            trace = result.decision_trace
+            print(
+                "[verbose] Decision trace: "
+                f"query_hash={trace.query_hash} "
+                f"used_evidence={len(trace.used_evidence_ids)} "
+                f"cited_evidence={len(trace.cited_evidence_ids)} "
+                f"blocked_evidence={len(trace.blocked_evidence_ids)} "
+                f"safety={trace.safety_outcome} "
+                f"review_required={trace.requires_human_review} "
+                f"citation_hit_rate={trace.citation_hit_rate:.2f} "
+                f"answer_support={trace.answer_support_score:.2f}"
+            )
+            if decision_record_path is not None:
+                print(f"[verbose] Decision record saved to {decision_record_path}")
 
         if json_output:
-            print(
-                json.dumps(
-                    {
-                        "decision": decision.model_dump(mode="json"),
-                        "fused": fused.model_dump(mode="json"),
-                        "effective_mode": result.effective_mode,
-                        "model": result.model,
-                    },
-                    ensure_ascii=True,
-                    indent=2,
-                )
+            payload = _decision_record_payload(result)
+            payload["decision_record_path"] = (
+                str(decision_record_path) if decision_record_path is not None else ""
             )
+            print(json.dumps(payload, ensure_ascii=True, indent=2))
             return 0
 
         print(f"\n{'=' * 60}")
         print(f"Verdict: {decision.verdict.upper()}")
         print(f"Residual Risk: {decision.residual_risk}")
+        if decision.requires_human_review:
+            print("Human Review: REQUIRED")
         print(f"{'=' * 60}\n")
         print(f"{decision.justification}\n")
+        if decision.requires_human_review and decision.review_reason:
+            print(f"Review Reason: {decision.review_reason}\n")
+        trace = result.decision_trace
+        if trace.cited_evidence:
+            print("Cited Evidence:")
+            for cited_item in trace.cited_evidence:
+                snippet = _truncate_trace_text(cited_item.text)
+                print(f"  - {cited_item.citation} {cited_item.source}: {snippet}")
+            print()
+        if trace.blocked_evidence:
+            print("Blocked Evidence:")
+            for blocked_item in trace.blocked_evidence:
+                reasons = ", ".join(blocked_item.safety_reasons) or "blocked"
+                snippet = _truncate_trace_text(blocked_item.text)
+                print(f"  - {blocked_item.citation} {blocked_item.source}: {reasons}")
+                if snippet:
+                    print(f"    {snippet}")
+            print()
         print(f"{'-' * 60}")
         print("Persona Perspectives:\n")
         for persona in decision.persona_outputs:
@@ -283,6 +387,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Print the chat result as JSON.",
+    )
+    chat_parser.add_argument(
+        "--decision-record-out",
+        type=Path,
+        help="Optional path to persist the structured decision record as JSON.",
     )
     chat_parser.set_defaults(handler=command_chat)
 

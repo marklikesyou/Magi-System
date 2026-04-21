@@ -25,3 +25,5 @@ class FinalDecision(BaseModel):
     risks: List[str] = Field(default_factory=list)
     mitigations: List[str] = Field(default_factory=list)
     residual_risk: Literal["low", "medium", "high"] = "medium"
+    requires_human_review: bool = False
+    review_reason: str = ""

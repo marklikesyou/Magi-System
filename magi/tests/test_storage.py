@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
+import magi.core.storage as storage
 from magi.core.embeddings import HashingEmbedder
-from magi.core.storage import initialize_store, load_entries, save_entries
-from magi.core.vectorstore import VectorEntry
+from magi.core.storage import (
+    describe_store_destination,
+    initialize_store,
+    load_entries,
+    persist_store,
+    save_entries,
+    save_json_document,
+)
+from magi.core.vectorstore import InMemoryVectorStore, VectorEntry
 
 
 def test_save_and_load_entries(sample_entries, vector_store_path):
@@ -40,16 +49,17 @@ def test_save_atomic(sample_entries, vector_store_path):
     assert len(data) == len(sample_entries)
 
 
-def test_initialize_store_fresh(tmp_path):
+def test_initialize_store_fresh(tmp_path, monkeypatch):
     """A brand-new store (no file on disk) has the correct dimension and is empty."""
     path = tmp_path / "fresh_store.json"
     embedder = HashingEmbedder(dimension=32)
+    monkeypatch.setattr(storage, "get_settings", lambda: SimpleNamespace(vector_db_url=""))
     store = initialize_store(path, embedder)
     assert store.dim == 32
     assert len(store.entries) == 0
 
 
-def test_initialize_store_dimension_mismatch(tmp_path):
+def test_initialize_store_dimension_mismatch(tmp_path, monkeypatch):
     """When stored embeddings have a different dimension the store fails loudly."""
     path = tmp_path / "mismatch_store.json"
 
@@ -62,5 +72,66 @@ def test_initialize_store_dimension_mismatch(tmp_path):
     save_entries(path, [old_entry])
 
     new_embedder = HashingEmbedder(dimension=32)
+    monkeypatch.setattr(storage, "get_settings", lambda: SimpleNamespace(vector_db_url=""))
     with pytest.raises(RuntimeError, match="active embedder expects 32"):
         initialize_store(path, new_embedder)
+
+
+def test_save_json_document_writes_atomic_json(tmp_path):
+    path = tmp_path / "records" / "decision.json"
+
+    save_json_document(path, {"verdict": "approve", "score": 0.9})
+
+    assert path.exists()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload == {"verdict": "approve", "score": 0.9}
+
+
+def test_persist_store_writes_json_for_in_memory_store(sample_entries, tmp_path):
+    path = tmp_path / "persisted_store.json"
+    store = InMemoryVectorStore(dim=len(sample_entries[0].embedding))
+    store.add(sample_entries)
+
+    persist_store(path, store)
+
+    payload = load_entries(path)
+    assert [entry.document_id for entry in payload] == [
+        entry.document_id for entry in sample_entries
+    ]
+
+
+def test_initialize_store_uses_pgvector_backend_when_database_url_configured(
+    monkeypatch, tmp_path
+):
+    embedder = HashingEmbedder(dimension=32)
+    captured: dict[str, object] = {}
+
+    class FakePgVectorStore:
+        def __init__(self, dsn: str, dim: int, *, store_path) -> None:
+            captured["dsn"] = dsn
+            captured["dim"] = dim
+            captured["store_path"] = store_path
+
+    monkeypatch.setattr(
+        storage, "get_settings", lambda: SimpleNamespace(vector_db_url="postgresql://db")
+    )
+    monkeypatch.setattr(storage, "PgVectorStore", FakePgVectorStore)
+
+    store_obj = initialize_store(tmp_path / "logical-store.json", embedder)
+
+    assert isinstance(store_obj, FakePgVectorStore)
+    assert captured == {
+        "dsn": "postgresql://db",
+        "dim": 32,
+        "store_path": tmp_path / "logical-store.json",
+    }
+
+
+def test_describe_store_destination_uses_database_namespace(monkeypatch, tmp_path):
+    class FakePgVectorStore:
+        pass
+
+    monkeypatch.setattr(storage, "PgVectorStore", FakePgVectorStore)
+    message = describe_store_destination(tmp_path / "store.json", FakePgVectorStore())
+
+    assert "PostgreSQL namespace" in message

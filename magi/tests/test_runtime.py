@@ -173,6 +173,19 @@ def test_magi_program_cache_invalidates_when_store_changes():
     assert "supporting evidence" in second.final_answer
 
 
+def test_magi_program_records_cache_hit_metadata():
+    runtime.clear_cache()
+    program = MagiProgram(retriever=lambda query, **kwargs: "", force_stub=True)
+
+    program("Summarize MAGI", constraints="")
+    first_run = dict(program.last_run_metadata)
+    program("Summarize MAGI", constraints="")
+    second_run = dict(program.last_run_metadata)
+
+    assert first_run["cache_hit"] is False
+    assert second_run["cache_hit"] is True
+
+
 def test_normalize_persona_stance_rewrites_evidence_gap_reject_to_revise():
     stance = _normalize_persona_stance(
         "What is MAGI's guaranteed p95 latency SLA?",

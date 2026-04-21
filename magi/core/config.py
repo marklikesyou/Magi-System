@@ -18,6 +18,49 @@ class Settings(BaseSettings):
     openai_api_base: str = ""
     openai_organization: str = ""
     openai_request_timeout: float = 60.0
+    provider_max_retries: int = Field(
+        default=3,
+        validation_alias=AliasChoices(
+            "provider_max_retries", "MAGI_PROVIDER_MAX_RETRIES"
+        ),
+    )
+    provider_retry_initial_delay: float = Field(
+        default=1.0,
+        validation_alias=AliasChoices(
+            "provider_retry_initial_delay", "MAGI_PROVIDER_RETRY_INITIAL_DELAY"
+        ),
+    )
+    provider_requests_per_minute: int = Field(
+        default=0,
+        validation_alias=AliasChoices(
+            "provider_requests_per_minute", "MAGI_PROVIDER_REQUESTS_PER_MINUTE"
+        ),
+    )
+    approve_min_citation_hit_rate: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "approve_min_citation_hit_rate",
+            "MAGI_APPROVE_MIN_CITATION_HIT_RATE",
+        ),
+    )
+    approve_min_answer_support_score: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "approve_min_answer_support_score",
+            "MAGI_APPROVE_MIN_ANSWER_SUPPORT_SCORE",
+        ),
+    )
+    require_human_review_for_approvals: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "require_human_review_for_approvals",
+            "MAGI_REQUIRE_HUMAN_REVIEW_FOR_APPROVALS",
+        ),
+    )
     openai_model: str = "gpt-4o-mini-2024-07-18"
     gemini_model: str = "gemini-2.5-flash-lite"
     openai_embedding_model: str = "text-embedding-3-small"
@@ -36,6 +79,12 @@ class Settings(BaseSettings):
     vector_db_url: str = Field(
         default="",
         validation_alias=AliasChoices("vector_db_url", "DATABASE_URL"),
+    )
+    decision_trace_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "decision_trace_dir", "MAGI_DECISION_TRACE_DIR"
+        ),
     )
 
 

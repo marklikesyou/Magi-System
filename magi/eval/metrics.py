@@ -9,6 +9,7 @@ No external dependencies -- all math is implemented directly.
 from __future__ import annotations
 
 import math
+import re
 from typing import Dict, Iterable, List, Optional, Tuple, cast
 
 DEFAULT_LABELS: List[str] = ["approve", "reject", "revise"]
@@ -18,6 +19,35 @@ _Z_VALUES: Dict[float, float] = {
     0.90: 1.645,
     0.95: 1.96,
     0.99: 2.576,
+}
+_CITATION_RE = re.compile(r"\[(\d+)\]")
+_GROUNDING_STOPWORDS = {
+    "about",
+    "after",
+    "also",
+    "and",
+    "are",
+    "been",
+    "being",
+    "but",
+    "from",
+    "have",
+    "into",
+    "just",
+    "more",
+    "only",
+    "that",
+    "than",
+    "their",
+    "them",
+    "they",
+    "this",
+    "those",
+    "through",
+    "were",
+    "when",
+    "with",
+    "would",
 }
 
 
@@ -53,6 +83,39 @@ def accuracy(predictions: Iterable[str], references: Iterable[str]) -> float:
         return 0.0
     matches = sum(1 for pred, ref in zip(preds, refs) if pred == ref)
     return matches / len(preds)
+
+
+def citation_hit_rate(text: str, retrieved_chunk_count: int) -> float:
+    """Share of bracket citations that point at retrieved chunk indices."""
+    citations = [int(match.group(1)) for match in _CITATION_RE.finditer(text)]
+    if not citations:
+        return 0.0
+    if retrieved_chunk_count <= 0:
+        return 0.0
+    valid = sum(1 for citation in citations if 1 <= citation <= retrieved_chunk_count)
+    return valid / len(citations)
+
+
+def answer_support_score(answer_text: str, evidence_texts: Iterable[str]) -> float:
+    """Lexical overlap between answer tokens and retrieved evidence tokens."""
+
+    def tokens(text: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[a-z0-9]{4,}", text.lower())
+            if token not in _GROUNDING_STOPWORDS
+        }
+
+    answer_tokens = tokens(answer_text)
+    if not answer_tokens:
+        return 0.0
+    evidence_tokens: set[str] = set()
+    for item in evidence_texts:
+        evidence_tokens.update(tokens(item))
+    if not evidence_tokens:
+        return 0.0
+    overlap = answer_tokens & evidence_tokens
+    return len(overlap) / len(answer_tokens)
 
 
 def precision_recall_f1(

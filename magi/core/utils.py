@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -88,6 +89,33 @@ def retry_with_backoff(
         return wrapper
 
     return decorator
+
+
+class RateLimiter:
+    def __init__(
+        self,
+        requests_per_minute: int = 0,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ):
+        self.requests_per_minute = max(0, int(requests_per_minute))
+        self._clock = clock
+        self._sleeper = sleeper
+        self._lock = threading.Lock()
+        self._next_allowed_at = 0.0
+
+    def acquire(self) -> None:
+        if self.requests_per_minute <= 0:
+            return
+        min_interval = 60.0 / self.requests_per_minute
+        with self._lock:
+            now = self._clock()
+            wait_for = max(0.0, self._next_allowed_at - now)
+            if wait_for > 0.0:
+                self._sleeper(wait_for)
+                now = self._clock()
+            self._next_allowed_at = max(now, self._next_allowed_at) + min_interval
 
 
 def sanitize_input(text: str, max_length: int = 10000) -> str:

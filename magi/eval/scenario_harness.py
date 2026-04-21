@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -17,16 +17,68 @@ from magi.dspy_programs.personas import (
     get_token_stats,
     reset_token_tracking,
 )
-from magi.eval.metrics import accuracy
+from magi.eval.metrics import accuracy, answer_support_score, citation_hit_rate
 
 VALID_VERDICTS = {"approve", "reject", "revise"}
 VALID_RISK_LEVELS = {"low", "medium", "high"}
 VALID_PERSONAS = {"melchior", "balthasar", "casper"}
 _CITATION_RE = re.compile(r"\[\d+\]")
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "do",
+    "does",
+    "for",
+    "from",
+    "how",
+    "i",
+    "in",
+    "is",
+    "it",
+    "my",
+    "of",
+    "on",
+    "one",
+    "or",
+    "our",
+    "sentence",
+    "sentences",
+    "should",
+    "the",
+    "to",
+    "two",
+    "what",
+    "with",
+    "your",
+}
 
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.replace("’", "'")).strip().lower()
+
+
+def _query_terms(text: str) -> list[str]:
+    normalized = _normalize_text(text)
+    return [
+        token
+        for token in _TOKEN_RE.findall(normalized)
+        if len(token) > 1 and token not in _STOPWORDS
+    ]
+
+
+def _query_phrases(tokens: list[str]) -> set[str]:
+    return {
+        " ".join(tokens[index : index + 2])
+        for index in range(len(tokens) - 1)
+        if tokens[index] != tokens[index + 1]
+    }
 
 
 class ScenarioEvidence(BaseModel):
@@ -60,8 +112,13 @@ class ScenarioEvidence(BaseModel):
 class ScenarioChecks(BaseModel):
     required_terms_all: List[str] = Field(default_factory=list)
     required_terms_any: List[str] = Field(default_factory=list)
+    required_sources_all: List[str] = Field(default_factory=list)
+    required_sources_any: List[str] = Field(default_factory=list)
     forbidden_terms: List[str] = Field(default_factory=list)
     min_citations: int = Field(default=0, ge=0)
+    min_citation_hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    min_answer_support_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    require_human_review: bool | None = None
     blocked_evidence_min: int = Field(default=0, ge=0)
     blocked_evidence_max: int | None = Field(default=None, ge=0)
 
@@ -70,6 +127,8 @@ class ScenarioChecks(BaseModel):
         for field_name in (
             "required_terms_all",
             "required_terms_any",
+            "required_sources_all",
+            "required_sources_any",
             "forbidden_terms",
         ):
             values = [
@@ -172,8 +231,19 @@ class ScenarioCaseResult(BaseModel):
     expected_residual_risk: str | None = None
     predicted_residual_risk: str
     citation_count: int
+    citation_hit_rate: float = 0.0
+    answer_support_score: float = 0.0
+    answer_supported: bool = False
+    requires_human_review: bool = False
+    review_reason: str = ""
     safe_evidence_count: int
     blocked_evidence_count: int
+    retrieved_chunk_count: int = 0
+    retrieved_relevant_chunk_count: int = 0
+    expected_retrieval_sources: List[str] = Field(default_factory=list)
+    first_expected_source_rank: int | None = None
+    retrieval_source_recall: float = 0.0
+    retrieved_sources: List[str] = Field(default_factory=list)
     checks: List[ScenarioCheckResult] = Field(default_factory=list)
     final_answer: str
     justification: str
@@ -192,6 +262,17 @@ class ScenarioSummary(BaseModel):
     model: str
     total_requirements: int
     passed_requirements: int
+    retrieval_evaluable_cases: int = 0
+    cases_with_retrieval_hits: int = 0
+    retrieval_hit_rate: float = 0.0
+    retrieval_ranked_cases: int = 0
+    retrieval_top_source_accuracy: float = 0.0
+    retrieval_mrr: float = 0.0
+    retrieval_source_recall: float = 0.0
+    answer_support_evaluable_cases: int = 0
+    average_citation_hit_rate: float = 0.0
+    average_answer_support_score: float = 0.0
+    supported_answer_rate: float = 0.0
     token_stats: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -205,29 +286,78 @@ class ScenarioRetriever:
     def __init__(self, evidence: Sequence[ScenarioEvidence]):
         self._evidence = list(evidence)
 
+    @staticmethod
+    def _score_evidence(query: str, item: ScenarioEvidence) -> tuple[float, int, float]:
+        query_tokens = _query_terms(query)
+        if not query_tokens:
+            return (0.0, 0, item.score)
+        evidence_tokens = set(_query_terms(item.text))
+        token_overlap = len(evidence_tokens.intersection(query_tokens))
+        coverage = token_overlap / max(1, len(set(query_tokens)))
+        normalized_text = _normalize_text(item.text)
+        phrase_hits = sum(
+            1 for phrase in _query_phrases(query_tokens) if phrase in normalized_text
+        )
+        lexical_score = coverage + (0.2 * phrase_hits)
+        return (lexical_score, token_overlap, item.score)
+
     def retrieve(
-        self, query: str, *, persona: str | None = None, top_k: int = 8
+        self,
+        query: str,
+        *,
+        persona: str | None = None,
+        top_k: int = 8,
+        metadata_filters: Mapping[str, object] | None = None,
     ) -> list[RetrievedChunk]:
-        del query
+        del metadata_filters
         persona_key = (persona or "").strip().lower() or None
-        chunks: list[RetrievedChunk] = []
+        ranked: list[tuple[tuple[float, int, float], int, ScenarioEvidence]] = []
         for index, item in enumerate(self._evidence, start=1):
             if item.persona and item.persona != persona_key:
                 continue
+            ranked.append((self._score_evidence(query, item), index, item))
+        ranked.sort(
+            key=lambda entry: (
+                entry[0][0],
+                entry[0][1],
+                entry[0][2],
+                -entry[1],
+            )
+            ,
+            reverse=True,
+        )
+        chunks: list[RetrievedChunk] = []
+        for rank, index, item in ranked[:top_k]:
             chunks.append(
                 RetrievedChunk(
                     document_id=f"{item.source}::{index}",
                     text=item.text,
-                    score=max(0.0, item.score - (index * 1e-6)),
-                    metadata={"source": item.source},
+                    score=max(0.0, rank[0] + (0.01 * rank[2]) - (index * 1e-6)),
+                    metadata={
+                        "source": item.source,
+                        "persona": item.persona or "",
+                        "query_overlap": rank[1],
+                    },
                 )
             )
-        return chunks[:top_k]
+        return chunks
 
     def __call__(
-        self, query: str, *, persona: str | None = None, top_k: int = 8
+        self,
+        query: str,
+        *,
+        persona: str | None = None,
+        top_k: int = 8,
+        metadata_filters: Mapping[str, object] | None = None,
     ) -> str:
-        return default_formatter(self.retrieve(query, persona=persona, top_k=top_k))
+        return default_formatter(
+            self.retrieve(
+                query,
+                persona=persona,
+                top_k=top_k,
+                metadata_filters=metadata_filters,
+            )
+        )
 
 
 def load_scenario_dataset(path: Path) -> ScenarioDataset:
@@ -266,16 +396,97 @@ def _combined_answer_text(
     ).strip()
 
 
+def _retrieval_details(chunks: Sequence[RetrievedChunk]) -> tuple[list[str], int]:
+    sources: list[str] = []
+    relevant = 0
+    seen_sources: set[str] = set()
+    for chunk in chunks:
+        source = str(chunk.metadata.get("source", "")).strip()
+        if source and source not in seen_sources:
+            seen_sources.add(source)
+            sources.append(source)
+        overlap = chunk.metadata.get("query_overlap", 0)
+        if isinstance(overlap, bool):
+            overlap_value = int(overlap)
+        elif isinstance(overlap, (int, float)):
+            overlap_value = int(overlap)
+        else:
+            try:
+                overlap_value = int(str(overlap or 0))
+            except (TypeError, ValueError):
+                overlap_value = 0
+        if overlap_value > 0:
+            relevant += 1
+    return sources, relevant
+
+
+def _answer_grounding(
+    text: str,
+    chunks: Sequence[RetrievedChunk],
+) -> tuple[float, float, bool]:
+    hit_rate = citation_hit_rate(text, len(chunks))
+    support_score = answer_support_score(text, (chunk.text for chunk in chunks))
+    supported = bool(chunks) and hit_rate > 0.0 and support_score >= 0.2
+    return hit_rate, support_score, supported
+
+
+def _retrieval_expectations(
+    case: ScenarioCase, retrieved_sources: Sequence[str]
+) -> tuple[list[str], int | None, float]:
+    expected_all = [
+        _normalize_text(source) for source in case.checks.required_sources_all if source
+    ]
+    expected_any = [
+        _normalize_text(source) for source in case.checks.required_sources_any if source
+    ]
+    expected_union = list(dict.fromkeys(expected_all + expected_any))
+    if not expected_union:
+        return [], None, 0.0
+
+    raw_expected = list(
+        dict.fromkeys(
+            [source for source in case.checks.required_sources_all if source]
+            + [source for source in case.checks.required_sources_any if source]
+        )
+    )
+    normalized_retrieved = [
+        _normalize_text(source) for source in retrieved_sources if str(source).strip()
+    ]
+    first_expected_rank: int | None = None
+    for index, source in enumerate(normalized_retrieved, start=1):
+        if source in expected_union:
+            first_expected_rank = index
+            break
+
+    recall_parts: list[float] = []
+    if expected_all:
+        matched_all = sum(1 for source in expected_all if source in normalized_retrieved)
+        recall_parts.append(matched_all / len(expected_all))
+    if expected_any:
+        recall_parts.append(
+            1.0 if any(source in normalized_retrieved for source in expected_any) else 0.0
+        )
+    source_recall = (
+        sum(recall_parts) / len(recall_parts) if recall_parts else 0.0
+    )
+    return raw_expected, first_expected_rank, source_recall
+
+
 def _evaluate_checks(
     case: ScenarioCase,
     *,
     predicted_residual_risk: str,
     combined_text: str,
     citation_count: int,
+    citation_hit_rate: float,
+    answer_support_score: float,
+    requires_human_review: bool,
     blocked_evidence_count: int,
+    retrieved_sources: Sequence[str],
 ) -> List[ScenarioCheckResult]:
     checks: list[ScenarioCheckResult] = []
     lowered = _normalize_text(combined_text)
+    normalized_sources = {_normalize_text(source) for source in retrieved_sources}
 
     if case.expected_residual_risk is not None:
         passed = predicted_residual_risk == case.expected_residual_risk
@@ -325,6 +536,40 @@ def _evaluate_checks(
             )
         )
 
+    if case.checks.required_sources_all:
+        missing = [
+            source
+            for source in case.checks.required_sources_all
+            if _normalize_text(source) not in normalized_sources
+        ]
+        checks.append(
+            ScenarioCheckResult(
+                name="required_sources_all",
+                passed=not missing,
+                details="all required sources retrieved"
+                if not missing
+                else f"missing sources: {', '.join(missing)}",
+            )
+        )
+
+    if case.checks.required_sources_any:
+        matches = [
+            source
+            for source in case.checks.required_sources_any
+            if _normalize_text(source) in normalized_sources
+        ]
+        checks.append(
+            ScenarioCheckResult(
+                name="required_sources_any",
+                passed=bool(matches),
+                details=(
+                    f"retrieved sources: {', '.join(matches)}"
+                    if matches
+                    else f"expected one of: {', '.join(case.checks.required_sources_any)}"
+                ),
+            )
+        )
+
     if case.checks.forbidden_terms:
         offending = [
             term
@@ -351,6 +596,48 @@ def _evaluate_checks(
                     f"expected at least {case.checks.min_citations}, got {citation_count}"
                     if not passed
                     else f"found {citation_count} citation(s)"
+                ),
+            )
+        )
+
+    if case.checks.min_citation_hit_rate:
+        passed = citation_hit_rate >= case.checks.min_citation_hit_rate
+        checks.append(
+            ScenarioCheckResult(
+                name="min_citation_hit_rate",
+                passed=passed,
+                details=(
+                    f"expected at least {case.checks.min_citation_hit_rate:.2f}, got {citation_hit_rate:.2f}"
+                    if not passed
+                    else f"citation hit rate {citation_hit_rate:.2f}"
+                ),
+            )
+        )
+
+    if case.checks.min_answer_support_score:
+        passed = answer_support_score >= case.checks.min_answer_support_score
+        checks.append(
+            ScenarioCheckResult(
+                name="min_answer_support_score",
+                passed=passed,
+                details=(
+                    f"expected at least {case.checks.min_answer_support_score:.2f}, got {answer_support_score:.2f}"
+                    if not passed
+                    else f"answer support score {answer_support_score:.2f}"
+                ),
+            )
+        )
+
+    if case.checks.require_human_review is not None:
+        passed = requires_human_review is case.checks.require_human_review
+        checks.append(
+            ScenarioCheckResult(
+                name="require_human_review",
+                passed=passed,
+                details=(
+                    f"expected require_human_review={case.checks.require_human_review}, got {requires_human_review}"
+                    if not passed
+                    else f"require_human_review={requires_human_review}"
                 ),
             )
         )
@@ -395,15 +682,46 @@ def run_scenario_suite(
     case_results: list[ScenarioCaseResult] = []
     effective_mode = "stub"
     resolved_model = model or ""
+    retrieval_evaluable_cases = 0
+    cases_with_retrieval_hits = 0
+    retrieval_ranked_cases = 0
+    retrieval_top_source_hits = 0
+    retrieval_rr_total = 0.0
+    retrieval_source_recall_total = 0.0
+    answer_support_evaluable_cases = 0
+    citation_hit_rate_total = 0.0
+    answer_support_score_total = 0.0
+    supported_answers = 0
 
     for case in dataset.cases:
         safe_evidence_count, blocked_evidence_count = _evidence_safety_counts(
             case.evidence
         )
+        retriever = ScenarioRetriever(case.evidence)
+        retrieved_chunks = retriever.retrieve(case.query)
+        retrieved_sources, retrieved_relevant_chunk_count = _retrieval_details(
+            retrieved_chunks
+        )
+        (
+            expected_retrieval_sources,
+            first_expected_source_rank,
+            retrieval_source_recall,
+        ) = _retrieval_expectations(case, retrieved_sources)
+        if case.evidence:
+            retrieval_evaluable_cases += 1
+            if retrieved_relevant_chunk_count > 0:
+                cases_with_retrieval_hits += 1
+        if expected_retrieval_sources:
+            retrieval_ranked_cases += 1
+            retrieval_source_recall_total += retrieval_source_recall
+            if first_expected_source_rank is not None:
+                retrieval_rr_total += 1.0 / first_expected_source_rank
+                if first_expected_source_rank == 1:
+                    retrieval_top_source_hits += 1
         session = run_chat_session(
             case.query,
             case.constraints,
-            ScenarioRetriever(case.evidence),
+            retriever,
             force_stub=force_stub,
             model=model,
             client=client,
@@ -418,12 +736,25 @@ def run_scenario_suite(
         ]
         combined_text = _combined_answer_text(final_answer, justification, next_steps)
         citation_count = len(_CITATION_RE.findall(combined_text))
+        case_citation_hit_rate, case_answer_support_score, answer_supported = (
+            _answer_grounding(combined_text, retrieved_chunks)
+        )
+        if retrieved_chunks:
+            answer_support_evaluable_cases += 1
+            citation_hit_rate_total += case_citation_hit_rate
+            answer_support_score_total += case_answer_support_score
+            if answer_supported:
+                supported_answers += 1
         check_results = _evaluate_checks(
             case,
             predicted_residual_risk=session.final_decision.residual_risk,
             combined_text=combined_text,
             citation_count=citation_count,
+            citation_hit_rate=case_citation_hit_rate,
+            answer_support_score=case_answer_support_score,
+            requires_human_review=session.final_decision.requires_human_review,
             blocked_evidence_count=blocked_evidence_count,
+            retrieved_sources=retrieved_sources,
         )
         verdict_match = session.final_decision.verdict == case.expected_verdict
         passed = verdict_match and all(check.passed for check in check_results)
@@ -446,8 +777,19 @@ def run_scenario_suite(
                 expected_residual_risk=case.expected_residual_risk,
                 predicted_residual_risk=session.final_decision.residual_risk,
                 citation_count=citation_count,
+                citation_hit_rate=case_citation_hit_rate,
+                answer_support_score=case_answer_support_score,
+                answer_supported=answer_supported,
+                requires_human_review=session.final_decision.requires_human_review,
+                review_reason=session.final_decision.review_reason,
                 safe_evidence_count=safe_evidence_count,
                 blocked_evidence_count=blocked_evidence_count,
+                retrieved_chunk_count=len(retrieved_chunks),
+                retrieved_relevant_chunk_count=retrieved_relevant_chunk_count,
+                expected_retrieval_sources=expected_retrieval_sources,
+                first_expected_source_rank=first_expected_source_rank,
+                retrieval_source_recall=retrieval_source_recall,
+                retrieved_sources=retrieved_sources,
                 checks=check_results,
                 final_answer=final_answer,
                 justification=justification,
@@ -478,6 +820,43 @@ def run_scenario_suite(
         model=resolved_model,
         total_requirements=total_requirements,
         passed_requirements=passed_requirements,
+        retrieval_evaluable_cases=retrieval_evaluable_cases,
+        cases_with_retrieval_hits=cases_with_retrieval_hits,
+        retrieval_hit_rate=(
+            1.0
+            if retrieval_evaluable_cases == 0
+            else cases_with_retrieval_hits / retrieval_evaluable_cases
+        ),
+        retrieval_ranked_cases=retrieval_ranked_cases,
+        retrieval_top_source_accuracy=(
+            0.0
+            if retrieval_ranked_cases == 0
+            else retrieval_top_source_hits / retrieval_ranked_cases
+        ),
+        retrieval_mrr=(
+            0.0 if retrieval_ranked_cases == 0 else retrieval_rr_total / retrieval_ranked_cases
+        ),
+        retrieval_source_recall=(
+            0.0
+            if retrieval_ranked_cases == 0
+            else retrieval_source_recall_total / retrieval_ranked_cases
+        ),
+        answer_support_evaluable_cases=answer_support_evaluable_cases,
+        average_citation_hit_rate=(
+            0.0
+            if answer_support_evaluable_cases == 0
+            else citation_hit_rate_total / answer_support_evaluable_cases
+        ),
+        average_answer_support_score=(
+            0.0
+            if answer_support_evaluable_cases == 0
+            else answer_support_score_total / answer_support_evaluable_cases
+        ),
+        supported_answer_rate=(
+            0.0
+            if answer_support_evaluable_cases == 0
+            else supported_answers / answer_support_evaluable_cases
+        ),
         token_stats=get_token_stats(),
     )
 
@@ -487,7 +866,9 @@ def run_scenario_suite(
 
 
 def render_scenario_report(report: ScenarioReport) -> str:
-    lines = ["case_id\texpected\tpredicted\tpassed\tcitations\tblocked"]
+    lines = [
+        "case_id\texpected\tpredicted\tpassed\tcitations\tcitation_hit_rate\tanswer_support\tsupported\tblocked\tretrieved\tretrieval_hits\tfirst_expected_rank\tsource_recall"
+    ]
     for item in report.cases:
         lines.append(
             "\t".join(
@@ -497,7 +878,14 @@ def render_scenario_report(report: ScenarioReport) -> str:
                     item.predicted_verdict,
                     "yes" if item.passed else "no",
                     str(item.citation_count),
+                    f"{item.citation_hit_rate:.2f}",
+                    f"{item.answer_support_score:.2f}",
+                    "yes" if item.answer_supported else "no",
                     str(item.blocked_evidence_count),
+                    str(item.retrieved_chunk_count),
+                    str(item.retrieved_relevant_chunk_count),
+                    str(item.first_expected_source_rank or "-"),
+                    f"{item.retrieval_source_recall:.2f}",
                 ]
             )
         )
@@ -512,6 +900,19 @@ def render_scenario_report(report: ScenarioReport) -> str:
             f"model\t{report.summary.model}",
             f"passed_cases\t{report.summary.passed_cases}/{report.summary.total_cases}",
             f"passed_requirements\t{report.summary.passed_requirements}/{report.summary.total_requirements}",
+            "retrieval_hits\t"
+            f"{report.summary.cases_with_retrieval_hits}/{report.summary.retrieval_evaluable_cases}",
+            f"retrieval_hit_rate\t{report.summary.retrieval_hit_rate:.2%}",
+            "retrieval_top_source_accuracy\t"
+            f"{report.summary.retrieval_top_source_accuracy:.2%}",
+            f"retrieval_mrr\t{report.summary.retrieval_mrr:.4f}",
+            f"retrieval_source_recall\t{report.summary.retrieval_source_recall:.2%}",
+            "answer_support_cases\t"
+            f"{report.summary.answer_support_evaluable_cases}/{report.summary.total_cases}",
+            f"average_citation_hit_rate\t{report.summary.average_citation_hit_rate:.2%}",
+            "average_answer_support_score\t"
+            f"{report.summary.average_answer_support_score:.4f}",
+            f"supported_answer_rate\t{report.summary.supported_answer_rate:.2%}",
         ]
     )
     token_stats = report.summary.token_stats

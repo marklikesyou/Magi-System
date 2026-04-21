@@ -32,6 +32,18 @@ python -m magi.app.cli ingest docs/briefing.pdf
 python -m magi.app.cli chat "Should we deploy the latest patch?" --constraints "Budget <= 50k"
 ```
 
+### Runtime controls
+
+The most relevant environment variables for production-style runs are:
+
+- `MAGI_PROVIDER_MAX_RETRIES` and `MAGI_PROVIDER_RETRY_INITIAL_DELAY` for provider retry policy.
+- `MAGI_PROVIDER_REQUESTS_PER_MINUTE` for provider-side throttling.
+- `MAGI_DECISION_TRACE_DIR` to persist structured decision records from CLI runs.
+- `MAGI_APPROVE_MIN_CITATION_HIT_RATE` and `MAGI_APPROVE_MIN_ANSWER_SUPPORT_SCORE` to gate `approve` on cited-evidence quality.
+- `MAGI_REQUIRE_HUMAN_REVIEW_FOR_APPROVALS` to keep grounded approvals flagged for human review.
+
+With the current defaults, unsupported approvals are downgraded to `revise`, and supported approvals are still marked as requiring human review.
+
 ### Testing
 
 Run the lightweight unit suite anytime with:

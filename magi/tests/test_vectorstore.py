@@ -137,3 +137,65 @@ def test_search_results_sorted_by_score(small_embedder, sample_entries):
 
     scores = [r.score for r in results]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_search_filters_by_metadata(small_embedder):
+    store = InMemoryVectorStore(dim=32)
+    store.add(
+        [
+            VectorEntry(
+                document_id="doc-a",
+                embedding=small_embedder("release approved"),
+                text="release approved",
+                metadata={"source": "doc-a.pdf", "page": 1},
+            ),
+            VectorEntry(
+                document_id="doc-b",
+                embedding=small_embedder("release approved"),
+                text="release approved",
+                metadata={"source": "doc-b.pdf", "page": 2},
+            ),
+        ]
+    )
+
+    results = store.search(
+        small_embedder("release approved"),
+        top_k=5,
+        metadata_filters={"source": "doc-b.pdf", "page": 2},
+    )
+
+    assert [item.document_id for item in results] == ["doc-b"]
+
+
+def test_search_filters_accept_multiple_allowed_values(small_embedder):
+    store = InMemoryVectorStore(dim=32)
+    store.add(
+        [
+            VectorEntry(
+                document_id="doc-a",
+                embedding=small_embedder("policy rollout"),
+                text="policy rollout",
+                metadata={"source": "doc-a.pdf"},
+            ),
+            VectorEntry(
+                document_id="doc-b",
+                embedding=small_embedder("policy rollout"),
+                text="policy rollout",
+                metadata={"source": "doc-b.pdf"},
+            ),
+            VectorEntry(
+                document_id="doc-c",
+                embedding=small_embedder("policy rollout"),
+                text="policy rollout",
+                metadata={"source": "doc-c.pdf"},
+            ),
+        ]
+    )
+
+    results = store.search(
+        small_embedder("policy rollout"),
+        top_k=5,
+        metadata_filters={"source": ["doc-a.pdf", "doc-c.pdf"]},
+    )
+
+    assert [item.document_id for item in results] == ["doc-a", "doc-c"]

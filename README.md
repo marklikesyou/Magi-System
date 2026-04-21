@@ -14,7 +14,7 @@ MAGI is a multi persona reasoning engine for assessing user requests against an 
 - Persistent vector store on disk with hashing based embeddings for offline mode.
 
 ## Requirements
-- Python 3.11 or newer (the project targets Python 3.13 in development).
+- Python 3.10 or newer (CI runs on Python 3.10 and 3.13).
 - uv package manager.
 - Optional: OpenAI or Google credentials when running live reasoning; OpenAI is required for provider-backed embeddings.
 
@@ -44,6 +44,17 @@ python -m magi.app.cli chat "What risks should I consider?" --json
 - Default behavior uses structured provider outputs when OpenAI or Google credentials are available.
 - Set `MAGI_FORCE_DSPY_STUB=1` to force the deterministic offline fallback without external LLM calls.
 - Set `MAGI_FORCE_HASH_EMBEDDER=1` to use the deterministic hashing embedder instead of OpenAI embeddings.
+
+### Runtime Controls
+- `MAGI_PROVIDER_MAX_RETRIES`: retry budget for provider calls. Default `3`.
+- `MAGI_PROVIDER_RETRY_INITIAL_DELAY`: initial retry backoff in seconds. Default `1.0`.
+- `MAGI_PROVIDER_REQUESTS_PER_MINUTE`: provider-side rate limit. Default `0` disables throttling.
+- `MAGI_DECISION_TRACE_DIR`: optional directory for persisted decision records when using the CLI.
+- `MAGI_APPROVE_MIN_CITATION_HIT_RATE`: minimum valid citation hit rate required for `approve`. Default `1.0`.
+- `MAGI_APPROVE_MIN_ANSWER_SUPPORT_SCORE`: minimum lexical evidence-overlap score required for `approve`. Default `0.2`.
+- `MAGI_REQUIRE_HUMAN_REVIEW_FOR_APPROVALS`: when `true`, grounded approvals are still marked for human review. Default `true`.
+
+When an `approve` answer fails the citation or support thresholds, the production path downgrades it to `revise`. When an `approve` answer passes those thresholds, the default behavior is still to mark it as requiring human review.
 
 ## Testing
 Run the full suite with:

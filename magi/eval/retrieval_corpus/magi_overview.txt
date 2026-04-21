@@ -1,0 +1,2 @@
+MAGI is a multi persona reasoning engine for assessing user requests against an evidence base.
+It retrieves context from a vector store, convenes three specialized personas, and returns a final verdict with cited support.

@@ -41,6 +41,7 @@ T = TypeVar(
 
 _FORCE_STUB = os.getenv("MAGI_FORCE_DSPY_STUB", "0") != "0"
 _CACHE = LRUCache(max_size=128)
+_TRACE_CACHE = LRUCache(max_size=128)
 _TOKENS = TokenTracker()
 _STANCE_TAGS = {"approve": "APPROVE", "reject": "REJECT", "revise": "REVISE"}
 _INFORMATIONAL_PATTERNS = (
@@ -199,16 +200,27 @@ _GROUNDING_STOPWORDS = {
 
 class RetrieverProtocol(Protocol):
     def retrieve(
-        self, query: str, *, persona: str | None = None, top_k: int = 8
+        self,
+        query: str,
+        *,
+        persona: str | None = None,
+        top_k: int = 8,
+        metadata_filters: Mapping[str, object] | None = None,
     ) -> list[RetrievedChunk]: ...
 
     def __call__(
-        self, query: str, *, persona: str | None = None, top_k: int = 8
+        self,
+        query: str,
+        *,
+        persona: str | None = None,
+        top_k: int = 8,
+        metadata_filters: Mapping[str, object] | None = None,
     ) -> str: ...
 
 
 def clear_cache() -> None:
     _CACHE.clear()
+    _TRACE_CACHE.clear()
 
 
 def get_token_stats() -> dict[str, Any]:
@@ -500,6 +512,7 @@ def _chunk_to_evidence(index: int, chunk: RetrievedChunk) -> RetrievedEvidence:
     return RetrievedEvidence(
         citation=f"[{index}]",
         source=source,
+        document_id=str(chunk.document_id),
         text=_truncate_evidence_text(chunk.text),
         score=max(0.0, float(chunk.score)),
     )
@@ -1112,6 +1125,7 @@ class MagiProgram:
             self.model_name = str(getattr(self._client, "model", self.model_name))
         self._runner = _StructuredRunner(self._client, self.model_name)
         self.effective_mode = "live" if self._runner.enabled() else "stub"
+        self.last_run_metadata: dict[str, Any] = {}
 
     def __call__(
         self, query: str, constraints: str = ""
@@ -1393,11 +1407,40 @@ class MagiProgram:
     def forward(
         self, query: str, constraints: str = ""
     ) -> tuple[FusionResponse, dict[str, Any]]:
+        def build_run_metadata(
+            *,
+            cache_hit: bool,
+            safe_evidence: Sequence[RetrievedEvidence],
+            blocked_evidence: Sequence[RetrievedEvidence],
+        ) -> dict[str, Any]:
+            def evidence_payload(items: Sequence[RetrievedEvidence]) -> list[dict[str, object]]:
+                return [
+                    {
+                        "citation": item.citation,
+                        "source": item.source,
+                        "document_id": item.document_id,
+                        "text": item.text,
+                        "score": item.score,
+                        "blocked": item.blocked,
+                        "safety_reasons": list(item.safety_reasons),
+                    }
+                    for item in items
+                ]
+
+            return {
+                "cache_hit": cache_hit,
+                "safe_evidence": evidence_payload(safe_evidence),
+                "blocked_evidence": evidence_payload(blocked_evidence),
+            }
+
         clean_query = sanitize_input(query, max_length=2000)
         clean_constraints = sanitize_input(constraints, max_length=500)
         cache_key = f"{_retriever_cache_token(self.retriever)}::{hash_query(clean_query, clean_constraints)}"
         cached = _CACHE.get(cache_key)
         if cached is not None:
+            cached_metadata = cast(dict[str, Any] | None, _TRACE_CACHE.get(cache_key))
+            self.last_run_metadata = dict(cached_metadata or {})
+            self.last_run_metadata["cache_hit"] = True
             return cast(tuple[FusionResponse, dict[str, Any]], cached)
 
         safety_client: Any | None = None if self._runner.enabled() else False
@@ -1438,6 +1481,12 @@ class MagiProgram:
             }
             result = (fused, personas)
             _CACHE.put(cache_key, result)
+            self.last_run_metadata = build_run_metadata(
+                cache_hit=False,
+                safe_evidence=safe_evidence,
+                blocked_evidence=blocked_evidence,
+            )
+            _TRACE_CACHE.put(cache_key, self.last_run_metadata)
             return result
 
         melchior = self._run_melchior(clean_query, safe_evidence)
@@ -1482,6 +1531,12 @@ class MagiProgram:
         personas = {"melchior": melchior, "balthasar": balthasar, "casper": casper}
         result = (fused, personas)
         _CACHE.put(cache_key, result)
+        self.last_run_metadata = build_run_metadata(
+            cache_hit=False,
+            safe_evidence=safe_evidence,
+            blocked_evidence=blocked_evidence,
+        )
+        _TRACE_CACHE.put(cache_key, self.last_run_metadata)
         return result
 
 

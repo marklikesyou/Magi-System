@@ -6,7 +6,9 @@ import tempfile
 from pathlib import Path
 from typing import Iterable, List
 
-from .vectorstore import InMemoryVectorStore, VectorEntry
+from .config import get_settings
+from .pgvectorstore import PgVectorStore
+from .vectorstore import InMemoryVectorStore, VectorEntry, VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,7 @@ def load_entries(path: Path) -> List[VectorEntry]:
     return [VectorEntry.from_dict(raw) for raw in payload]
 
 
-def save_entries(path: Path, entries: Iterable[VectorEntry]) -> None:
-    serialized = [entry.to_dict() for entry in entries]
+def save_json_document(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None
     try:
@@ -30,7 +31,7 @@ def save_entries(path: Path, entries: Iterable[VectorEntry]) -> None:
             dir=str(path.parent),
             delete=False,
         ) as handle:
-            json.dump(serialized, handle, ensure_ascii=True, indent=2)
+            json.dump(payload, handle, ensure_ascii=True, indent=2)
             tmp_path = Path(handle.name)
         tmp_path.replace(path)
     finally:
@@ -41,7 +42,24 @@ def save_entries(path: Path, entries: Iterable[VectorEntry]) -> None:
                 pass
 
 
-def initialize_store(path: Path, embedder) -> InMemoryVectorStore:
+def save_entries(path: Path, entries: Iterable[VectorEntry]) -> None:
+    serialized = [entry.to_dict() for entry in entries]
+    save_json_document(path, serialized)
+
+
+def _vector_db_url() -> str:
+    settings = get_settings()
+    return str(getattr(settings, "vector_db_url", "") or "").strip()
+
+
+def initialize_store(path: Path, embedder) -> VectorStore:
+    database_url = _vector_db_url()
+    if database_url:
+        return PgVectorStore(
+            database_url,
+            getattr(embedder, "dimension"),
+            store_path=path,
+        )
     store = InMemoryVectorStore(getattr(embedder, "dimension"))
     entries = load_entries(path)
     if entries:
@@ -55,3 +73,14 @@ def initialize_store(path: Path, embedder) -> InMemoryVectorStore:
             )
     store.load(entries)
     return store
+
+
+def persist_store(path: Path, store: VectorStore) -> None:
+    if isinstance(store, InMemoryVectorStore):
+        save_entries(path, store.entries)
+
+
+def describe_store_destination(path: Path, store: VectorStore) -> str:
+    if isinstance(store, PgVectorStore):
+        return f"Store persisted to PostgreSQL namespace {Path(path).resolve()}"
+    return f"Store persisted to {path}"

@@ -1,0 +1,33 @@
+metadata:
+  name: MAGI Retrieval Benchmark
+  version: "1.0"
+  description: "Corpus-backed retrieval benchmark that exercises ingest, chunking, embedding, storage, and retrieval."
+corpus:
+  root: retrieval_corpus
+  chunk_size: 5000
+  chunk_overlap: 200
+  documents:
+    - id: magi_overview
+      path: magi_overview.txt
+    - id: pilot_brief
+      path: pilot_brief.txt
+    - id: rollout_status
+      path: rollout_status.txt
+    - id: team_social
+      path: team_social.txt
+cases:
+  - id: retrieve_magi_overview
+    description: "Retrieve the MAGI overview for a product summary query."
+    query: "Which system is a multi persona reasoning engine that returns a final verdict with cited support?"
+    expected_sources_any:
+      - magi_overview
+  - id: retrieve_pilot_guardrails
+    description: "Retrieve the pilot controls document for guardrail questions."
+    query: "What guardrails are required for the internal policy triage pilot?"
+    expected_sources_any:
+      - pilot_brief
+  - id: retrieve_rollout_status
+    description: "Retrieve rollout status notes for operational status questions."
+    query: "What is the current rollout status and who is monitoring it?"
+    expected_sources_any:
+      - rollout_status
