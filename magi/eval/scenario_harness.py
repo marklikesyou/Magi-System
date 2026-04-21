@@ -386,6 +386,7 @@ def run_scenario_suite(
     *,
     force_stub: bool | None = None,
     model: str | None = None,
+    client: Any | None = None,
     requested_mode: str = "auto",
 ) -> ScenarioReport:
     clear_cache()
@@ -405,6 +406,7 @@ def run_scenario_suite(
             ScenarioRetriever(case.evidence),
             force_stub=force_stub,
             model=model,
+            client=client,
         )
         effective_mode = session.effective_mode
         resolved_model = session.model or resolved_model
