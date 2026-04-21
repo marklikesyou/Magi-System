@@ -1,11 +1,14 @@
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("MAGI_FORCE_DSPY_STUB", "1")
 
+import magi.app.service as service
 from magi.app.service import run_chat_session
 from magi.dspy_programs.personas import MagiProgram
 from magi.decision.aggregator import resolve_verdict
 from magi.decision.schema import PersonaOutput, FinalDecision
+from magi.dspy_programs.schemas import FusionResponse
 
 
 def stub_retriever(query: str, persona: str | None = None, top_k: int = 5) -> str:
@@ -77,3 +80,38 @@ def test_chat_session_ignores_unsafe_retrieved_content():
     result = run_chat_session("Explain the rollout status", "", unsafe_retriever)
     assert result.final_decision.verdict == "revise"
     assert "password" not in result.final_decision.justification.lower()
+
+
+def test_chat_session_preserves_fusion_verdict(monkeypatch):
+    class FakeProgram:
+        def __init__(self, *args, **kwargs):
+            self.effective_mode = "live"
+            self.model_name = "test-model"
+
+        def __call__(self, query: str, constraints: str = ""):
+            del query, constraints
+            fused = FusionResponse(
+                verdict="approve",
+                justification="The evidence supports approval.",
+                confidence=0.7,
+                final_answer="Approve with citations [1].",
+                next_steps=["Proceed carefully."],
+                consensus_points=["Fusion approved."],
+                disagreements=[],
+                residual_risk="low",
+                risks=[],
+                mitigations=[],
+            )
+            personas = {
+                "melchior": SimpleNamespace(text="[REVISE] [MELCHIOR] Need more evidence.", confidence=0.2),
+                "balthasar": SimpleNamespace(text="[REVISE] [BALTHASAR] Need more evidence.", confidence=0.2),
+                "casper": SimpleNamespace(text="[REVISE] [CASPER] Need more evidence.", confidence=0.2),
+            }
+            return fused, personas
+
+    monkeypatch.setattr(service, "MagiProgram", FakeProgram)
+
+    result = service.run_chat_session("Should we proceed?", "", retriever=object())
+
+    assert result.final_decision.verdict == "approve"
+    assert result.final_decision.verdict == result.fused.verdict
