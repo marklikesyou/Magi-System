@@ -42,15 +42,16 @@ def save_entries(path: Path, entries: Iterable[VectorEntry]) -> None:
 
 
 def initialize_store(path: Path, embedder) -> InMemoryVectorStore:
-
     store = InMemoryVectorStore(getattr(embedder, "dimension"))
     entries = load_entries(path)
-    try:
-        store.load(entries)
-    except ValueError:
-        logger.warning(
-            "vector store at %s has incompatible embeddings; starting fresh.",
-            path,
-        )
-        store = InMemoryVectorStore(getattr(embedder, "dimension"))
+    if entries:
+        stored_dimensions = sorted({len(entry.embedding) for entry in entries})
+        if stored_dimensions != [store.dim]:
+            raise RuntimeError(
+                "vector store at "
+                f"{path} uses embedding dimension(s) {stored_dimensions}, but the "
+                f"active embedder expects {store.dim}. Re-ingest the documents with "
+                "the current embedder or restore the previous embedder configuration."
+            )
+    store.load(entries)
     return store
