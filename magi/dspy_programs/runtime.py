@@ -90,6 +90,12 @@ _INSUFFICIENT_PATTERNS = (
     "cannot determine",
     "can't determine",
     "unclear from the evidence",
+    "additional credible sources",
+    "further details are needed",
+    "lack of comprehensive information",
+    "partial insights",
+    "untrustworthy nature of the evidence",
+    "verify this information from reliable sources",
 )
 _REFUSAL_PATTERNS = (
     "i can't assist",
@@ -145,6 +151,50 @@ _RECOMMENDATION_SUPPORT_PATTERNS = (
     "low-risk",
     "low risk",
 )
+_GROUNDING_STOPWORDS = {
+    "additional",
+    "about",
+    "against",
+    "also",
+    "and",
+    "answer",
+    "answers",
+    "are",
+    "been",
+    "citation",
+    "citations",
+    "current",
+    "detail",
+    "details",
+    "evidence",
+    "from",
+    "fully",
+    "have",
+    "include",
+    "information",
+    "into",
+    "missing",
+    "more",
+    "need",
+    "needed",
+    "query",
+    "response",
+    "retrieved",
+    "reliable",
+    "review",
+    "source",
+    "sources",
+    "specific",
+    "than",
+    "that",
+    "their",
+    "them",
+    "they",
+    "this",
+    "trustworthy",
+    "what",
+    "with",
+}
 
 
 class RetrieverProtocol(Protocol):
@@ -261,6 +311,81 @@ def _supports_grounded_recommendation(
         and bool(evidence)
         and _pattern_hits(combined, _RECOMMENDATION_SUPPORT_PATTERNS) >= 3
     )
+
+
+def _citation_labels(evidence: Sequence[RetrievedEvidence]) -> set[str]:
+    return {item.citation for item in evidence if item.citation}
+
+
+def _contains_evidence_citation(
+    text: str, evidence: Sequence[RetrievedEvidence]
+) -> bool:
+    return any(citation in text for citation in _citation_labels(evidence))
+
+
+def _grounding_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]{4,}", text.lower())
+        if token not in _GROUNDING_STOPWORDS
+    }
+
+
+def _grounding_overlap(
+    text: str, evidence: Sequence[RetrievedEvidence]
+) -> tuple[int, float]:
+    answer_tokens = _grounding_tokens(text)
+    if not answer_tokens:
+        return 0, 0.0
+    evidence_tokens: set[str] = set()
+    for item in evidence:
+        evidence_tokens.update(_grounding_tokens(item.text))
+    if not evidence_tokens:
+        return 0, 0.0
+    overlap = answer_tokens & evidence_tokens
+    return len(overlap), len(overlap) / len(answer_tokens)
+
+
+def _is_grounded_approve_text(
+    text: str, evidence: Sequence[RetrievedEvidence]
+) -> bool:
+    if not text.strip() or not evidence:
+        return False
+    if _signals_evidence_gap(text) or _signals_refusal(text):
+        return False
+    if not _contains_evidence_citation(text, evidence):
+        return False
+    overlap_count, overlap_ratio = _grounding_overlap(text, evidence)
+    return overlap_count >= 2 and overlap_ratio >= 0.2
+
+
+def _unsupported_grounding_tokens(
+    query: str, text: str, evidence: Sequence[RetrievedEvidence]
+) -> set[str]:
+    supported = _grounding_tokens(query)
+    for item in evidence:
+        supported.update(_grounding_tokens(item.text))
+    return _grounding_tokens(text) - supported
+
+
+def _is_grounded_response(
+    query: str,
+    text: str,
+    evidence: Sequence[RetrievedEvidence],
+    verdict: str,
+) -> bool:
+    if not text.strip():
+        return False
+    if verdict == "approve":
+        return _is_grounded_approve_text(text, evidence)
+    if not evidence:
+        return _signals_evidence_gap(text) or _signals_refusal(text)
+    unsupported = _unsupported_grounding_tokens(query, text, evidence)
+    if verdict == "reject":
+        return _signals_refusal(text) and len(unsupported) <= 2
+    if _signals_evidence_gap(text):
+        return len(unsupported) <= 2
+    return _contains_evidence_citation(text, evidence)
 
 
 def _support_strength(evidence: Sequence[RetrievedEvidence]) -> float:
@@ -890,12 +1015,14 @@ def _normalize_fusion_response(
     heuristic = _heuristic_fusion(query, melchior, balthasar, casper, evidence, blocked)
     final_answer = response.final_answer
     justification = response.justification
-    if verdict == "approve" and (
-        _signals_evidence_gap(final_answer)
-        or _starts_with_revision_cue(final_answer)
-        or _signals_refusal(final_answer)
+    if not _is_grounded_response(
+        query, final_answer or justification, evidence, verdict
     ):
+        verdict = heuristic.verdict
         final_answer = heuristic.final_answer
+        justification = heuristic.justification
+        updates["verdict"] = verdict
+        updates["next_steps"] = heuristic.next_steps
     if verdict == "revise" and not _signals_evidence_gap(
         _join_text((final_answer, justification))
     ):
@@ -918,25 +1045,33 @@ def _normalize_responder_response(
     evidence: Sequence[RetrievedEvidence],
     response: ResponderResponse,
 ) -> ResponderResponse:
-    combined = _join_text((response.final_answer, response.justification))
     if fusion.verdict == "approve":
-        if not (
-            _signals_evidence_gap(combined)
-            or _signals_refusal(combined)
-            or _starts_with_revision_cue(response.final_answer)
+        if _is_grounded_response(
+            query,
+            response.final_answer or response.justification,
+            evidence,
+            fusion.verdict,
         ):
             return response.model_copy(
                 update={"text": response.final_answer or response.justification}
             )
     elif fusion.verdict == "revise":
-        if _signals_evidence_gap(combined) or _starts_with_revision_cue(
-            response.final_answer
+        if _is_grounded_response(
+            query,
+            response.final_answer or response.justification,
+            evidence,
+            fusion.verdict,
         ):
             return response.model_copy(
                 update={"text": response.final_answer or response.justification}
             )
     elif fusion.verdict == "reject":
-        if _signals_refusal(combined):
+        if _is_grounded_response(
+            query,
+            response.final_answer or response.justification,
+            evidence,
+            fusion.verdict,
+        ):
             return response.model_copy(
                 update={"text": response.final_answer or response.justification}
             )
@@ -1152,7 +1287,8 @@ class MagiProgram:
                     "then write a concise grounded answer. Prefer revise over reject when the evidence is simply "
                     "missing or incomplete. If two personas approve and none reject, do not downgrade to revise "
                     "without a concrete evidence gap or safety issue. For controlled pilot or rollout questions, "
-                    "approve when the evidence supports a bounded plan with explicit safeguards."
+                    "approve when the evidence supports a bounded plan with explicit safeguards. "
+                    "Every approve final_answer must cite retrieved evidence with bracket citations such as [1]."
                 ),
                 user_prompt=truncate_to_token_limit(
                     "\n\n".join(
@@ -1219,7 +1355,8 @@ class MagiProgram:
                 system_prompt=(
                     "You are the MAGI responder. Write the final user-facing answer grounded in citations, keeping "
                     "the answer concise and explicit about uncertainty. Keep the answer aligned with the fusion verdict: "
-                    "answer directly for approve, explain what is missing for revise, and refuse briefly for reject."
+                    "answer directly for approve, explain what is missing for revise, and refuse briefly for reject. "
+                    "Every approve answer must include bracket citations such as [1]."
                 ),
                 user_prompt=truncate_to_token_limit(
                     "\n\n".join(
