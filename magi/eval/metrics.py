@@ -12,7 +12,7 @@ import math
 import re
 from typing import Dict, Iterable, List, Optional, Tuple, cast
 
-DEFAULT_LABELS: List[str] = ["approve", "reject", "revise"]
+DEFAULT_LABELS: List[str] = ["approve", "reject", "revise", "abstain"]
 
 
 _Z_VALUES: Dict[float, float] = {
