@@ -7,6 +7,7 @@ from .vectorstore import RetrievedChunk, VectorStore, metadata_matches_filters
 
 Formatter = Callable[[Iterable[RetrievedChunk]], str]
 Embedder = Callable[[str], Sequence[float]]
+_TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 
 
 def default_formatter(chunks: Iterable[RetrievedChunk]) -> str:
@@ -17,6 +18,10 @@ def default_formatter(chunks: Iterable[RetrievedChunk]) -> str:
     return "\n".join(lines)
 
 
+def _tokens(text: str) -> set[str]:
+    return {token for token in _TOKEN_RE.findall(text.lower()) if len(token) > 2}
+
+
 class RagRetriever:
     def __init__(
         self,
@@ -24,19 +29,119 @@ class RagRetriever:
         store: VectorStore,
         *,
         formatter: Formatter = default_formatter,
+        default_metadata_filters: Mapping[str, object] | None = None,
+        source_weights: Mapping[str, float] | None = None,
     ):
         self.embedder = embedder
         self.store = store
         self.formatter = formatter
+        self.default_metadata_filters = dict(default_metadata_filters or {})
+        self.source_weights = {
+            str(key): float(value)
+            for key, value in (source_weights or {}).items()
+            if str(key).strip()
+        }
 
     @staticmethod
     def _dedupe_key(chunk: RetrievedChunk) -> tuple[str, str]:
         source = str(chunk.metadata.get("source", chunk.document_id))
-        return source, chunk.text
+        compact = re.sub(r"\s+", " ", chunk.text).strip().lower()
+        return source, compact
 
     def cache_token(self) -> str:
         revision = getattr(self.store, "revision", "unknown")
         return f"{id(self.store)}:{revision}"
+
+    def _combined_filters(
+        self, metadata_filters: Mapping[str, object] | None
+    ) -> Mapping[str, object] | None:
+        if not self.default_metadata_filters and not metadata_filters:
+            return None
+        combined = dict(self.default_metadata_filters)
+        if metadata_filters:
+            combined.update(metadata_filters)
+        return combined
+
+    def _lexical_score(self, query: str, chunk: RetrievedChunk) -> float:
+        query_tokens = _tokens(query)
+        if not query_tokens:
+            return 0.0
+        chunk_tokens = _tokens(chunk.text)
+        if not chunk_tokens:
+            return 0.0
+        overlap = len(query_tokens.intersection(chunk_tokens))
+        coverage = overlap / max(1, len(query_tokens))
+        return min(1.0, coverage)
+
+    def _source_weight(self, chunk: RetrievedChunk) -> float:
+        source = str(chunk.metadata.get("source", "")).strip()
+        if not source:
+            return 0.0
+        direct = self.source_weights.get(source)
+        if direct is not None:
+            return direct - 1.0
+        basename = source.rsplit("/", 1)[-1]
+        mapped = self.source_weights.get(basename)
+        if mapped is not None:
+            return mapped - 1.0
+        return 0.0
+
+    def _section_boost(self, query: str, chunk: RetrievedChunk) -> float:
+        title = str(chunk.metadata.get("section_title", "")).strip().lower()
+        if not title:
+            return 0.0
+        lowered_query = query.lower()
+        return 0.15 if title and title in lowered_query else 0.0
+
+    def _hybrid_candidates(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        metadata_filters: Mapping[str, object] | None,
+    ) -> list[RetrievedChunk]:
+        enriched_query = query
+        semantic_top_k = max(top_k * 4, 20)
+        embedding = self.embedder(enriched_query)
+        semantic_results = self.store.search(
+            embedding,
+            top_k=semantic_top_k,
+            metadata_filters=metadata_filters,
+        )
+        candidates: dict[str, RetrievedChunk] = {
+            item.document_id: item for item in semantic_results
+        }
+        for entry in self.store.entries:
+            if not metadata_matches_filters(entry.metadata, metadata_filters):
+                continue
+            chunk = RetrievedChunk(
+                document_id=entry.document_id,
+                text=entry.text,
+                score=0.0,
+                metadata=entry.metadata,
+            )
+            lexical = self._lexical_score(query, chunk)
+            if lexical <= 0.0 and entry.document_id not in candidates:
+                continue
+            existing = candidates.get(entry.document_id)
+            semantic = 0.0 if existing is None else max(0.0, float(existing.score))
+            section_boost = self._section_boost(query, chunk)
+            source_boost = self._source_weight(chunk)
+            hybrid = (semantic * 0.65) + (lexical * 0.35) + section_boost + source_boost
+            metadata = dict(chunk.metadata)
+            metadata["semantic_score"] = round(semantic, 4)
+            metadata["lexical_score"] = round(lexical, 4)
+            metadata["section_boost"] = round(section_boost, 4)
+            metadata["source_boost"] = round(source_boost, 4)
+            candidates[entry.document_id] = RetrievedChunk(
+                document_id=chunk.document_id,
+                text=chunk.text,
+                score=hybrid,
+                metadata=metadata,
+            )
+        ranked = list(candidates.values())
+        ranked.sort(key=lambda chunk: chunk.score, reverse=True)
+        return ranked
 
     def retrieve(
         self,
@@ -48,12 +153,12 @@ class RagRetriever:
     ) -> list[RetrievedChunk]:
         if not query:
             return []
+        combined_filters = self._combined_filters(metadata_filters)
         enriched_query = f"[{persona}] {query}" if persona else query
-        embedding = self.embedder(enriched_query)
-        results = self.store.search(
-            embedding,
+        results = self._hybrid_candidates(
+            enriched_query,
             top_k=top_k,
-            metadata_filters=metadata_filters,
+            metadata_filters=combined_filters,
         )
         page_numbers = {
             match.group(1)
@@ -64,7 +169,7 @@ class RagRetriever:
             page_suffixes = {f"#page-{value}" for value in page_numbers}
             matched: list[RetrievedChunk] = []
             for entry in self.store.entries:
-                if not metadata_matches_filters(entry.metadata, metadata_filters):
+                if not metadata_matches_filters(entry.metadata, combined_filters):
                     continue
                 entry_id = entry.document_id.lower()
                 lower_text = entry.text.lower()
@@ -84,7 +189,7 @@ class RagRetriever:
                         RetrievedChunk(
                             document_id=entry.document_id,
                             text=entry.text,
-                            score=1.0,
+                            score=1.2,
                             metadata=entry.metadata,
                         )
                     )
