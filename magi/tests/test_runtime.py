@@ -13,6 +13,7 @@ from magi.dspy_programs import runtime
 from magi.dspy_programs.runtime import (
     MagiProgram,
     _StructuredRunner,
+    _evidence_directly_addresses_query,
     _json_schema,
     _normalize_balthasar_response,
     _normalize_casper_response,
@@ -306,6 +307,25 @@ def test_normalize_guardrailed_recommendation_promotes_revise_to_approve():
 
     assert normalized_melchior.stance == "approve"
     assert normalized_casper.stance == "approve"
+
+
+def test_direct_support_uses_fuzzy_matching_for_nearby_wording():
+    evidence = [
+        RetrievedEvidence(
+            citation="[1]",
+            source="brief",
+            text=(
+                "The pilot proposal scopes MAGI to internal policy triage with a "
+                "human reviewer, weekly refreshes, and explicit rollout controls."
+            ),
+            score=0.22,
+        )
+    ]
+
+    assert _evidence_directly_addresses_query(
+        "Should we pilot MAGI for internal policy triaging next month?",
+        evidence,
+    )
 
 
 def test_normalize_responder_response_falls_back_when_answer_conflicts_with_approve():
