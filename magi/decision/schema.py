@@ -19,7 +19,7 @@ class PersonaOutput(BaseModel):
 
 
 class FinalDecision(BaseModel):
-    verdict: Literal["approve", "reject", "revise"]
+    verdict: Literal["approve", "reject", "revise", "abstain"]
     justification: str
     persona_outputs: List[PersonaOutput]
     risks: List[str] = Field(default_factory=list)
@@ -27,3 +27,5 @@ class FinalDecision(BaseModel):
     residual_risk: Literal["low", "medium", "high"] = "medium"
     requires_human_review: bool = False
     review_reason: str = ""
+    abstained: bool = False
+    abstention_reason: str = ""
