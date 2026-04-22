@@ -20,7 +20,7 @@ from magi.dspy_programs.personas import (
 )
 from magi.eval.metrics import accuracy, answer_support_score, citation_hit_rate
 
-VALID_VERDICTS = {"approve", "reject", "revise"}
+VALID_VERDICTS = {"approve", "reject", "revise", "abstain"}
 VALID_RISK_LEVELS = {"low", "medium", "high"}
 VALID_PERSONAS = {"melchior", "balthasar", "casper"}
 _CITATION_RE = re.compile(r"\[\d+\]")
