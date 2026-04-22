@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Literal, cast
+from typing import Dict, Iterable, List, cast
 
 from magi.app.service import run_chat_session
 from magi.core.config import get_settings
@@ -36,30 +36,6 @@ _PERSONA_TAG_RE = re.compile(
 def _strip_persona_tags(text: str) -> str:
     """Remove leading [STANCE] [NAME] tags from persona text for clean display."""
     return _PERSONA_TAG_RE.sub("", text).strip()
-
-
-def _normalize_residual_label(value: object) -> Literal["low", "medium", "high"]:
-    if not value:
-        return "medium"
-    label = str(value).strip().lower()
-    if not label:
-        return "medium"
-    mapping: dict[str, Literal["low", "medium", "high"]] = {
-        "low": "low",
-        "minimal": "low",
-        "minor": "low",
-        "medium": "medium",
-        "moderate": "medium",
-        "balanced": "medium",
-        "manageable": "medium",
-        "high": "high",
-        "elevated": "high",
-        "critical": "high",
-    }
-    for key, normalized in mapping.items():
-        if key in label:
-            return normalized
-    return "medium"
 
 
 def _truncate_trace_text(text: object, limit: int = 120) -> str:
@@ -121,6 +97,167 @@ def _persist_decision_record(
     return path
 
 
+def _existing_content_hashes(store) -> set[str]:
+    return {
+        str(entry.metadata.get("content_hash", "")).strip()
+        for entry in store.entries
+        if str(entry.metadata.get("content_hash", "")).strip()
+    }
+
+
+def _filter_new_documents(
+    documents: Iterable[Dict[str, object]], existing_hashes: set[str]
+) -> tuple[List[Dict[str, object]], int]:
+    skipped_existing = 0
+    fresh_documents: List[Dict[str, object]] = []
+    for document in documents:
+        metadata = cast(Dict[str, object], document.get("metadata", {}))
+        content_hash = str(metadata.get("content_hash", "")).strip()
+        if content_hash and content_hash in existing_hashes:
+            skipped_existing += 1
+            continue
+        if content_hash:
+            existing_hashes.add(content_hash)
+        fresh_documents.append(document)
+    return fresh_documents, skipped_existing
+
+
+def _chunk_documents(
+    documents: Iterable[Dict[str, object]],
+    *,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> List[Dict[str, object]]:
+    chunks: List[Dict[str, object]] = []
+    for document in documents:
+        chunks.extend(
+            sliding_window_chunk(
+                document,
+                chunk_size=chunk_size,
+                overlap=chunk_overlap,
+            )
+        )
+    return chunks
+
+
+def _print_embedder_mode(embedder, settings) -> None:
+    if isinstance(embedder, HashingEmbedder):
+        print("[verbose] Using hashing embedder (offline mode).")
+        return
+    print(f"[verbose] Using OpenAI embeddings ({settings.openai_embedding_model}).")
+
+
+def _print_chat_preamble(args: argparse.Namespace, settings, embedder, store) -> None:
+    _print_embedder_mode(embedder, settings)
+    if USING_STUB and not isinstance(embedder, HashingEmbedder):
+        print(
+            "[verbose] Deterministic reasoning fallback active; embeddings remain provider-backed."
+        )
+    print(f"[verbose] Store loaded from {args.store} ({len(store.entries)} entries).")
+
+
+def _print_trace_summary(result, decision_record_path: Path | None) -> None:
+    trace = result.decision_trace
+    print(f"[verbose] Received responses from {len(result.personas)} persona(s).")
+    print(
+        "[verbose] Decision trace: "
+        f"query_hash={trace.query_hash} "
+        f"used_evidence={len(trace.used_evidence_ids)} "
+        f"cited_evidence={len(trace.cited_evidence_ids)} "
+        f"blocked_evidence={len(trace.blocked_evidence_ids)} "
+        f"safety={trace.safety_outcome} "
+        f"review_required={trace.requires_human_review} "
+        f"citation_hit_rate={trace.citation_hit_rate:.2f} "
+        f"answer_support={trace.answer_support_score:.2f}"
+    )
+    if decision_record_path is not None:
+        print(f"[verbose] Decision record saved to {decision_record_path}")
+
+
+def _print_bullet_section(
+    title: str,
+    items: Iterable[object],
+    *,
+    leading_newline: bool = False,
+) -> None:
+    lines = []
+    for item in items:
+        text = item.strip() if isinstance(item, str) else str(item).strip()
+        if text:
+            lines.append(text)
+    if not lines:
+        return
+    if leading_newline:
+        print()
+    print(f"{title}:")
+    for line in lines:
+        print(f"  - {line}")
+
+
+def _print_trace_evidence(trace) -> None:
+    if trace.cited_evidence:
+        print("Cited Evidence:")
+        for cited_item in trace.cited_evidence:
+            snippet = _truncate_trace_text(cited_item.text)
+            print(f"  - {cited_item.citation} {cited_item.source}: {snippet}")
+        print()
+    if trace.blocked_evidence:
+        print("Blocked Evidence:")
+        for blocked_item in trace.blocked_evidence:
+            reasons = ", ".join(blocked_item.safety_reasons) or "blocked"
+            snippet = _truncate_trace_text(blocked_item.text)
+            print(f"  - {blocked_item.citation} {blocked_item.source}: {reasons}")
+            if snippet:
+                print(f"    {snippet}")
+        print()
+
+
+def _print_persona_outputs(persona_outputs: Iterable[object]) -> None:
+    print(f"{'-' * 60}")
+    print("Persona Perspectives:\n")
+    for persona in persona_outputs:
+        clean_text = _strip_persona_tags(persona.text)
+        print(f"  [{persona.name.title()}] (confidence {persona.confidence:.2f})")
+        for line in clean_text.splitlines():
+            stripped = line.strip()
+            if stripped:
+                print(f"    {stripped}")
+        print()
+
+
+def _print_chat_report(result) -> None:
+    decision = result.final_decision
+    trace = result.decision_trace
+
+    print(f"\n{'=' * 60}")
+    print(f"Verdict: {decision.verdict.upper()}")
+    print(f"Residual Risk: {decision.residual_risk}")
+    if decision.requires_human_review:
+        print("Human Review: REQUIRED")
+    print(f"{'=' * 60}\n")
+    print(f"{decision.justification}\n")
+    if decision.requires_human_review and decision.review_reason:
+        print(f"Review Reason: {decision.review_reason}\n")
+    _print_trace_evidence(trace)
+    _print_persona_outputs(decision.persona_outputs)
+    _print_bullet_section("Risks", decision.risks)
+    _print_bullet_section(
+        "Mitigations",
+        decision.mitigations,
+        leading_newline=bool(decision.risks),
+    )
+    if any(
+        "Unsafe retrieved instructions" in item
+        for item in getattr(result.fused, "consensus_points", [])
+    ):
+        _print_bullet_section(
+            "Safety",
+            ["Unsafe retrieved instructions were excluded from synthesis."],
+            leading_newline=True,
+        )
+    print()
+
+
 def command_ingest(args: argparse.Namespace) -> int:
     verbose = getattr(args, "verbose", False)
     try:
@@ -129,37 +266,19 @@ def command_ingest(args: argparse.Namespace) -> int:
         store = initialize_store(args.store, embedder)
 
         doc_paths = [Path(p) for p in args.paths]
-        documents = ingest_paths(doc_paths)
-        existing_hashes = {
-            str(entry.metadata.get("content_hash", "")).strip()
-            for entry in store.entries
-            if str(entry.metadata.get("content_hash", "")).strip()
-        }
-        skipped_existing = 0
-        fresh_documents = []
-        for document in documents:
-            metadata = cast(Dict[str, object], document.get("metadata", {}))
-            content_hash = str(metadata.get("content_hash", "")).strip()
-            if content_hash and content_hash in existing_hashes:
-                skipped_existing += 1
-                continue
-            if content_hash:
-                existing_hashes.add(content_hash)
-            fresh_documents.append(document)
-        documents = fresh_documents
+        documents, skipped_existing = _filter_new_documents(
+            ingest_paths(doc_paths),
+            _existing_content_hashes(store),
+        )
         if not documents:
             print("No new documents to ingest; all content already exists in the store.")
             return 0
 
-        chunks = []
-        for doc in documents:
-            chunks.extend(
-                sliding_window_chunk(
-                    doc,
-                    chunk_size=args.chunk_size,
-                    overlap=args.chunk_overlap,
-                )
-            )
+        chunks = _chunk_documents(
+            documents,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+        )
 
         if verbose:
             print(
@@ -179,12 +298,7 @@ def command_ingest(args: argparse.Namespace) -> int:
             )
         print(describe_store_destination(args.store, store))
         if verbose:
-            if isinstance(embedder, HashingEmbedder):
-                print("[verbose] Using hashing embedder (offline mode).")
-            else:
-                print(
-                    f"[verbose] Using OpenAI embeddings ({settings.openai_embedding_model})."
-                )
+            _print_embedder_mode(embedder, settings)
         return 0
     except FileNotFoundError as e:
         print(f"Error: File not found - {e}")
@@ -210,42 +324,13 @@ def command_chat(args: argparse.Namespace) -> int:
         retriever = RagRetriever(embedder, store)
 
         if verbose and not json_output:
-            if isinstance(embedder, HashingEmbedder):
-                print("[verbose] Using hashing embedder (offline mode).")
-            else:
-                print(
-                    f"[verbose] Using OpenAI embeddings ({settings.openai_embedding_model})."
-                )
-            if USING_STUB and not isinstance(embedder, HashingEmbedder):
-                print(
-                    "[verbose] Deterministic reasoning fallback active; embeddings remain provider-backed."
-                )
-            print(
-                f"[verbose] Store loaded from {args.store} ({len(store.entries)} entries)."
-            )
+            _print_chat_preamble(args, settings, embedder, store)
 
         result = run_chat_session(args.query, args.constraints or "", retriever)
-        decision = result.final_decision
-        fused = result.fused
-        personas = result.personas
         decision_record_path = _persist_decision_record(args, settings, result)
 
         if verbose and not json_output:
-            print(f"[verbose] Received responses from {len(personas)} persona(s).")
-            trace = result.decision_trace
-            print(
-                "[verbose] Decision trace: "
-                f"query_hash={trace.query_hash} "
-                f"used_evidence={len(trace.used_evidence_ids)} "
-                f"cited_evidence={len(trace.cited_evidence_ids)} "
-                f"blocked_evidence={len(trace.blocked_evidence_ids)} "
-                f"safety={trace.safety_outcome} "
-                f"review_required={trace.requires_human_review} "
-                f"citation_hit_rate={trace.citation_hit_rate:.2f} "
-                f"answer_support={trace.answer_support_score:.2f}"
-            )
-            if decision_record_path is not None:
-                print(f"[verbose] Decision record saved to {decision_record_path}")
+            _print_trace_summary(result, decision_record_path)
 
         if json_output:
             payload = _decision_record_payload(result)
@@ -255,70 +340,7 @@ def command_chat(args: argparse.Namespace) -> int:
             print(json.dumps(payload, ensure_ascii=True, indent=2))
             return 0
 
-        print(f"\n{'=' * 60}")
-        print(f"Verdict: {decision.verdict.upper()}")
-        print(f"Residual Risk: {decision.residual_risk}")
-        if decision.requires_human_review:
-            print("Human Review: REQUIRED")
-        print(f"{'=' * 60}\n")
-        print(f"{decision.justification}\n")
-        if decision.requires_human_review and decision.review_reason:
-            print(f"Review Reason: {decision.review_reason}\n")
-        trace = result.decision_trace
-        if trace.cited_evidence:
-            print("Cited Evidence:")
-            for cited_item in trace.cited_evidence:
-                snippet = _truncate_trace_text(cited_item.text)
-                print(f"  - {cited_item.citation} {cited_item.source}: {snippet}")
-            print()
-        if trace.blocked_evidence:
-            print("Blocked Evidence:")
-            for blocked_item in trace.blocked_evidence:
-                reasons = ", ".join(blocked_item.safety_reasons) or "blocked"
-                snippet = _truncate_trace_text(blocked_item.text)
-                print(f"  - {blocked_item.citation} {blocked_item.source}: {reasons}")
-                if snippet:
-                    print(f"    {snippet}")
-            print()
-        print(f"{'-' * 60}")
-        print("Persona Perspectives:\n")
-        for persona in decision.persona_outputs:
-            clean_text = _strip_persona_tags(persona.text)
-            print(f"  [{persona.name.title()}] (confidence {persona.confidence:.2f})")
-
-            for line in clean_text.splitlines():
-                stripped = line.strip()
-                if stripped:
-                    print(f"    {stripped}")
-            print()
-        if decision.risks:
-            print(f"{'-' * 60}")
-            print("Risks:")
-            for risk in decision.risks:
-                risk_text = risk.strip() if isinstance(risk, str) else str(risk)
-                if risk_text:
-                    print(f"  - {risk_text}")
-        if decision.mitigations:
-            print("\nMitigations:")
-            for mitigation in decision.mitigations:
-                mit_text = (
-                    mitigation.strip()
-                    if isinstance(mitigation, str)
-                    else str(mitigation)
-                )
-                if mit_text:
-                    print(f"  - {mit_text}")
-        blocked_count = len(
-            [
-                item
-                for item in getattr(fused, "consensus_points", [])
-                if "Unsafe retrieved instructions" in item
-            ]
-        )
-        if blocked_count:
-            print("\nSafety:")
-            print("  - Unsafe retrieved instructions were excluded from synthesis.")
-        print()
+        _print_chat_report(result)
         return 0
     except FileNotFoundError as e:
         print(f"Error: File not found - {e}")
