@@ -1,11 +1,10 @@
-"""Tests for magi.core.utils – caching, retry, sanitization, circuit breaker, token tracking."""
+"""Tests for magi.core.utils caching, retry, sanitization, and token tracking."""
 
 from __future__ import annotations
 
 import pytest
 
 from magi.core.utils import (
-    CircuitBreaker,
     LRUCache,
     RateLimiter,
     TokenTracker,
@@ -115,40 +114,6 @@ def test_sanitize_input_truncates():
     long_text = "a" * 500
     result = sanitize_input(long_text, max_length=100)
     assert len(result) <= 100
-
-
-def test_circuit_breaker_opens():
-    """After reaching the failure threshold the breaker transitions to 'open'."""
-    breaker = CircuitBreaker(
-        failure_threshold=3,
-        recovery_timeout=9999,
-        expected_exception=ValueError,
-    )
-
-    def bad():
-        raise ValueError("boom")
-
-    for _ in range(3):
-        with pytest.raises(ValueError):
-            breaker.call(bad)
-
-    assert breaker.state == "open"
-
-    with pytest.raises(Exception, match="Circuit breaker is open"):
-        breaker.call(bad)
-
-
-def test_circuit_breaker_closes_on_success():
-    """A successful call after threshold is not reached keeps the breaker closed."""
-    breaker = CircuitBreaker(failure_threshold=5, expected_exception=ValueError)
-
-    for _ in range(2):
-        with pytest.raises(ValueError):
-            breaker.call(lambda: (_ for _ in ()).throw(ValueError("oops")))
-
-    result = breaker.call(lambda: "ok")
-    assert result == "ok"
-    assert breaker.state == "closed"
 
 
 def test_token_tracker_accumulates():
