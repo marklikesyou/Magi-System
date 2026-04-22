@@ -1,0 +1,24 @@
+name: vendor-review
+description: Evaluate third-party claims, risks, and readiness with evidence-backed caution.
+route_mode: decision
+retrieval_top_k: 9
+presentation_style: vendor_review
+show_persona_perspectives: false
+show_routing_rationale: true
+max_next_steps: 3
+default_constraints: >
+  Prefer direct evidence about controls, support model, contractual obligations,
+  limitations, and residual risk. Do not approve on marketing language alone.
+prompt_preamble: >
+  Treat the request as a vendor review. Prioritize contracts, security
+  questionnaires, architecture notes, and policy commitments over sales copy.
+response_format_guidance: >
+  Present the answer as a vendor review with Recommendation, Evidence, Risks,
+  and Required Follow-up. Keep conclusions bounded by the source material.
+approve_min_citation_hit_rate: 1.0
+approve_min_answer_support_score: 0.35
+source_weights:
+  contract: 1.25
+  questionnaire: 1.2
+  security: 1.15
+  architecture: 1.1
