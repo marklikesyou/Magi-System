@@ -61,6 +61,8 @@ class DecisionTrace:
     answer_supported: bool = False
     requires_human_review: bool = False
     review_reason: str = ""
+    abstained: bool = False
+    abstention_reason: str = ""
     verdict_overridden: bool = False
     program_run_ms: float = 0.0
     decision_resolution_ms: float = 0.0
@@ -68,6 +70,12 @@ class DecisionTrace:
     end_to_end_ms: float = 0.0
     effective_mode: str = "stub"
     model: str = ""
+    query_mode: str = "decision"
+    routing_rationale: str = ""
+    routing_scores: dict[str, int] = field(default_factory=dict)
+    routing_signals: list[str] = field(default_factory=list)
+    requested_route: str = ""
+    profile_name: str = ""
     token_stats: dict[str, Any] = field(default_factory=dict)
     decision_features: dict[str, Any] = field(default_factory=dict)
 
@@ -95,10 +103,12 @@ def _evidence_items(payload: Any) -> list[EvidenceItem]:
     return items
 
 
-def _normalize_verdict_label(value: object) -> Literal["approve", "reject", "revise"] | None:
+def _normalize_verdict_label(
+    value: object,
+) -> Literal["approve", "reject", "revise", "abstain"] | None:
     label = str(value or "").strip().lower()
-    if label in {"approve", "reject", "revise"}:
-        return cast(Literal["approve", "reject", "revise"], label)
+    if label in {"approve", "reject", "revise", "abstain"}:
+        return cast(Literal["approve", "reject", "revise", "abstain"], label)
     return None
 
 
@@ -116,7 +126,7 @@ def _detail_count(details: dict[str, object], key: str) -> int:
 
 def _decision_justification(
     fused: FusionResponse,
-    verdict: Literal["approve", "reject", "revise"],
+    verdict: Literal["approve", "reject", "revise", "abstain"],
     details: dict[str, object],
 ) -> str:
     base = str(fused.final_answer or fused.justification or "").strip()
@@ -137,6 +147,8 @@ def _decision_justification(
         reasons.append("most personas requested revision")
     elif approve_votes >= 2 and verdict == "approve":
         reasons.append("persona consensus favored approval")
+    elif verdict == "abstain":
+        reasons.append("the decision layer treated the evidence as insufficient for a confident answer")
 
     override = (
         f"Authoritative verdict: {verdict.upper()}. "
@@ -363,12 +375,22 @@ def _apply_approve_guardrail(
     *,
     citation_hit_rate: float,
     support_score: float,
+    citation_threshold_override: float | None = None,
+    support_threshold_override: float | None = None,
 ) -> tuple[FinalDecision, bool]:
     settings = get_settings()
     if decision.verdict != "approve":
         return decision, False
-    citation_threshold = settings.approve_min_citation_hit_rate
-    support_threshold = settings.approve_min_answer_support_score
+    citation_threshold = (
+        settings.approve_min_citation_hit_rate
+        if citation_threshold_override is None
+        else citation_threshold_override
+    )
+    support_threshold = (
+        settings.approve_min_answer_support_score
+        if support_threshold_override is None
+        else support_threshold_override
+    )
     if (
         citation_hit_rate >= citation_threshold
         and support_score >= support_threshold
@@ -398,6 +420,59 @@ def _apply_approve_guardrail(
             risks=decision.risks,
             mitigations=decision.mitigations,
             residual_risk=_elevate_residual_risk(decision.residual_risk, "medium"),
+            abstained=decision.abstained,
+            abstention_reason=decision.abstention_reason,
+        ),
+        True,
+    )
+
+
+def _apply_abstention(
+    decision: FinalDecision,
+    *,
+    query_mode: str,
+    used_evidence_count: int,
+    citation_hit_rate: float,
+    support_score: float,
+    decision_details: Mapping[str, object],
+) -> tuple[FinalDecision, bool]:
+    if decision.verdict in {"reject", "abstain"}:
+        return decision, False
+
+    should_abstain = False
+    reason = ""
+    if used_evidence_count == 0:
+        should_abstain = True
+        reason = "No trustworthy retrieved evidence was available."
+    elif query_mode in {"extract", "fact_check"} and citation_hit_rate == 0.0:
+        should_abstain = True
+        reason = "The evidence did not directly support the requested extraction or verification."
+    elif bool(decision_details.get("insufficient_information")) and support_score < 0.2:
+        should_abstain = True
+        reason = "The decision layer marked the available evidence as insufficient."
+
+    if not should_abstain:
+        return decision, False
+
+    justification = (
+        "Authoritative verdict: ABSTAIN. "
+        f"{reason} Ask for more targeted evidence before making a stronger claim."
+    )
+    if decision.justification:
+        justification = f"{justification}\n\n{decision.justification}"
+    return (
+        FinalDecision(
+            verdict="abstain",
+            justification=justification,
+            persona_outputs=decision.persona_outputs,
+            risks=decision.risks or ["The available evidence is insufficient for a reliable answer."],
+            mitigations=decision.mitigations
+            or ["Add evidence that directly addresses the requested claim or detail."],
+            residual_risk=_elevate_residual_risk(decision.residual_risk, "medium"),
+            requires_human_review=False,
+            review_reason="",
+            abstained=True,
+            abstention_reason=reason,
         ),
         True,
     )
@@ -423,6 +498,8 @@ def _apply_human_review_requirement(
             residual_risk=decision.residual_risk,
             requires_human_review=True,
             review_reason=review_reason,
+            abstained=decision.abstained,
+            abstention_reason=decision.abstention_reason,
         ),
         True,
     )
@@ -442,6 +519,12 @@ def run_chat_session(
     force_stub: bool | None = None,
     model: str | None = None,
     client: Any | None = None,
+    route_mode: str | None = None,
+    profile_name: str = "",
+    prompt_preamble: str = "",
+    response_format_guidance: str = "",
+    approve_min_citation_hit_rate: float | None = None,
+    approve_min_answer_support_score: float | None = None,
 ) -> ChatSessionResult:
     start = perf_counter()
     program = MagiProgram(
@@ -449,6 +532,9 @@ def run_chat_session(
         force_stub=force_stub,
         model=model,
         client=client,
+        route_mode=route_mode,
+        prompt_preamble=prompt_preamble,
+        response_format_guidance=response_format_guidance,
     )
     program_start = perf_counter()
     fused, personas = program(query, constraints=constraints)
@@ -490,6 +576,27 @@ def run_chat_session(
         mitigations=[str(item) for item in fused.mitigations],
         residual_risk=fused.residual_risk,
     )
+    query_mode = str(getattr(program, "last_run_metadata", {}).get("query_mode", "decision"))
+    routing_rationale = str(
+        getattr(program, "last_run_metadata", {}).get("routing_rationale", "")
+    )
+    routing_scores = dict(
+        cast(
+            Mapping[str, int],
+            getattr(program, "last_run_metadata", {}).get("routing_scores", {}),
+        )
+    )
+    routing_signals = [
+        str(item).strip()
+        for item in cast(
+            list[object],
+            getattr(program, "last_run_metadata", {}).get("routing_signals", []),
+        )
+        if str(item).strip()
+    ]
+    requested_route = str(
+        getattr(program, "last_run_metadata", {}).get("requested_route", "")
+    )
     grounding_text = _combined_answer_text(
         fused.final_answer,
         fused.justification,
@@ -509,6 +616,16 @@ def run_chat_session(
         decision,
         citation_hit_rate=citation_hit_rate,
         support_score=support_score,
+        citation_threshold_override=approve_min_citation_hit_rate,
+        support_threshold_override=approve_min_answer_support_score,
+    )
+    decision, abstained = _apply_abstention(
+        decision,
+        query_mode=query_mode,
+        used_evidence_count=len(used_evidence_ids),
+        citation_hit_rate=citation_hit_rate,
+        support_score=support_score,
+        decision_details=decision_details,
     )
     decision, human_review_required = _apply_human_review_requirement(decision)
     decision_trace = DecisionTrace(
@@ -538,6 +655,8 @@ def run_chat_session(
         answer_supported=answer_supported,
         requires_human_review=decision.requires_human_review,
         review_reason=decision.review_reason,
+        abstained=decision.abstained,
+        abstention_reason=decision.abstention_reason,
         verdict_overridden=fused.verdict != decision.verdict,
         program_run_ms=program_run_ms,
         decision_resolution_ms=decision_resolution_ms,
@@ -545,10 +664,17 @@ def run_chat_session(
         end_to_end_ms=round((perf_counter() - start) * 1000.0, 3),
         effective_mode=program.effective_mode,
         model=program.model_name,
+        query_mode=query_mode,
+        routing_rationale=routing_rationale,
+        routing_scores=routing_scores,
+        routing_signals=routing_signals,
+        requested_route=requested_route,
+        profile_name=profile_name,
         token_stats=get_token_stats(),
         decision_features={
             **dict(decision_details),
             "approve_guardrail_triggered": approve_guardrail_triggered,
+            "abstained": abstained,
             "requires_human_review": human_review_required,
             "citation_hit_rate": round(citation_hit_rate, 4),
             "answer_support_score": round(support_score, 4),
