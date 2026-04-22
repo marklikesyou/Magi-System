@@ -70,7 +70,7 @@ def train(
     bias = [0.0 for _ in range(class_count)]
     if not samples:
         return weights, bias
-    for epoch in range(epochs):
+    for _epoch in range(epochs):
         grad_w = [[0.0 for _ in range(feature_count)] for _ in range(class_count)]
         grad_b = [0.0 for _ in range(class_count)]
         loss = 0.0
