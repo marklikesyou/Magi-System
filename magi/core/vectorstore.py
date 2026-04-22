@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Protocol, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Protocol, Sequence, TypeGuard
 
 
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
-
     if len(a) != len(b):
         raise ValueError("vectors must share the same dimensionality.")
     dot = sum(x * y for x, y in zip(a, b))
@@ -17,10 +16,26 @@ def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def _is_filter_sequence(value: object) -> bool:
+def _is_filter_sequence(value: object) -> TypeGuard[Sequence[object]]:
     return isinstance(value, Sequence) and not isinstance(
         value, (str, bytes, bytearray)
     )
+
+
+def _coerce_embedding(raw: object) -> List[float]:
+    if not _is_filter_sequence(raw):
+        return []
+    values: List[float] = []
+    for value in raw:
+        number = float(value) if isinstance(value, (int, float)) else float(str(value))
+        values.append(number)
+    return values
+
+
+def _coerce_metadata(raw: object) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    return {}
 
 
 def metadata_matches_filters(
@@ -76,10 +91,10 @@ class VectorEntry:
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "VectorEntry":
         return cls(
-            document_id=payload["document_id"],
-            embedding=list(payload["embedding"]),
-            text=payload["text"],
-            metadata=dict(payload.get("metadata", {})),
+            document_id=str(payload["document_id"]),
+            embedding=_coerce_embedding(payload.get("embedding", [])),
+            text=str(payload["text"]),
+            metadata=_coerce_metadata(payload.get("metadata", {})),
         )
 
 
