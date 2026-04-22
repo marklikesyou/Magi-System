@@ -1,0 +1,21 @@
+name: exec-brief
+description: Produce concise, high-signal summaries for leadership audiences.
+route_mode: summarize
+retrieval_top_k: 6
+presentation_style: executive_brief
+show_persona_perspectives: false
+show_routing_rationale: false
+max_next_steps: 2
+default_constraints: >
+  Keep the answer concise, lead with the outcome, and separate confirmed facts
+  from assumptions or open questions.
+prompt_preamble: >
+  Treat the request as an executive brief. Prefer the most decision-relevant
+  evidence, compress detail aggressively, and keep caveats explicit.
+response_format_guidance: >
+  Present the answer as an executive brief. Lead with a one-sentence takeaway,
+  then include only the most material caveats and follow-up items.
+source_weights:
+  brief: 1.25
+  overview: 1.15
+  summary: 1.1
