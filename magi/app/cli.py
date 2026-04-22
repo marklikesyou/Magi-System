@@ -1,23 +1,35 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+import csv
 from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
 import sys
-from typing import Dict, Iterable, List, cast
+from typing import Callable, Dict, Iterable, List, Sequence, cast
 
+from magi.app.artifacts import (
+    decision_payload,
+    diff_run_artifacts,
+    load_run_artifact,
+    persist_run_artifact,
+    render_artifact_diff,
+    render_run_artifact,
+    resolve_artifact_path,
+)
+from magi.app.presentation import format_chat_report, response_format_guidance
 from magi.app.service import ChatSessionResult, DecisionTrace, run_chat_session
 from magi.core.config import Settings, get_settings
 from magi.core.embeddings import HashingEmbedder, build_embedder
+from magi.core.profiles import Profile, list_profiles, load_profile
 from magi.core.rag import RagRetriever
 from magi.core.storage import (
     describe_store_destination,
     initialize_store,
     persist_store,
     save_json_document,
+    store_metadata,
 )
 from magi.core.vectorstore import VectorEntry, VectorStore
 from magi.data_pipeline.chunkers import sliding_window_chunk
@@ -25,6 +37,21 @@ from magi.data_pipeline.embed import embed_chunks
 from magi.data_pipeline.ingest import ingest_paths
 from magi.decision.schema import PersonaOutput
 from magi.dspy_programs.personas import USING_STUB
+from magi.eval.dataset import export_feature_log, load_dataset
+from magi.eval.metrics import accuracy, classification_report, confidence_interval
+from magi.eval.reporting import (
+    compare_reports,
+    failing_regressions,
+    load_report,
+    render_report_comparison,
+)
+from magi.eval.run_bench import evaluate_dataset
+from magi.eval.scenario_harness import (
+    load_scenario_dataset,
+    render_scenario_report,
+    run_scenario_suite,
+    write_scenario_report,
+)
 
 DEFAULT_STORE = Path(__file__).resolve().parents[1] / "storage" / "vector_store.json"
 
@@ -36,7 +63,6 @@ _PERSONA_TAG_RE = re.compile(
 
 
 def _strip_persona_tags(text: str) -> str:
-    """Remove leading [STANCE] [NAME] tags from persona text for clean display."""
     return _PERSONA_TAG_RE.sub("", text).strip()
 
 
@@ -66,16 +92,6 @@ def _vector_entries(payload: Iterable[Dict[str, object]]) -> List[VectorEntry]:
     return entries
 
 
-def _decision_record_payload(result: ChatSessionResult) -> Dict[str, object]:
-    return {
-        "decision": result.final_decision.model_dump(mode="json"),
-        "fused": result.fused.model_dump(mode="json"),
-        "decision_trace": asdict(result.decision_trace),
-        "effective_mode": result.effective_mode,
-        "model": result.model,
-    }
-
-
 def _decision_record_path(
     args: argparse.Namespace, settings: Settings, result: ChatSessionResult
 ) -> Path | None:
@@ -95,7 +111,7 @@ def _persist_decision_record(
     path = _decision_record_path(args, settings, result)
     if path is None:
         return None
-    save_json_document(path, _decision_record_payload(result))
+    save_json_document(path, decision_payload(result))
     return path
 
 
@@ -154,6 +170,7 @@ def _print_chat_preamble(
     settings: Settings,
     embedder: object,
     store: VectorStore,
+    profile: Profile | None,
 ) -> None:
     _print_embedder_mode(embedder, settings)
     if USING_STUB and not isinstance(embedder, HashingEmbedder):
@@ -161,26 +178,35 @@ def _print_chat_preamble(
             "[verbose] Deterministic reasoning fallback active; embeddings remain provider-backed."
         )
     print(f"[verbose] Store loaded from {args.store} ({len(store.entries)} entries).")
+    if profile is not None:
+        print(f"[verbose] Active profile: {profile.name}")
 
 
 def _print_trace_summary(
-    result: ChatSessionResult, decision_record_path: Path | None
+    result: ChatSessionResult,
+    decision_record_path: Path | None,
+    artifact_path: Path,
 ) -> None:
     trace = result.decision_trace
     print(f"[verbose] Received responses from {len(result.personas)} persona(s).")
     print(
         "[verbose] Decision trace: "
-        f"query_hash={trace.query_hash} "
+        f"mode={trace.query_mode} "
+        f"route_scores={trace.routing_scores} "
         f"used_evidence={len(trace.used_evidence_ids)} "
         f"cited_evidence={len(trace.cited_evidence_ids)} "
         f"blocked_evidence={len(trace.blocked_evidence_ids)} "
         f"safety={trace.safety_outcome} "
         f"review_required={trace.requires_human_review} "
+        f"abstained={trace.abstained} "
         f"citation_hit_rate={trace.citation_hit_rate:.2f} "
         f"answer_support={trace.answer_support_score:.2f}"
     )
+    if trace.routing_signals:
+        print(f"[verbose] Routing signals: {', '.join(trace.routing_signals)}")
     if decision_record_path is not None:
         print(f"[verbose] Decision record saved to {decision_record_path}")
+    print(f"[verbose] Run artifact saved to {artifact_path}")
 
 
 def _print_bullet_section(
@@ -234,47 +260,185 @@ def _print_persona_outputs(persona_outputs: Iterable[PersonaOutput]) -> None:
         print()
 
 
-def _print_chat_report(result: ChatSessionResult) -> None:
-    decision = result.final_decision
-    trace = result.decision_trace
-
-    print(f"\n{'=' * 60}")
-    print(f"Verdict: {decision.verdict.upper()}")
-    print(f"Residual Risk: {decision.residual_risk}")
-    if decision.requires_human_review:
-        print("Human Review: REQUIRED")
-    print(f"{'=' * 60}\n")
-    print(f"{decision.justification}\n")
-    if decision.requires_human_review and decision.review_reason:
-        print(f"Review Reason: {decision.review_reason}\n")
-    _print_trace_evidence(trace)
-    _print_persona_outputs(decision.persona_outputs)
-    _print_bullet_section("Risks", decision.risks)
-    _print_bullet_section(
-        "Mitigations",
-        decision.mitigations,
-        leading_newline=bool(decision.risks),
-    )
-    if any(
-        "Unsafe retrieved instructions" in item
-        for item in getattr(result.fused, "consensus_points", [])
-    ):
-        _print_bullet_section(
-            "Safety",
-            ["Unsafe retrieved instructions were excluded from synthesis."],
-            leading_newline=True,
-        )
-    print()
+def _print_chat_report(
+    result: ChatSessionResult,
+    artifact_path: Path,
+    profile: Profile | None,
+) -> None:
+    print(format_chat_report(result, artifact_path, profile))
 
 
 def _print_error(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def _load_profile_from_args(
+    settings: Settings,
+    args: argparse.Namespace,
+    *,
+    fallback_name: str = "",
+) -> Profile | None:
+    reference = str(getattr(args, "profile", "") or fallback_name).strip()
+    if not reference:
+        return None
+    profile_dir = str(getattr(settings, "profile_dir", "") or "").strip()
+    base_dir = Path(profile_dir) if profile_dir else None
+    return load_profile(reference, base_dir=base_dir)
+
+
+def _profile_base_dir(settings: Settings) -> Path | None:
+    profile_dir = str(getattr(settings, "profile_dir", "") or "").strip()
+    return Path(profile_dir) if profile_dir else None
+
+
+def _build_retriever(
+    settings: Settings,
+    store_path: Path,
+    profile: Profile | None,
+) -> tuple[object, VectorStore, RagRetriever]:
+    embedder = build_embedder(settings)
+    store = initialize_store(store_path, embedder)
+    retriever = _configured_retriever(embedder, store, profile)
+    return embedder, store, retriever
+
+
+def _configured_retriever(
+    embedder: Callable[[str], Sequence[float]],
+    store: VectorStore,
+    profile: Profile | None,
+) -> RagRetriever:
+    retriever = RagRetriever(
+        embedder,
+        store,
+        default_metadata_filters=(
+            profile.metadata_filters if profile is not None else None
+        ),
+        source_weights=(profile.source_weights if profile is not None else None),
+    )
+    if profile is not None and profile.retrieval_top_k is not None:
+        setattr(retriever, "preferred_top_k", profile.retrieval_top_k)
+    return retriever
+
+
+def _route_override(args: argparse.Namespace, profile: Profile | None) -> str | None:
+    explicit = str(getattr(args, "route", "") or "").strip()
+    if explicit:
+        return explicit
+    if profile is not None and profile.route_mode is not None:
+        return profile.route_mode
+    return None
+
+
+def _effective_constraints(
+    args: argparse.Namespace, profile: Profile | None, raw_constraints: str
+) -> str:
+    constraints = str(raw_constraints or "").strip()
+    if constraints:
+        return constraints
+    if profile is not None:
+        return profile.default_constraints
+    return ""
+
+
+def _render_text_table(headers: list[str], rows: list[list[str]]) -> str:
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+    header_line = "  ".join(
+        header.ljust(widths[index]) for index, header in enumerate(headers)
+    )
+    separator = "  ".join("-" * width for width in widths)
+    body = [
+        "  ".join(value.ljust(widths[index]) for index, value in enumerate(row))
+        for row in rows
+    ]
+    return "\n".join([header_line, separator] + body)
+
+
+def _comparison_targets(
+    settings: Settings,
+    args: argparse.Namespace,
+) -> list[tuple[str, Profile | None]]:
+    base_dir = _profile_base_dir(settings)
+    requested = [
+        str(item).strip()
+        for item in list(getattr(args, "profiles", []) or [])
+        if str(item).strip()
+    ]
+    targets: list[tuple[str, Profile | None]] = []
+    seen: set[str] = set()
+    if getattr(args, "include_default", False):
+        targets.append(("default", None))
+        seen.add("default")
+    if requested:
+        for reference in requested:
+            profile = load_profile(reference, base_dir=base_dir)
+            if profile is None or profile.name in seen:
+                continue
+            targets.append((profile.name, profile))
+            seen.add(profile.name)
+    else:
+        for summary in list_profiles(base_dir=base_dir):
+            if summary.name in seen:
+                continue
+            profile = load_profile(str(summary.path), base_dir=base_dir)
+            if profile is None:
+                continue
+            targets.append((profile.name, profile))
+            seen.add(profile.name)
+    if not targets:
+        raise ValueError("no profiles available to compare")
+    return targets
+
+
+def _run_single_query(
+    *,
+    args: argparse.Namespace,
+    settings: Settings,
+    query: str,
+    constraints: str,
+    store: VectorStore,
+    retriever: RagRetriever,
+    profile: Profile | None,
+) -> tuple[ChatSessionResult, Path, Path | None]:
+    profile_name = profile.name if profile is not None else ""
+    result = run_chat_session(
+        query,
+        constraints,
+        retriever,
+        model=str(getattr(args, "model", "") or "").strip() or None,
+        route_mode=_route_override(args, profile),
+        profile_name=profile_name,
+        prompt_preamble=(profile.prompt_preamble if profile is not None else ""),
+        response_format_guidance=response_format_guidance(profile),
+        approve_min_citation_hit_rate=(
+            profile.approve_min_citation_hit_rate if profile is not None else None
+        ),
+        approve_min_answer_support_score=(
+            profile.approve_min_answer_support_score if profile is not None else None
+        ),
+    )
+    decision_record_path = _persist_decision_record(args, settings, result)
+    artifact_path = persist_run_artifact(
+        settings,
+        result=result,
+        query=query,
+        constraints=constraints,
+        store_path=args.store,
+        store_metadata=store_metadata(store),
+        profile_name=profile_name,
+        requested_route=_route_override(args, profile) or "",
+    )
+    return result, artifact_path, decision_record_path
+
+
 def command_ingest(args: argparse.Namespace) -> int:
     verbose = getattr(args, "verbose", False)
     try:
         settings = get_settings()
+        if getattr(args, "reset_store", False) and Path(args.store).exists():
+            Path(args.store).unlink()
         embedder = build_embedder(settings)
         store = initialize_store(args.store, embedder)
 
@@ -302,7 +466,13 @@ def command_ingest(args: argparse.Namespace) -> int:
         embedded = embed_chunks(chunks, embedder)
         entries = _vector_entries(embedded)
         store.add(entries)
-        persist_store(args.store, store)
+        persist_store(
+            args.store,
+            store,
+            embedder=embedder,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+        )
 
         print(f"Ingested {len(entries)} chunks from {len(documents)} document(s).")
         if skipped_existing:
@@ -332,28 +502,36 @@ def command_chat(args: argparse.Namespace) -> int:
     json_output = getattr(args, "json", False)
     try:
         settings = get_settings()
-        embedder = build_embedder(settings)
-        store = initialize_store(args.store, embedder)
-        retriever = RagRetriever(embedder, store)
+        profile = _load_profile_from_args(settings, args)
+        embedder, store, retriever = _build_retriever(settings, args.store, profile)
+        constraints = _effective_constraints(args, profile, getattr(args, "constraints", ""))
 
         if verbose and not json_output:
-            _print_chat_preamble(args, settings, embedder, store)
+            _print_chat_preamble(args, settings, embedder, store, profile)
 
-        result = run_chat_session(args.query, args.constraints or "", retriever)
-        decision_record_path = _persist_decision_record(args, settings, result)
+        result, artifact_path, decision_record_path = _run_single_query(
+            args=args,
+            settings=settings,
+            query=args.query,
+            constraints=constraints,
+            store=store,
+            retriever=retriever,
+            profile=profile,
+        )
 
         if verbose and not json_output:
-            _print_trace_summary(result, decision_record_path)
+            _print_trace_summary(result, decision_record_path, artifact_path)
 
         if json_output:
-            payload = _decision_record_payload(result)
+            payload = decision_payload(result)
             payload["decision_record_path"] = (
                 str(decision_record_path) if decision_record_path is not None else ""
             )
+            payload["artifact_path"] = str(artifact_path)
             print(json.dumps(payload, ensure_ascii=True, indent=2))
             return 0
 
-        _print_chat_report(result)
+        _print_chat_report(result, artifact_path, profile)
         return 0
     except FileNotFoundError as e:
         _print_error(f"Error: File not found - {e}")
@@ -366,6 +544,452 @@ def command_chat(args: argparse.Namespace) -> int:
         return 1
     except Exception as e:
         _print_error(f"Error: Unexpected error - {e}")
+        return 1
+
+
+def _load_batch_records(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    suffix = path.suffix.lower()
+    if suffix == ".jsonl":
+        rows: list[dict[str, object]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                payload = json.loads(stripped)
+                if isinstance(payload, dict):
+                    rows.append(payload)
+        return rows
+    if suffix == ".json":
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, list):
+            return [dict(item) for item in payload if isinstance(item, dict)]
+        raise ValueError("batch JSON input must be a list of objects")
+    if suffix in {".csv", ".tsv"}:
+        delimiter = "\t" if suffix == ".tsv" else ","
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter=delimiter)
+            return [dict(row) for row in reader]
+    raise ValueError("batch input must be .jsonl, .json, .csv, or .tsv")
+
+
+def _completed_batch_ids(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    completed: set[str] = set()
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            payload = json.loads(stripped)
+            if isinstance(payload, dict):
+                identifier = str(payload.get("id", "")).strip()
+                if identifier:
+                    completed.add(identifier)
+    return completed
+
+
+def command_batch(args: argparse.Namespace) -> int:
+    try:
+        settings = get_settings()
+        profile = _load_profile_from_args(settings, args)
+        embedder, store, retriever = _build_retriever(settings, args.store, profile)
+        records = _load_batch_records(args.input)
+        completed = (
+            _completed_batch_ids(args.out) if getattr(args, "resume", False) and args.out else set()
+        )
+        processed = 0
+        skipped = 0
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+        base_route = str(getattr(args, "route", "") or "").strip()
+        for index, record in enumerate(records, start=1):
+            identifier = str(record.get("id", "")).strip() or f"row-{index}"
+            if identifier in completed:
+                skipped += 1
+                continue
+            query = str(record.get("query", "")).strip()
+            if not query:
+                skipped += 1
+                continue
+            per_record_route = str(record.get("route", "")).strip()
+            per_record_constraints = _effective_constraints(
+                args,
+                profile,
+                str(record.get("constraints", "")).strip(),
+            )
+            if per_record_route:
+                setattr(args, "route", per_record_route)
+            else:
+                setattr(args, "route", base_route)
+            result, artifact_path, _ = _run_single_query(
+                args=args,
+                settings=settings,
+                query=query,
+                constraints=per_record_constraints,
+                store=store,
+                retriever=retriever,
+                profile=profile,
+            )
+            payload = {
+                "id": identifier,
+                "query": query,
+                "constraints": per_record_constraints,
+                "verdict": result.final_decision.verdict,
+                "query_mode": result.decision_trace.query_mode,
+                "requires_human_review": result.final_decision.requires_human_review,
+                "abstained": result.final_decision.abstained,
+                "artifact_path": str(artifact_path),
+            }
+            if args.out:
+                with args.out.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+            processed += 1
+            if getattr(args, "limit", 0) and processed >= args.limit:
+                break
+        print(f"processed\t{processed}")
+        print(f"skipped\t{skipped}")
+        if args.out:
+            print(f"output\t{args.out}")
+        if getattr(args, "verbose", False):
+            _print_embedder_mode(embedder, settings)
+            print(describe_store_destination(args.store, store))
+        return 0
+    except FileNotFoundError as e:
+        _print_error(f"Error: File not found - {e}")
+        return 1
+    except RuntimeError as e:
+        _print_error(f"Error: {e}")
+        return 1
+    except ValueError as e:
+        _print_error(f"Error: Invalid value - {e}")
+        return 1
+    except Exception as e:
+        _print_error(f"Error: Unexpected error - {e}")
+        return 1
+
+
+def command_compare(args: argparse.Namespace) -> int:
+    verbose = getattr(args, "verbose", False)
+    try:
+        settings = get_settings()
+        embedder = build_embedder(settings)
+        store = initialize_store(args.store, embedder)
+        targets = _comparison_targets(settings, args)
+        comparisons: list[
+            tuple[str, Profile | None, str, ChatSessionResult, Path]
+        ] = []
+
+        if verbose:
+            _print_embedder_mode(embedder, settings)
+            print(f"[verbose] Store loaded from {args.store} ({len(store.entries)} entries).")
+            print(f"[verbose] Comparing {len(targets)} profile target(s).")
+
+        for label, profile in targets:
+            retriever = _configured_retriever(embedder, store, profile)
+            constraints = _effective_constraints(
+                args,
+                profile,
+                getattr(args, "constraints", ""),
+            )
+            result, artifact_path, _ = _run_single_query(
+                args=args,
+                settings=settings,
+                query=args.query,
+                constraints=constraints,
+                store=store,
+                retriever=retriever,
+                profile=profile,
+            )
+            comparisons.append((label, profile, constraints, result, artifact_path))
+
+        rows: list[list[str]] = []
+        for label, profile, _constraints, result, artifact_path in comparisons:
+            decision = result.final_decision
+            trace = result.decision_trace
+            rows.append(
+                [
+                    label,
+                    profile.presentation_style if profile is not None else "standard",
+                    trace.query_mode,
+                    decision.verdict,
+                    decision.residual_risk,
+                    f"{trace.citation_hit_rate:.2f}",
+                    f"{trace.answer_support_score:.2f}",
+                    "yes" if decision.requires_human_review else "no",
+                    "yes" if decision.abstained else "no",
+                    artifact_path.stem,
+                ]
+            )
+
+        print("=" * 60)
+        print("PROFILE COMPARISON")
+        print("=" * 60)
+        print(f"Query: {args.query}")
+        print(f"Store: {args.store}")
+        print(
+            _render_text_table(
+                [
+                    "profile",
+                    "style",
+                    "mode",
+                    "verdict",
+                    "risk",
+                    "cite",
+                    "support",
+                    "review",
+                    "abstain",
+                    "run_id",
+                ],
+                rows,
+            )
+        )
+        print("")
+        print("Use `python -m magi.app.cli explain <run_id>` for any row above.")
+
+        if getattr(args, "full", False):
+            for label, profile, constraints, result, artifact_path in comparisons:
+                print("")
+                print("=" * 60)
+                print(f"PROFILE: {label}")
+                print(
+                    "Presentation Style: "
+                    f"{profile.presentation_style if profile is not None else 'standard'}"
+                )
+                print(f"Applied Constraints: {constraints or 'None'}")
+                print("=" * 60)
+                print(format_chat_report(result, artifact_path, profile))
+        return 0
+    except FileNotFoundError as e:
+        _print_error(f"Error: File not found - {e}")
+        return 1
+    except RuntimeError as e:
+        _print_error(f"Error: {e}")
+        return 1
+    except ValueError as e:
+        _print_error(f"Error: Invalid value - {e}")
+        return 1
+    except Exception as e:
+        _print_error(f"Error: Unexpected error - {e}")
+        return 1
+
+
+def command_explain(args: argparse.Namespace) -> int:
+    try:
+        settings = get_settings()
+        path = resolve_artifact_path(args.artifact, settings=settings)
+        payload = load_run_artifact(path)
+        print(render_run_artifact(payload))
+        return 0
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
+
+
+def command_profiles(args: argparse.Namespace) -> int:
+    try:
+        settings = get_settings()
+        base_dir = _profile_base_dir(settings)
+        name = str(getattr(args, "name", "") or "").strip()
+        if name:
+            profile = load_profile(name, base_dir=base_dir)
+            if profile is None:
+                raise FileNotFoundError(f"profile not found: {name}")
+            print(f"Name: {profile.name}")
+            print(f"Description: {profile.description or 'None'}")
+            print(f"Route Mode: {profile.route_mode or 'auto'}")
+            print(f"Retrieval Top K: {profile.retrieval_top_k or 'auto'}")
+            print(f"Presentation Style: {profile.presentation_style}")
+            print(f"Default Constraints: {profile.default_constraints or 'None'}")
+            print(f"Prompt Preamble: {profile.prompt_preamble or 'None'}")
+            print(
+                f"Response Format Guidance: {profile.response_format_guidance or 'default'}"
+            )
+            print(
+                "Approval Thresholds: "
+                f"citation={profile.approve_min_citation_hit_rate if profile.approve_min_citation_hit_rate is not None else 'default'}, "
+                f"support={profile.approve_min_answer_support_score if profile.approve_min_answer_support_score is not None else 'default'}"
+            )
+            if profile.source_weights:
+                print("Source Weights:")
+                for source, weight in sorted(profile.source_weights.items()):
+                    print(f"  - {source}: {weight:.2f}")
+            return 0
+
+        summaries = list_profiles(base_dir=base_dir)
+        for summary in summaries:
+            print(
+                "\t".join(
+                    [
+                        summary.name,
+                        summary.route_mode or "auto",
+                        str(summary.retrieval_top_k or "auto"),
+                        summary.presentation_style,
+                        summary.source,
+                        summary.description,
+                    ]
+                )
+            )
+        return 0
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
+
+
+def command_replay(args: argparse.Namespace) -> int:
+    try:
+        settings = get_settings()
+        artifact_path = resolve_artifact_path(args.artifact, settings=settings)
+        artifact = load_run_artifact(artifact_path)
+        input_payload = artifact.get("input", {})
+        if not isinstance(input_payload, dict):
+            raise ValueError("artifact input payload is invalid")
+        artifact_store = artifact.get("store", {})
+        store_path = getattr(args, "store", None)
+        if store_path is None:
+            store_path = Path(
+                str(
+                    ((artifact_store or {}) if isinstance(artifact_store, dict) else {}).get(
+                        "path",
+                        DEFAULT_STORE,
+                    )
+                )
+            )
+        replay_args = argparse.Namespace(
+            query=str(input_payload.get("query", "")),
+            constraints=str(input_payload.get("constraints", "")),
+            store=store_path,
+            verbose=getattr(args, "verbose", False),
+            json=getattr(args, "json", False),
+            decision_record_out=None,
+            profile=str(getattr(args, "profile", "") or input_payload.get("profile", "") or ""),
+            route=str(getattr(args, "route", "") or input_payload.get("requested_route", "") or ""),
+            model=str(getattr(args, "model", "") or ""),
+        )
+        return command_chat(replay_args)
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
+
+
+def command_diff(args: argparse.Namespace) -> int:
+    try:
+        settings = get_settings()
+        left = load_run_artifact(resolve_artifact_path(args.left, settings=settings))
+        right = load_run_artifact(resolve_artifact_path(args.right, settings=settings))
+        diff = diff_run_artifacts(left, right)
+        print(render_artifact_diff(diff))
+        return 0
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
+
+
+def _benchmark_report_payload(
+    cases_path: Path,
+    predictions: list[str],
+    gold: list[str],
+    rows: list[tuple[str, str, str]],
+) -> dict[str, object]:
+    score = accuracy(predictions, gold)
+    lower, upper = confidence_interval(score, len(gold))
+    return {
+        "metadata": {
+            "suite_type": "benchmark",
+            "source": str(cases_path),
+        },
+        "summary": {
+            "accuracy": score,
+            "count": len(gold),
+            "ci_lower": lower,
+            "ci_upper": upper,
+        },
+        "cases": [
+            {"id": case_id, "expected": expected, "predicted": predicted}
+            for case_id, expected, predicted in rows
+        ],
+        "classification_report": classification_report(predictions, gold),
+    }
+
+
+def command_eval_run(args: argparse.Namespace) -> int:
+    try:
+        if args.kind == "scenario":
+            dataset = load_scenario_dataset(args.cases)
+            force_stub = None
+            if args.mode == "stub":
+                force_stub = True
+            elif args.mode == "live":
+                force_stub = False
+            report = run_scenario_suite(
+                dataset,
+                force_stub=force_stub,
+                model=args.model,
+                requested_mode=args.mode,
+            )
+            print(render_scenario_report(report))
+            if args.report_out:
+                write_scenario_report(report, args.report_out)
+                print(f"report_saved\t{args.report_out}")
+            return 0
+
+        benchmark_dataset = load_dataset(args.cases)
+        predictions, gold, rows, features = evaluate_dataset(benchmark_dataset)
+        payload = _benchmark_report_payload(args.cases, predictions, gold, rows)
+        for case_id, expected, predicted in rows:
+            print(f"{case_id}\t{expected}\t{predicted}")
+        summary = cast(dict[str, object], payload["summary"])
+        print(f"\naccuracy\t{float(str(summary['accuracy'])):.2%}")
+        if args.features_out:
+            export_feature_log(features, args.features_out)
+            print(f"features_saved\t{args.features_out}")
+        if args.report_out:
+            save_json_document(args.report_out, payload)
+            print(f"report_saved\t{args.report_out}")
+        return 0
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
+
+
+def command_eval_compare(args: argparse.Namespace) -> int:
+    try:
+        baseline = load_report(args.baseline)
+        candidate = load_report(args.candidate)
+        comparison = compare_reports(baseline, candidate)
+        print(render_report_comparison(comparison))
+        return 0
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
+
+
+def command_eval_regressions(args: argparse.Namespace) -> int:
+    try:
+        baseline = load_report(args.baseline)
+        candidate = load_report(args.candidate)
+        comparison = compare_reports(baseline, candidate)
+        thresholds = {
+            "overall_score": args.min_overall_score_delta,
+            "verdict_accuracy": args.min_verdict_accuracy_delta,
+            "retrieval_hit_rate": args.min_retrieval_hit_rate_delta,
+            "average_answer_support_score": args.min_answer_support_score_delta,
+        }
+        failures = failing_regressions(comparison, thresholds)
+        if failures:
+            for metric, actual, minimum in failures:
+                print(
+                    f"regression\t{metric}\tactual={actual:+.4f}\tminimum={minimum:+.4f}",
+                    file=sys.stderr,
+                )
+            return 1
+        print("status\tok")
+        return 0
+    except Exception as e:
+        _print_error(f"Error: {e}")
         return 1
 
 
@@ -390,6 +1014,21 @@ def build_parser() -> argparse.ArgumentParser:
             help="Print additional diagnostic information (embedder, chunks, scores).",
         )
 
+    def add_profile_options(target: argparse.ArgumentParser) -> None:
+        target.add_argument(
+            "--profile",
+            help="Optional domain profile name or path.",
+        )
+        target.add_argument(
+            "--route",
+            choices=("summarize", "extract", "fact_check", "recommend", "decision"),
+            help="Optional query route override.",
+        )
+        target.add_argument(
+            "--model",
+            help="Optional model override for live runs.",
+        )
+
     add_common_options(parser, with_defaults=True)
 
     subparsers = parser.add_subparsers(dest="command")
@@ -407,12 +1046,19 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument(
         "--chunk-overlap", type=int, default=200, help="Overlap between chunks."
     )
+    ingest_parser.add_argument(
+        "--reset-store",
+        action="store_true",
+        default=False,
+        help="Delete the existing local store file before ingesting.",
+    )
     ingest_parser.set_defaults(handler=command_ingest)
 
     chat_parser = subparsers.add_parser(
         "chat", help="Ask a question against ingested documents."
     )
     add_common_options(chat_parser, with_defaults=False)
+    add_profile_options(chat_parser)
     chat_parser.add_argument("query", help="User query to send to the MAGI system.")
     chat_parser.add_argument(
         "--constraints", help="Optional constraints for Balthasar."
@@ -430,6 +1076,167 @@ def build_parser() -> argparse.ArgumentParser:
     )
     chat_parser.set_defaults(handler=command_chat)
 
+    batch_parser = subparsers.add_parser(
+        "batch", help="Run a batch of queries from JSONL, JSON, CSV, or TSV."
+    )
+    add_common_options(batch_parser, with_defaults=False)
+    add_profile_options(batch_parser)
+    batch_parser.add_argument("input", type=Path, help="Batch input file.")
+    batch_parser.add_argument("--out", type=Path, help="Optional JSONL output path.")
+    batch_parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help="Skip rows whose id already exists in the output JSONL.",
+    )
+    batch_parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Optional maximum number of records to process.",
+    )
+    batch_parser.set_defaults(handler=command_batch)
+
+    compare_parser = subparsers.add_parser(
+        "compare", help="Run the same query across multiple profiles."
+    )
+    add_common_options(compare_parser, with_defaults=False)
+    compare_parser.add_argument("query", help="User query to compare across profiles.")
+    compare_parser.add_argument(
+        "--constraints", help="Optional explicit constraints shared across runs."
+    )
+    compare_parser.add_argument(
+        "--profiles",
+        nargs="*",
+        help="Optional profile names or paths. Defaults to all discovered profiles.",
+    )
+    compare_parser.add_argument(
+        "--include-default",
+        action="store_true",
+        default=False,
+        help="Also include the unprofiled default run in the comparison.",
+    )
+    compare_parser.add_argument(
+        "--route",
+        choices=("summarize", "extract", "fact_check", "recommend", "decision"),
+        help="Optional query route override shared across compared runs.",
+    )
+    compare_parser.add_argument(
+        "--model",
+        help="Optional model override for live runs.",
+    )
+    compare_parser.add_argument(
+        "--full",
+        action="store_true",
+        default=False,
+        help="Render the full formatted output for each compared profile.",
+    )
+    compare_parser.set_defaults(handler=command_compare)
+
+    explain_parser = subparsers.add_parser(
+        "explain", help="Render a saved run artifact."
+    )
+    explain_parser.add_argument("artifact", help="Artifact path or run id.")
+    explain_parser.set_defaults(handler=command_explain)
+
+    profiles_parser = subparsers.add_parser(
+        "profiles", help="List or inspect built-in and workspace profiles."
+    )
+    profiles_parser.add_argument(
+        "name",
+        nargs="?",
+        help="Optional profile name to inspect in detail.",
+    )
+    profiles_parser.set_defaults(handler=command_profiles)
+
+    replay_parser = subparsers.add_parser(
+        "replay", help="Replay a saved run artifact against the current code."
+    )
+    add_common_options(replay_parser, with_defaults=False)
+    add_profile_options(replay_parser)
+    replay_parser.add_argument("artifact", help="Artifact path or run id.")
+    replay_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print the replay result as JSON.",
+    )
+    replay_parser.set_defaults(handler=command_replay)
+
+    diff_parser = subparsers.add_parser(
+        "diff", help="Diff two saved run artifacts."
+    )
+    diff_parser.add_argument("left", help="Left artifact path or run id.")
+    diff_parser.add_argument("right", help="Right artifact path or run id.")
+    diff_parser.set_defaults(handler=command_diff)
+
+    eval_parser = subparsers.add_parser("eval", help="Run or compare evaluation suites.")
+    eval_subparsers = eval_parser.add_subparsers(dest="eval_command")
+
+    eval_run_parser = eval_subparsers.add_parser(
+        "run", help="Run a scenario or benchmark evaluation suite."
+    )
+    eval_run_parser.add_argument(
+        "--kind",
+        choices=("scenario", "benchmark"),
+        required=True,
+        help="Evaluation suite type.",
+    )
+    eval_run_parser.add_argument(
+        "--cases",
+        type=Path,
+        required=True,
+        help="Path to the evaluation dataset.",
+    )
+    eval_run_parser.add_argument(
+        "--mode",
+        choices=("auto", "stub", "live"),
+        default="auto",
+        help="Scenario execution mode.",
+    )
+    eval_run_parser.add_argument("--model", help="Optional live model override.")
+    eval_run_parser.add_argument("--report-out", type=Path, help="Optional JSON report path.")
+    eval_run_parser.add_argument("--features-out", type=Path, help="Optional benchmark feature log path.")
+    eval_run_parser.set_defaults(handler=command_eval_run)
+
+    eval_compare_parser = eval_subparsers.add_parser(
+        "compare", help="Compare two saved evaluation reports."
+    )
+    eval_compare_parser.add_argument("baseline", type=Path)
+    eval_compare_parser.add_argument("candidate", type=Path)
+    eval_compare_parser.set_defaults(handler=command_eval_compare)
+
+    eval_regression_parser = eval_subparsers.add_parser(
+        "regressions", help="Fail when key report metrics regress."
+    )
+    eval_regression_parser.add_argument("baseline", type=Path)
+    eval_regression_parser.add_argument("candidate", type=Path)
+    eval_regression_parser.add_argument(
+        "--min-overall-score-delta",
+        type=float,
+        default=0.0,
+        help="Minimum allowed delta for overall_score.",
+    )
+    eval_regression_parser.add_argument(
+        "--min-verdict-accuracy-delta",
+        type=float,
+        default=0.0,
+        help="Minimum allowed delta for verdict_accuracy.",
+    )
+    eval_regression_parser.add_argument(
+        "--min-retrieval-hit-rate-delta",
+        type=float,
+        default=0.0,
+        help="Minimum allowed delta for retrieval_hit_rate.",
+    )
+    eval_regression_parser.add_argument(
+        "--min-answer-support-score-delta",
+        type=float,
+        default=0.0,
+        help="Minimum allowed delta for average_answer_support_score.",
+    )
+    eval_regression_parser.set_defaults(handler=command_eval_regressions)
+
     return parser
 
 
@@ -439,7 +1246,9 @@ def main(argv: List[str] | None = None) -> int:
     if not getattr(args, "handler", None):
         parser.print_help()
         return 0
-    args.store.parent.mkdir(parents=True, exist_ok=True)
+    store_path = getattr(args, "store", None)
+    if isinstance(store_path, Path):
+        store_path.parent.mkdir(parents=True, exist_ok=True)
     return args.handler(args)
 
 
