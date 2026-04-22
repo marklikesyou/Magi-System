@@ -62,6 +62,11 @@ cases:
     query: "What is MAGI's guaranteed p95 latency SLA?"
     expected_verdict: revise
     expected_residual_risk: medium
+    evidence:
+      - source: team_social
+        text: "The team social agenda covers lunch, demos, and office logistics for Friday."
+      - source: README
+        text: "MAGI is a multi persona reasoning engine for assessing user requests against an evidence base."
     checks:
       required_terms_any:
         - "not sufficient"
