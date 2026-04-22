@@ -72,7 +72,6 @@ def sliding_window_chunk(
         )
 
         start = break_pos - overlap
-        if start < 0:
-            start = 0
+        start = max(start, 0)
         idx += 1
     return chunks
