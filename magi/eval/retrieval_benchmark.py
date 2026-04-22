@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence, cast
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -168,12 +168,12 @@ def write_retrieval_benchmark_report(
 def _vector_entries(payload: Iterable[Dict[str, object]]) -> List[VectorEntry]:
     entries: list[VectorEntry] = []
     for record in payload:
-        metadata = dict(record.get("metadata", {}))
+        metadata = dict(cast(Dict[str, object], record.get("metadata", {})))
         metadata.setdefault("source", str(record["id"]).split("::")[0])
         entries.append(
             VectorEntry(
                 document_id=str(record["id"]),
-                embedding=list(record["embedding"]),
+                embedding=list(cast(Sequence[float], record["embedding"])),
                 text=str(record["text"]),
                 metadata=metadata,
             )
@@ -293,13 +293,13 @@ def run_retrieval_benchmark(
     embedder: Any | None = None,
 ) -> RetrievalBenchmarkReport:
     active_embedder = embedder or build_embedder(get_settings())
-    own_temp_store = store_path is None
     temp_dir: TemporaryDirectory[str] | None = None
-    if own_temp_store:
+    effective_store_path: Path
+    if store_path is None:
         temp_dir = TemporaryDirectory()
         effective_store_path = Path(temp_dir.name) / "retrieval_benchmark_store.json"
     else:
-        effective_store_path = Path(store_path)
+        effective_store_path = store_path
 
     try:
         store = initialize_store(effective_store_path, active_embedder)
