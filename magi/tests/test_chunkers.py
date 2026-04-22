@@ -126,9 +126,8 @@ def test_sliding_window_no_data_loss():
     chunks = sliding_window_chunk(_make_doc(text), chunk_size=200, overlap=50)
     reconstructed = set()
     for chunk in chunks:
-        for i, ch in enumerate(text):
+        for i, _ch in enumerate(text):
             if chunk["text"].find(text[i : i + 10]) != -1:
                 for j in range(i, min(i + 10, len(text))):
                     reconstructed.add(j)
-
     assert len(reconstructed) == len(text)
