@@ -32,7 +32,7 @@ def test_command_chat_returns_nonzero_on_runtime_error(
 
     captured = capsys.readouterr()
     assert status == 1
-    assert "Error: boom" in captured.out
+    assert "Error: boom" in captured.err
 
 
 def test_parser_accepts_common_options_after_subcommand(tmp_path: Path) -> None:
