@@ -261,7 +261,13 @@ def test_normalize_summary_synthesis_promotes_melchior_and_balthasar_to_approve(
 def test_normalize_guardrailed_recommendation_promotes_revise_to_approve():
     evidence = [
         RetrievedEvidence(
-            citation="[1]", source="brief", text="Pilot proposal", score=1.0
+            citation="[1]",
+            source="brief",
+            text=(
+                "The pilot proposal scopes MAGI to internal policy triage with a "
+                "human reviewer, weekly refreshes, and explicit rollout controls."
+            ),
+            score=1.0,
         )
     ]
     melchior = MelchiorResponse(
@@ -269,7 +275,9 @@ def test_normalize_guardrailed_recommendation_promotes_revise_to_approve():
         analysis="The proposal includes scope, budget, timeline, controls, and human reviewer guardrails for a pilot.",
         answer_outline=["Approve a bounded pilot."],
         confidence=0.7,
-        evidence_quotes=['[1] "Pilot proposal"'],
+        evidence_quotes=[
+            '[1] "The pilot proposal scopes MAGI to internal policy triage with a human reviewer."'
+        ],
         stance="revise",
         actions=["Recommend a bounded pilot with safeguards."],
     )
@@ -326,7 +334,13 @@ def test_normalize_responder_response_falls_back_when_answer_conflicts_with_appr
         fusion,
         [
             RetrievedEvidence(
-                citation="[1]", source="brief", text="Pilot proposal", score=1.0
+                citation="[1]",
+                source="brief",
+                text=(
+                    "The pilot proposal scopes MAGI to internal policy triage with a "
+                    "human reviewer, weekly refreshes, and explicit rollout controls."
+                ),
+                score=1.0,
             )
         ],
         response,
