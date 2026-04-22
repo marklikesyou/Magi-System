@@ -1169,6 +1169,21 @@ def _normalize_persona_stance(query: str, stance: str, *parts: object) -> str:
     return stance
 
 
+def _promote_grounded_revision(
+    query: str,
+    evidence: Sequence[RetrievedEvidence],
+    combined: str,
+    stance: str,
+) -> str:
+    if stance != "revise":
+        return stance
+    if _supports_grounded_synthesis(query, evidence, combined):
+        return "approve"
+    if _supports_grounded_recommendation(query, evidence, combined):
+        return "approve"
+    return stance
+
+
 def _normalize_melchior_response(
     query: str,
     evidence: Sequence[RetrievedEvidence],
@@ -1187,12 +1202,7 @@ def _normalize_melchior_response(
         response.stance,
         combined,
     )
-    if stance == "revise" and _supports_grounded_synthesis(query, evidence, combined):
-        stance = "approve"
-    if stance == "revise" and _supports_grounded_recommendation(
-        query, evidence, combined
-    ):
-        stance = "approve"
+    stance = _promote_grounded_revision(query, evidence, combined, stance)
     return response.model_copy(
         update={
             "stance": cast(Any, stance),
@@ -1214,12 +1224,7 @@ def _normalize_balthasar_response(
         response.stance,
         combined,
     )
-    if stance == "revise" and _supports_grounded_synthesis(query, evidence, combined):
-        stance = "approve"
-    if stance == "revise" and _supports_grounded_recommendation(
-        query, evidence, combined
-    ):
-        stance = "approve"
+    stance = _promote_grounded_revision(query, evidence, combined, stance)
     return response.model_copy(
         update={
             "stance": cast(Any, stance),
@@ -1353,36 +1358,9 @@ def _normalize_responder_response(
     evidence: Sequence[RetrievedEvidence],
     response: ResponderResponse,
 ) -> ResponderResponse:
-    if fusion.verdict == "approve":
-        if _is_grounded_response(
-            query,
-            response.final_answer or response.justification,
-            evidence,
-            fusion.verdict,
-        ):
-            return response.model_copy(
-                update={"text": response.final_answer or response.justification}
-            )
-    elif fusion.verdict == "revise":
-        if _is_grounded_response(
-            query,
-            response.final_answer or response.justification,
-            evidence,
-            fusion.verdict,
-        ):
-            return response.model_copy(
-                update={"text": response.final_answer or response.justification}
-            )
-    elif fusion.verdict == "reject":
-        if _is_grounded_response(
-            query,
-            response.final_answer or response.justification,
-            evidence,
-            fusion.verdict,
-        ):
-            return response.model_copy(
-                update={"text": response.final_answer or response.justification}
-            )
+    response_text = response.final_answer or response.justification
+    if _is_grounded_response(query, response_text, evidence, fusion.verdict):
+        return response.model_copy(update={"text": response_text})
     return _heuristic_responder(query, fusion, evidence)
 
 
