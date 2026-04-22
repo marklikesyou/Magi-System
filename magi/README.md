@@ -23,6 +23,9 @@ The current codebase is a working CLI-oriented prototype with offline fallback, 
 python -m magi.app.cli ingest docs/briefing.pdf
 python -m magi.app.cli chat "Should we deploy the latest patch?" --constraints "Budget <= 50k"
 python -m magi.app.cli chat "Should we deploy the latest patch?" --json
+python -m magi.app.cli profiles
+python -m magi.app.cli chat "Should we deploy the latest patch?" --profile security-review
+python -m magi.app.cli compare "Should we deploy the latest patch?" --include-default --profiles security-review exec-brief
 ```
 
 By default the system stays completely offline using a deterministic hashing embedder and a deterministic reasoning fallback. To activate provider-backed reasoning, set OpenAI or Google credentials in `.env.local` and run commands with `MAGI_FORCE_DSPY_STUB=0`; OpenAI credentials are still required for provider-backed embeddings. Use `MAGI_FORCE_HASH_EMBEDDER=1` if you ever need to fall back to hashing.
@@ -40,6 +43,8 @@ The most relevant environment variables for production-style runs are:
 - `MAGI_PROVIDER_MAX_RETRIES` and `MAGI_PROVIDER_RETRY_INITIAL_DELAY` for provider retry policy.
 - `MAGI_PROVIDER_REQUESTS_PER_MINUTE` for provider-side throttling.
 - `MAGI_DECISION_TRACE_DIR` to persist structured decision records from CLI runs.
+- `MAGI_RUN_ARTIFACT_DIR` to persist replayable run artifacts from CLI runs.
+- `MAGI_PROFILE_DIR` to expose workspace-local profile YAML files to the CLI.
 - `MAGI_APPROVE_MIN_CITATION_HIT_RATE` and `MAGI_APPROVE_MIN_ANSWER_SUPPORT_SCORE` to gate `approve` on cited-evidence quality.
 - `MAGI_REQUIRE_HUMAN_REVIEW_FOR_APPROVALS` to keep grounded approvals flagged for human review.
 
@@ -70,3 +75,12 @@ uv run mypy magi
   - `python magi/eval/run_scenarios.py --cases /path/to/scenarios.yaml --mode live --model gpt-4o-mini-2024-07-18`
 - Enforce the benchmark accuracy threshold in CI: `pytest magi/tests/test_decision_bench.py`
 - See `magi/eval/cases.template.yaml` and `magi/eval/scenarios.template.yaml` for dataset format guidance.
+
+### Profiles and artifacts
+
+- Inspect built-in profiles: `python -m magi.app.cli profiles`
+- Show one profile in detail: `python -m magi.app.cli profiles incident-review`
+- Compare multiple profiles on the same prompt: `python -m magi.app.cli compare "Should we deploy the pilot?" --profiles security-review exec-brief`
+- Explain a saved run: `python -m magi.app.cli explain <run-id>`
+- Replay a saved run through the current code: `python -m magi.app.cli replay <run-id>`
+- Diff two saved runs: `python -m magi.app.cli diff <run-a> <run-b>`
