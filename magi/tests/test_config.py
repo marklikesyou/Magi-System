@@ -15,6 +15,8 @@ def test_settings_default_runtime_controls() -> None:
     assert settings.approve_min_answer_support_score == 0.2
     assert settings.require_human_review_for_approvals is True
     assert settings.decision_trace_dir == ""
+    assert settings.run_artifact_dir == ""
+    assert settings.profile_dir == ""
 
 
 def test_settings_read_runtime_controls_from_env(monkeypatch) -> None:
@@ -25,6 +27,8 @@ def test_settings_read_runtime_controls_from_env(monkeypatch) -> None:
     monkeypatch.setenv("MAGI_APPROVE_MIN_ANSWER_SUPPORT_SCORE", "0.35")
     monkeypatch.setenv("MAGI_REQUIRE_HUMAN_REVIEW_FOR_APPROVALS", "false")
     monkeypatch.setenv("MAGI_DECISION_TRACE_DIR", "/tmp/magi-traces")
+    monkeypatch.setenv("MAGI_RUN_ARTIFACT_DIR", "/tmp/magi-artifacts")
+    monkeypatch.setenv("MAGI_PROFILE_DIR", "/tmp/magi-profiles")
 
     settings = cast(Any, Settings)(_env_file=None)
 
@@ -35,3 +39,5 @@ def test_settings_read_runtime_controls_from_env(monkeypatch) -> None:
     assert settings.approve_min_answer_support_score == 0.35
     assert settings.require_human_review_for_approvals is False
     assert settings.decision_trace_dir == "/tmp/magi-traces"
+    assert settings.run_artifact_dir == "/tmp/magi-artifacts"
+    assert settings.profile_dir == "/tmp/magi-profiles"
