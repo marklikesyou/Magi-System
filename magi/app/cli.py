@@ -6,10 +6,11 @@ from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
+import sys
 from typing import Dict, Iterable, List, cast
 
-from magi.app.service import run_chat_session
-from magi.core.config import get_settings
+from magi.app.service import ChatSessionResult, DecisionTrace, run_chat_session
+from magi.core.config import Settings, get_settings
 from magi.core.embeddings import HashingEmbedder, build_embedder
 from magi.core.rag import RagRetriever
 from magi.core.storage import (
@@ -18,10 +19,11 @@ from magi.core.storage import (
     persist_store,
     save_json_document,
 )
-from magi.core.vectorstore import VectorEntry
+from magi.core.vectorstore import VectorEntry, VectorStore
 from magi.data_pipeline.chunkers import sliding_window_chunk
 from magi.data_pipeline.embed import embed_chunks
 from magi.data_pipeline.ingest import ingest_paths
+from magi.decision.schema import PersonaOutput
 from magi.dspy_programs.personas import USING_STUB
 
 DEFAULT_STORE = Path(__file__).resolve().parents[1] / "storage" / "vector_store.json"
@@ -64,7 +66,7 @@ def _vector_entries(payload: Iterable[Dict[str, object]]) -> List[VectorEntry]:
     return entries
 
 
-def _decision_record_payload(result) -> Dict[str, object]:
+def _decision_record_payload(result: ChatSessionResult) -> Dict[str, object]:
     return {
         "decision": result.final_decision.model_dump(mode="json"),
         "fused": result.fused.model_dump(mode="json"),
@@ -75,7 +77,7 @@ def _decision_record_payload(result) -> Dict[str, object]:
 
 
 def _decision_record_path(
-    args: argparse.Namespace, settings, result
+    args: argparse.Namespace, settings: Settings, result: ChatSessionResult
 ) -> Path | None:
     explicit = getattr(args, "decision_record_out", None)
     if explicit:
@@ -88,7 +90,7 @@ def _decision_record_path(
 
 
 def _persist_decision_record(
-    args: argparse.Namespace, settings, result
+    args: argparse.Namespace, settings: Settings, result: ChatSessionResult
 ) -> Path | None:
     path = _decision_record_path(args, settings, result)
     if path is None:
@@ -97,7 +99,7 @@ def _persist_decision_record(
     return path
 
 
-def _existing_content_hashes(store) -> set[str]:
+def _existing_content_hashes(store: VectorStore) -> set[str]:
     return {
         str(entry.metadata.get("content_hash", "")).strip()
         for entry in store.entries
@@ -140,14 +142,19 @@ def _chunk_documents(
     return chunks
 
 
-def _print_embedder_mode(embedder, settings) -> None:
+def _print_embedder_mode(embedder: object, settings: Settings) -> None:
     if isinstance(embedder, HashingEmbedder):
         print("[verbose] Using hashing embedder (offline mode).")
         return
     print(f"[verbose] Using OpenAI embeddings ({settings.openai_embedding_model}).")
 
 
-def _print_chat_preamble(args: argparse.Namespace, settings, embedder, store) -> None:
+def _print_chat_preamble(
+    args: argparse.Namespace,
+    settings: Settings,
+    embedder: object,
+    store: VectorStore,
+) -> None:
     _print_embedder_mode(embedder, settings)
     if USING_STUB and not isinstance(embedder, HashingEmbedder):
         print(
@@ -156,7 +163,9 @@ def _print_chat_preamble(args: argparse.Namespace, settings, embedder, store) ->
     print(f"[verbose] Store loaded from {args.store} ({len(store.entries)} entries).")
 
 
-def _print_trace_summary(result, decision_record_path: Path | None) -> None:
+def _print_trace_summary(
+    result: ChatSessionResult, decision_record_path: Path | None
+) -> None:
     trace = result.decision_trace
     print(f"[verbose] Received responses from {len(result.personas)} persona(s).")
     print(
@@ -194,7 +203,7 @@ def _print_bullet_section(
         print(f"  - {line}")
 
 
-def _print_trace_evidence(trace) -> None:
+def _print_trace_evidence(trace: DecisionTrace) -> None:
     if trace.cited_evidence:
         print("Cited Evidence:")
         for cited_item in trace.cited_evidence:
@@ -212,7 +221,7 @@ def _print_trace_evidence(trace) -> None:
         print()
 
 
-def _print_persona_outputs(persona_outputs: Iterable[object]) -> None:
+def _print_persona_outputs(persona_outputs: Iterable[PersonaOutput]) -> None:
     print(f"{'-' * 60}")
     print("Persona Perspectives:\n")
     for persona in persona_outputs:
@@ -225,7 +234,7 @@ def _print_persona_outputs(persona_outputs: Iterable[object]) -> None:
         print()
 
 
-def _print_chat_report(result) -> None:
+def _print_chat_report(result: ChatSessionResult) -> None:
     decision = result.final_decision
     trace = result.decision_trace
 
@@ -256,6 +265,10 @@ def _print_chat_report(result) -> None:
             leading_newline=True,
         )
     print()
+
+
+def _print_error(message: str) -> None:
+    print(message, file=sys.stderr)
 
 
 def command_ingest(args: argparse.Namespace) -> int:
@@ -301,16 +314,16 @@ def command_ingest(args: argparse.Namespace) -> int:
             _print_embedder_mode(embedder, settings)
         return 0
     except FileNotFoundError as e:
-        print(f"Error: File not found - {e}")
+        _print_error(f"Error: File not found - {e}")
         return 1
     except RuntimeError as e:
-        print(f"Error: {e}")
+        _print_error(f"Error: {e}")
         return 1
     except ValueError as e:
-        print(f"Error: Invalid value - {e}")
+        _print_error(f"Error: Invalid value - {e}")
         return 1
     except Exception as e:
-        print(f"Error: Unexpected error - {e}")
+        _print_error(f"Error: Unexpected error - {e}")
         return 1
 
 
@@ -343,16 +356,16 @@ def command_chat(args: argparse.Namespace) -> int:
         _print_chat_report(result)
         return 0
     except FileNotFoundError as e:
-        print(f"Error: File not found - {e}")
+        _print_error(f"Error: File not found - {e}")
         return 1
     except RuntimeError as e:
-        print(f"Error: {e}")
+        _print_error(f"Error: {e}")
         return 1
     except ValueError as e:
-        print(f"Error: Invalid value - {e}")
+        _print_error(f"Error: Invalid value - {e}")
         return 1
     except Exception as e:
-        print(f"Error: Unexpected error - {e}")
+        _print_error(f"Error: Unexpected error - {e}")
         return 1
 
 
