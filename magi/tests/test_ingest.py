@@ -46,4 +46,4 @@ def test_ingest_paths_dedupes_duplicate_content(tmp_path, capsys):
 
     assert len(records) == 1
     assert records[0]["metadata"]["source"] == str(first)
-    assert "duplicates existing content" in capsys.readouterr().out
+    assert "duplicates existing content" in capsys.readouterr().err
