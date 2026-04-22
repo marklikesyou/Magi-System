@@ -41,9 +41,10 @@ def _build_retriever() -> RagRetriever:
 def test_retrieve_returns_structured_chunks():
     retriever = _build_retriever()
     results = retriever.retrieve("release approved", top_k=2)
-    assert len(results) == 1
+    assert len(results) == 2
     assert results[0].document_id
     assert results[0].metadata["source"] == "doc-a.pdf"
+    assert results[0].text != results[1].text
 
 
 def test_retrieve_prioritizes_requested_page_and_dedupes():
