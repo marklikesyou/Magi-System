@@ -35,9 +35,6 @@ from .constants import (
     FALLBACK_BASE_WEIGHT,
     FALLBACK_COVERAGE_SCALE,
     FALLBACK_COVERAGE_WEIGHT,
-    FALLBACK_PROB_APPROVE,
-    FALLBACK_PROB_REJECT,
-    FALLBACK_PROB_REVISE,
     FUSED_CONFIDENCE_OVERRIDE_THRESHOLD,
     HEURISTIC_WEIGHT,
     LEAK_FACTOR,
@@ -118,6 +115,24 @@ class PersonaVote:
     action: Action
     confidence: float
     score: float = 0.0
+
+
+@dataclass(frozen=True)
+class VoteSummary:
+    persona_stances: List[str]
+    approve_votes: int
+    reject_votes: int
+    revise_votes: int
+
+
+@dataclass(frozen=True)
+class FusedSignals:
+    confidence: float
+    answer: str
+    steps: object
+    residual_risk: object
+    insufficient_information: bool
+    refusal_signal: bool
 
 
 def _clip_confidence(value: float) -> float:
@@ -487,6 +502,176 @@ def _contains_pattern(text: str, patterns: Tuple[str, ...]) -> bool:
     return any(pattern in lowered for pattern in patterns)
 
 
+def _default_probabilities() -> Dict[Action, float]:
+    return {
+        "approve": UNIFORM_PROBABILITY,
+        "reject": UNIFORM_PROBABILITY,
+        "revise": UNIFORM_PROBABILITY,
+    }
+
+
+def _normalize_probabilities(
+    probabilities: Mapping[Action, float],
+) -> Dict[Action, float]:
+    total = sum(probabilities.values()) or 1.0
+    return {label: value / total for label, value in probabilities.items()}
+
+
+def _blend_model_probabilities(
+    computed: Action | None,
+    probabilities: Dict[Action, float],
+    features: Dict[str, object],
+) -> tuple[Action | None, Dict[Action, float], Dict[Action, float], Dict[str, float] | None]:
+    model_probabilities: Dict[str, float] | None = None
+    combined_probabilities = dict(probabilities)
+    model = get_decision_model()
+    if not model or not features:
+        return computed, probabilities, combined_probabilities, model_probabilities
+
+    model_inputs = prepare_model_features(features)
+    model_probabilities = model.predict(model_inputs)
+    combined_probabilities = {
+        cast(Action, label): HEURISTIC_WEIGHT * probabilities.get(cast(Action, label), 0.0)
+        + MODEL_WEIGHT * model_probabilities.get(label, 0.0)
+        for label in ("approve", "reject", "revise")
+    }
+    combined_choice = max(
+        combined_probabilities,
+        key=lambda label: combined_probabilities[label],
+    )
+    base_choice = computed or combined_choice
+    if (
+        combined_probabilities[combined_choice]
+        - combined_probabilities.get(base_choice, 0.0)
+        >= MODEL_OVERRIDE_MARGIN
+    ):
+        computed = combined_choice
+    return computed, combined_probabilities, combined_probabilities, model_probabilities
+
+
+def _vote_summary(persona_objects: Mapping[str, object]) -> VoteSummary:
+    persona_stances = [
+        str(_get_field(obj, "stance") or "").lower() for obj in persona_objects.values()
+    ]
+    return VoteSummary(
+        persona_stances=persona_stances,
+        approve_votes=sum(1 for stance in persona_stances if stance == "approve"),
+        reject_votes=sum(1 for stance in persona_stances if stance == "reject"),
+        revise_votes=sum(1 for stance in persona_stances if stance == "revise"),
+    )
+
+
+def _fused_signals(
+    fused: object,
+    persona_outputs: List[PersonaOutput],
+) -> FusedSignals:
+    fused_answer = str(_get_field(fused, "final_answer") or "").strip()
+    combined_text = " ".join(
+        part
+        for part in (
+            fused_answer,
+            str(_get_field(fused, "justification") or "").strip(),
+            " ".join(persona.text for persona in persona_outputs),
+        )
+        if part
+    )
+    return FusedSignals(
+        confidence=_safe_float(_get_field(fused, "confidence")),
+        answer=fused_answer,
+        steps=_get_field(fused, "next_steps") or [],
+        residual_risk=_get_field(fused, "residual_risk"),
+        insufficient_information=_contains_pattern(
+            combined_text, _INSUFFICIENT_PATTERNS
+        ),
+        refusal_signal=_contains_pattern(combined_text, _REFUSAL_PATTERNS),
+    )
+
+
+def _apply_vote_signal_overrides(
+    verdict: Action | None,
+    summary: VoteSummary,
+    signals: FusedSignals,
+) -> Action | None:
+    if verdict is None:
+        return None
+    if signals.insufficient_information and not signals.refusal_signal and verdict == "reject":
+        verdict = "revise"
+    if summary.reject_votes == 0 and summary.revise_votes >= 2:
+        verdict = "revise"
+    if (
+        verdict != "reject"
+        and summary.reject_votes == 0
+        and summary.approve_votes >= 2
+        and signals.answer
+        and not signals.insufficient_information
+        and _risk_to_score(signals.residual_risk) > RISK_SCORE_HIGH
+    ):
+        verdict = "approve"
+    return verdict
+
+
+def _adjust_computed_verdict(
+    determined: Action | None,
+    computed: Action | None,
+    probabilities: Dict[Action, float],
+    features: Dict[str, object],
+    summary: VoteSummary,
+    signals: FusedSignals,
+) -> tuple[Action | None, Dict[Action, float], Dict[Action, float]]:
+    combined_probabilities = dict(probabilities)
+    if (
+        determined == "revise"
+        and computed == "reject"
+        and all(stance != "reject" for stance in summary.persona_stances if stance)
+    ):
+        computed = "revise"
+
+    computed = _apply_vote_signal_overrides(computed, summary, signals)
+
+    if signals.answer:
+        safety = _safe_float(features.get("safety", 0.5))
+        current_choice = computed if computed is not None else determined
+        if (
+            all(stance != "reject" for stance in summary.persona_stances)
+            and safety >= SAFETY_APPROVE_THRESHOLD
+            and current_choice not in {"revise", "reject"}
+        ):
+            computed = "approve"
+            probabilities = _normalize_probabilities(
+                probabilities or _default_probabilities()
+            )
+            combined_probabilities = dict(probabilities)
+
+    return computed, probabilities, combined_probabilities
+
+
+def _select_final_verdict(
+    determined: Action | None,
+    computed: Action | None,
+    probabilities: Dict[Action, float],
+    fused_confidence: float,
+    persona_outputs: List[PersonaOutput],
+) -> Action:
+    if computed:
+        if not determined:
+            final = computed
+        elif determined == "revise" and computed != "revise":
+            final = computed
+        elif determined != computed and fused_confidence < FUSED_CONFIDENCE_OVERRIDE_THRESHOLD:
+            final = computed
+        elif (
+            determined == "approve"
+            and probabilities.get("approve", 0.0) < APPROVE_PROB_OVERRIDE_THRESHOLD
+        ):
+            final = computed
+        else:
+            final = determined
+        return final
+    if determined:
+        return determined
+    return choose_verdict(persona_outputs)
+
+
 def resolve_verdict_with_details(
     fused: object,
     persona_objects: Mapping[str, object],
@@ -499,150 +684,47 @@ def resolve_verdict_with_details(
         persona_outputs,
     )
     if not probabilities:
-        probabilities = {
-            "approve": UNIFORM_PROBABILITY,
-            "reject": UNIFORM_PROBABILITY,
-            "revise": UNIFORM_PROBABILITY,
-        }
-    model_probabilities: Dict[str, float] | None = None
-    combined_probabilities = dict(probabilities)
-    model = get_decision_model()
-    if model and features:
-        model_inputs = prepare_model_features(features)
-        model_probabilities = model.predict(model_inputs)
-        combined_probabilities = {
-            cast(Action, label): HEURISTIC_WEIGHT
-            * probabilities.get(cast(Action, label), 0.0)
-            + MODEL_WEIGHT * model_probabilities.get(label, 0.0)
-            for label in ("approve", "reject", "revise")
-        }
-        combined_choice = max(
-            cast(Dict[Action, float], combined_probabilities),
-            key=lambda label: combined_probabilities[label],
-        )
-        base_choice = computed or combined_choice
-        if (
-            combined_probabilities[combined_choice]
-            - combined_probabilities.get(base_choice, 0.0)
-            >= MODEL_OVERRIDE_MARGIN
-        ):
-            computed = combined_choice
-        probabilities = combined_probabilities
-    fused_conf = _safe_float(_get_field(fused, "confidence"))
-    fused_answer = str(_get_field(fused, "final_answer") or "").strip()
-    fused_steps = _get_field(fused, "next_steps") or []
-    persona_stances = [
-        str(_get_field(obj, "stance") or "").lower() for obj in persona_objects.values()
-    ]
-    approve_votes = sum(1 for stance in persona_stances if stance == "approve")
-    reject_votes = sum(1 for stance in persona_stances if stance == "reject")
-    revise_votes = sum(1 for stance in persona_stances if stance == "revise")
-    combined_text = " ".join(
-        part
-        for part in (
-            fused_answer,
-            str(_get_field(fused, "justification") or "").strip(),
-            " ".join(persona.text for persona in persona_outputs),
-        )
-        if part
+        probabilities = _default_probabilities()
+    computed, probabilities, combined_probabilities, model_probabilities = (
+        _blend_model_probabilities(computed, probabilities, features)
     )
-    insufficient_information = _contains_pattern(combined_text, _INSUFFICIENT_PATTERNS)
-    refusal_signal = _contains_pattern(combined_text, _REFUSAL_PATTERNS)
-
-    if determined == "revise" and computed == "reject":
-        if all(stance != "reject" for stance in persona_stances if stance):
-            computed = "revise"
-
-    if insufficient_information and not refusal_signal:
-        if determined == "reject":
-            determined = "revise"
-        if computed == "reject":
-            computed = "revise"
-    if reject_votes == 0 and revise_votes >= 2:
-        computed = "revise"
-
-    if (
-        reject_votes == 0
-        and approve_votes >= 2
-        and fused_answer
-        and not insufficient_information
-        and _risk_to_score(_get_field(fused, "residual_risk")) > RISK_SCORE_HIGH
-    ):
-        computed = "approve"
-
-    if fused_answer:
-        safety = _safe_float(features.get("safety", 0.5))
-        if (
-            all(stance not in {"reject"} for stance in persona_stances)
-            and safety >= SAFETY_APPROVE_THRESHOLD
-            and (
-                computed not in {"revise", "reject"}
-                if computed is not None
-                else determined not in {"revise", "reject"}
-            )
-        ):
-            computed = "approve"
-            probabilities = probabilities or {
-                "approve": FALLBACK_PROB_APPROVE,
-                "revise": FALLBACK_PROB_REVISE,
-                "reject": FALLBACK_PROB_REJECT,
-            }
-
-            total = sum(probabilities.values()) or 1.0
-            probabilities = {k: v / total for k, v in probabilities.items()}
-            combined_probabilities = dict(probabilities)
-    final: Action
-    if computed:
-        if not determined:
-            final = computed
-        elif determined == "revise" and computed != "revise":
-            final = computed
-        elif (
-            fused_conf < FUSED_CONFIDENCE_OVERRIDE_THRESHOLD and determined != computed
-        ):
-            final = computed
-        elif (
-            determined == "approve"
-            and probabilities.get("approve", 0.0) < APPROVE_PROB_OVERRIDE_THRESHOLD
-        ):
-            final = computed
-        else:
-            final = determined
-    elif determined:
-        final = determined
-    else:
-        final = choose_verdict(persona_outputs)
-    if final == "reject" and insufficient_information and not refusal_signal:
-        final = "revise"
-    if reject_votes == 0 and revise_votes >= 2:
-        final = "revise"
-    if (
-        final != "reject"
-        and reject_votes == 0
-        and approve_votes >= 2
-        and fused_answer
-        and not insufficient_information
-        and _risk_to_score(_get_field(fused, "residual_risk")) > RISK_SCORE_HIGH
-    ):
-        final = "approve"
+    summary = _vote_summary(persona_objects)
+    signals = _fused_signals(fused, persona_outputs)
+    determined = _apply_vote_signal_overrides(determined, summary, signals)
+    computed, probabilities, combined_probabilities = _adjust_computed_verdict(
+        determined,
+        computed,
+        probabilities,
+        features,
+        summary,
+        signals,
+    )
+    final = _select_final_verdict(
+        determined,
+        computed,
+        probabilities,
+        signals.confidence,
+        persona_outputs,
+    )
+    final = cast(Action, _apply_vote_signal_overrides(final, summary, signals))
     features.update(
         {
             "computed_verdict": computed,
             "fused_verdict": determined,
-            "fused_confidence": fused_conf,
-            "fused_residual_risk": _get_field(fused, "residual_risk"),
-            "fused_final_answer": fused_answer,
-            "fused_next_steps": list(fused_steps)
-            if isinstance(fused_steps, (list, tuple, set))
-            else fused_steps,
+            "fused_confidence": signals.confidence,
+            "fused_residual_risk": signals.residual_risk,
+            "fused_final_answer": signals.answer,
+            "fused_next_steps": list(signals.steps)
+            if isinstance(signals.steps, (list, tuple, set))
+            else signals.steps,
             "final_verdict": final,
             "selected_probabilities": probabilities,
             "persona_names": [persona.name for persona in persona_outputs],
-            "persona_stances": persona_stances,
-            "approve_votes": approve_votes,
-            "reject_votes": reject_votes,
-            "revise_votes": revise_votes,
-            "insufficient_information": insufficient_information,
+            "persona_stances": summary.persona_stances,
+            "approve_votes": summary.approve_votes,
+            "reject_votes": summary.reject_votes,
+            "revise_votes": summary.revise_votes,
+            "insufficient_information": signals.insufficient_information,
             "persona_count": len(persona_outputs),
             "fallback_vote": determined is None and computed is None,
             "model_probabilities": model_probabilities,
