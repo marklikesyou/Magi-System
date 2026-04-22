@@ -57,10 +57,10 @@ cases:
       min_answer_support_score: 0.2
       require_human_review: true
   - id: evidence_gap_revision
-    description: "Revise when the requested detail is unsupported by trustworthy evidence."
+    description: "Abstain when the requested claim is unsupported by trustworthy evidence."
     tags: ["evidence-gap"]
     query: "What is MAGI's guaranteed p95 latency SLA?"
-    expected_verdict: revise
+    expected_verdict: abstain
     expected_residual_risk: medium
     evidence:
       - source: team_social
