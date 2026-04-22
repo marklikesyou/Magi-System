@@ -5,7 +5,7 @@ import logging
 import re
 from dataclasses import asdict, dataclass, field
 from time import perf_counter
-from typing import Any, Literal, cast
+from typing import Any, Literal, Mapping, cast
 
 from magi.core.config import get_settings
 from magi.core.utils import hash_query
@@ -17,6 +17,7 @@ from magi.eval.metrics import answer_support_score
 
 logger = logging.getLogger(__name__)
 _CITATION_LABEL_RE = re.compile(r"\[\d+\]")
+_SUPPORTED_ANSWER_SCORE_THRESHOLD = 0.2
 
 
 @dataclass
@@ -245,6 +246,70 @@ def _combined_answer_text(*parts: object) -> str:
     return "\n".join(str(part).strip() for part in parts if str(part).strip()).strip()
 
 
+def _safe_evidence_lookup(
+    program: MagiProgram,
+) -> tuple[dict[str, dict[str, str]], list[str]]:
+    metadata = getattr(program, "last_run_metadata", {}) or {}
+    safe_evidence = metadata.get("safe_evidence", [])
+    evidence_by_citation: dict[str, dict[str, str]] = {}
+    evidence_texts: list[str] = []
+    if not isinstance(safe_evidence, list):
+        return evidence_by_citation, evidence_texts
+
+    for item in safe_evidence:
+        if not isinstance(item, dict):
+            continue
+        citation = str(item.get("citation", "")).strip()
+        document_id = str(item.get("document_id", "")).strip()
+        source = str(item.get("source", "")).strip()
+        evidence_text = str(item.get("text", "")).strip()
+        if citation:
+            evidence_by_citation[citation] = {
+                "document_id": document_id,
+                "source": source,
+                "text": evidence_text,
+            }
+        if evidence_text:
+            evidence_texts.append(evidence_text)
+    return evidence_by_citation, evidence_texts
+
+
+def _resolved_citations(
+    citations: list[str],
+    evidence_by_citation: Mapping[str, Mapping[str, str]],
+) -> tuple[list[str], list[str], list[CitedEvidenceTrace], list[str]]:
+    cited_ids: list[str] = []
+    cited_sources: list[str] = []
+    cited_evidence: list[CitedEvidenceTrace] = []
+    unsupported_citations: list[str] = []
+    seen_citations: set[str] = set()
+
+    for citation in citations:
+        evidence = evidence_by_citation.get(citation)
+        if evidence is None:
+            if citation not in unsupported_citations:
+                unsupported_citations.append(citation)
+            continue
+        document_id = str(evidence.get("document_id", "")).strip()
+        source = str(evidence.get("source", "")).strip()
+        if document_id and document_id not in cited_ids:
+            cited_ids.append(document_id)
+        if source and source not in cited_sources:
+            cited_sources.append(source)
+        if citation in seen_citations:
+            continue
+        seen_citations.add(citation)
+        cited_evidence.append(
+            CitedEvidenceTrace(
+                citation=citation,
+                source=source,
+                document_id=document_id,
+                text=str(evidence.get("text", "")).strip(),
+            )
+        )
+    return cited_ids, cited_sources, cited_evidence, unsupported_citations
+
+
 def _grounding_metrics(
     program: MagiProgram, text: str
 ) -> tuple[
@@ -256,62 +321,25 @@ def _grounding_metrics(
     list[CitedEvidenceTrace],
     list[str],
 ]:
-    metadata = getattr(program, "last_run_metadata", {}) or {}
-    safe_evidence = metadata.get("safe_evidence", [])
-    evidence_by_citation: dict[str, dict[str, str]] = {}
-    evidence_texts: list[str] = []
-    if isinstance(safe_evidence, list):
-        for item in safe_evidence:
-            if not isinstance(item, dict):
-                continue
-            citation = str(item.get("citation", "")).strip()
-            document_id = str(item.get("document_id", "")).strip()
-            source = str(item.get("source", "")).strip()
-            evidence_text = str(item.get("text", "")).strip()
-            if citation:
-                evidence_by_citation[citation] = {
-                    "document_id": document_id,
-                    "source": source,
-                    "text": evidence_text,
-                }
-            if evidence_text:
-                evidence_texts.append(evidence_text)
+    evidence_by_citation, evidence_texts = _safe_evidence_lookup(program)
     citations = _CITATION_LABEL_RE.findall(text)
-    cited_ids: list[str] = []
-    cited_sources: list[str] = []
-    cited_evidence: list[CitedEvidenceTrace] = []
-    unsupported_citations: list[str] = []
-    if citations and evidence_by_citation:
-        seen_citations: set[str] = set()
-        for citation in citations:
-            evidence = evidence_by_citation.get(citation)
-            if evidence is None:
-                if citation not in unsupported_citations:
-                    unsupported_citations.append(citation)
-                continue
-            document_id = evidence["document_id"]
-            source = evidence["source"]
-            if document_id and document_id not in cited_ids:
-                cited_ids.append(document_id)
-            if source and source not in cited_sources:
-                cited_sources.append(source)
-            if citation not in seen_citations:
-                seen_citations.add(citation)
-                cited_evidence.append(
-                    CitedEvidenceTrace(
-                        citation=citation,
-                        source=source,
-                        document_id=document_id,
-                        text=evidence["text"],
-                    )
-                )
-        citation_hit_rate = sum(
-            1 for citation in citations if citation in evidence_by_citation
-        ) / len(citations)
-    else:
-        citation_hit_rate = 0.0
+    cited_ids, cited_sources, cited_evidence, unsupported_citations = (
+        _resolved_citations(citations, evidence_by_citation)
+        if citations and evidence_by_citation
+        else ([], [], [], [])
+    )
+    citation_hit_rate = (
+        sum(1 for citation in citations if citation in evidence_by_citation)
+        / len(citations)
+        if citations and evidence_by_citation
+        else 0.0
+    )
     support_score = answer_support_score(text, evidence_texts)
-    supported = bool(evidence_texts) and citation_hit_rate > 0.0 and support_score >= 0.2
+    supported = (
+        bool(evidence_texts)
+        and citation_hit_rate > 0.0
+        and support_score >= _SUPPORTED_ANSWER_SCORE_THRESHOLD
+    )
     return (
         citation_hit_rate,
         support_score,
