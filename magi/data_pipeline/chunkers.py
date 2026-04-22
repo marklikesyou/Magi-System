@@ -4,6 +4,9 @@ import re
 from typing import Any, Dict, List, cast
 
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?]\s+|\n\n+")
+_SECTION_HEADER_RE = re.compile(
+    r"(?m)^(?:#{1,6}\s+.+|[A-Z][A-Za-z0-9 /_-]{1,80}:)\s*$"
+)
 
 
 def _find_sentence_break(text: str, max_pos: int, min_pos: int) -> int:
@@ -22,6 +25,19 @@ def _find_sentence_break(text: str, max_pos: int, min_pos: int) -> int:
     if best == -1:
         return max_pos
     return best
+
+
+def _active_section_title(text: str, start: int) -> str:
+    title = ""
+    for match in _SECTION_HEADER_RE.finditer(text, 0, max(0, start + 1)):
+        candidate = match.group(0).strip()
+        if candidate.startswith("#"):
+            candidate = candidate.lstrip("#").strip()
+        if candidate.endswith(":"):
+            candidate = candidate[:-1].strip()
+        if candidate:
+            title = candidate
+    return title
 
 
 def sliding_window_chunk(
@@ -54,7 +70,13 @@ def sliding_window_chunk(
                 {
                     "id": f"{doc_id}::chunk-{idx}",
                     "text": chunk_text,
-                    "metadata": {**base_metadata, "chunk_id": f"chunk-{idx}"},
+                    "metadata": {
+                        **base_metadata,
+                        "chunk_id": f"chunk-{idx}",
+                        "char_start": start,
+                        "char_end": len(text),
+                        "section_title": _active_section_title(text, start),
+                    },
                 }
             )
             break
@@ -67,7 +89,13 @@ def sliding_window_chunk(
             {
                 "id": f"{doc_id}::chunk-{idx}",
                 "text": chunk_text,
-                "metadata": {**base_metadata, "chunk_id": f"chunk-{idx}"},
+                "metadata": {
+                    **base_metadata,
+                    "chunk_id": f"chunk-{idx}",
+                    "char_start": start,
+                    "char_end": break_pos,
+                    "section_title": _active_section_title(text, start),
+                },
             }
         )
 
