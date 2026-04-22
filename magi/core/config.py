@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """this is the env"""
+    """Runtime configuration loaded from environment variables and .env files."""
 
     model_config = SettingsConfigDict(
         env_file=(".env", ".env.local"),
