@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import re
 from pathlib import Path
@@ -280,6 +281,55 @@ class ScenarioReport(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     summary: ScenarioSummary
     cases: List[ScenarioCaseResult] = Field(default_factory=list)
+
+
+@dataclass
+class _ScenarioExecution:
+    case_result: ScenarioCaseResult
+    effective_mode: str
+    resolved_model: str
+    retrieval_evaluable: bool = False
+    retrieval_hit: bool = False
+    retrieval_ranked: bool = False
+    retrieval_top_source_hit: bool = False
+    retrieval_reciprocal_rank: float = 0.0
+    retrieval_source_recall: float = 0.0
+    answer_support_evaluable: bool = False
+    citation_hit_rate: float = 0.0
+    answer_support_score: float = 0.0
+    answer_supported: bool = False
+
+
+@dataclass
+class _ScenarioCounters:
+    retrieval_evaluable_cases: int = 0
+    cases_with_retrieval_hits: int = 0
+    retrieval_ranked_cases: int = 0
+    retrieval_top_source_hits: int = 0
+    retrieval_rr_total: float = 0.0
+    retrieval_source_recall_total: float = 0.0
+    answer_support_evaluable_cases: int = 0
+    citation_hit_rate_total: float = 0.0
+    answer_support_score_total: float = 0.0
+    supported_answers: int = 0
+
+    def record(self, execution: _ScenarioExecution) -> None:
+        if execution.retrieval_evaluable:
+            self.retrieval_evaluable_cases += 1
+            if execution.retrieval_hit:
+                self.cases_with_retrieval_hits += 1
+        if execution.retrieval_ranked:
+            self.retrieval_ranked_cases += 1
+            self.retrieval_source_recall_total += execution.retrieval_source_recall
+            self.retrieval_rr_total += execution.retrieval_reciprocal_rank
+            if execution.retrieval_top_source_hit:
+                self.retrieval_top_source_hits += 1
+        if execution.answer_support_evaluable:
+            self.answer_support_evaluable_cases += 1
+            self.citation_hit_rate_total += execution.citation_hit_rate
+            self.answer_support_score_total += execution.answer_support_score
+            if execution.answer_supported:
+                self.supported_answers += 1
 
 
 class ScenarioRetriever:
@@ -668,6 +718,180 @@ def _evaluate_checks(
     return checks
 
 
+def _safe_ratio(numerator: float, denominator: int) -> float:
+    if denominator == 0:
+        return 0.0
+    return numerator / denominator
+
+
+def _evaluate_scenario_case(
+    case: ScenarioCase,
+    *,
+    force_stub: bool | None,
+    model: str | None,
+    client: Any | None,
+) -> _ScenarioExecution:
+    safe_evidence_count, blocked_evidence_count = _evidence_safety_counts(case.evidence)
+    retriever = ScenarioRetriever(case.evidence)
+    retrieved_chunks = retriever.retrieve(case.query)
+    retrieved_sources, retrieved_relevant_chunk_count = _retrieval_details(
+        retrieved_chunks
+    )
+    (
+        expected_retrieval_sources,
+        first_expected_source_rank,
+        retrieval_source_recall,
+    ) = _retrieval_expectations(case, retrieved_sources)
+    session = run_chat_session(
+        case.query,
+        case.constraints,
+        retriever,
+        force_stub=force_stub,
+        model=model,
+        client=client,
+    )
+
+    final_answer = session.fused.final_answer
+    justification = session.fused.justification
+    next_steps = [
+        str(item).strip() for item in session.fused.next_steps if str(item).strip()
+    ]
+    combined_text = _combined_answer_text(final_answer, justification, next_steps)
+    citation_count = len(_CITATION_RE.findall(combined_text))
+    case_citation_hit_rate, case_answer_support_score, answer_supported = (
+        _answer_grounding(combined_text, retrieved_chunks)
+    )
+    check_results = _evaluate_checks(
+        case,
+        predicted_residual_risk=session.final_decision.residual_risk,
+        combined_text=combined_text,
+        citation_count=citation_count,
+        citation_hit_rate=case_citation_hit_rate,
+        answer_support_score=case_answer_support_score,
+        requires_human_review=session.final_decision.requires_human_review,
+        blocked_evidence_count=blocked_evidence_count,
+        retrieved_sources=retrieved_sources,
+    )
+    verdict_match = session.final_decision.verdict == case.expected_verdict
+    passed = verdict_match and all(check.passed for check in check_results)
+    persona_stances = {
+        name: str(getattr(payload, "stance", "unknown")).strip().lower() or "unknown"
+        for name, payload in session.personas.items()
+    }
+
+    return _ScenarioExecution(
+        case_result=ScenarioCaseResult(
+            id=case.id,
+            description=case.description,
+            query=case.query,
+            tags=case.tags,
+            passed=passed,
+            expected_verdict=case.expected_verdict,
+            predicted_verdict=session.final_decision.verdict,
+            verdict_match=verdict_match,
+            expected_residual_risk=case.expected_residual_risk,
+            predicted_residual_risk=session.final_decision.residual_risk,
+            citation_count=citation_count,
+            citation_hit_rate=case_citation_hit_rate,
+            answer_support_score=case_answer_support_score,
+            answer_supported=answer_supported,
+            requires_human_review=session.final_decision.requires_human_review,
+            review_reason=session.final_decision.review_reason,
+            safe_evidence_count=safe_evidence_count,
+            blocked_evidence_count=blocked_evidence_count,
+            retrieved_chunk_count=len(retrieved_chunks),
+            retrieved_relevant_chunk_count=retrieved_relevant_chunk_count,
+            expected_retrieval_sources=expected_retrieval_sources,
+            first_expected_source_rank=first_expected_source_rank,
+            retrieval_source_recall=retrieval_source_recall,
+            retrieved_sources=retrieved_sources,
+            checks=check_results,
+            final_answer=final_answer,
+            justification=justification,
+            next_steps=next_steps,
+            persona_stances=persona_stances,
+        ),
+        effective_mode=session.effective_mode,
+        resolved_model=session.model or "",
+        retrieval_evaluable=bool(case.evidence),
+        retrieval_hit=retrieved_relevant_chunk_count > 0,
+        retrieval_ranked=bool(expected_retrieval_sources),
+        retrieval_top_source_hit=first_expected_source_rank == 1,
+        retrieval_reciprocal_rank=(
+            0.0
+            if first_expected_source_rank is None
+            else 1.0 / first_expected_source_rank
+        ),
+        retrieval_source_recall=retrieval_source_recall,
+        answer_support_evaluable=bool(retrieved_chunks),
+        citation_hit_rate=case_citation_hit_rate,
+        answer_support_score=case_answer_support_score,
+        answer_supported=answer_supported,
+    )
+
+
+def _build_scenario_summary(
+    case_results: list[ScenarioCaseResult],
+    counters: _ScenarioCounters,
+    *,
+    requested_mode: str,
+    effective_mode: str,
+    resolved_model: str,
+) -> ScenarioSummary:
+    predictions = [item.predicted_verdict for item in case_results]
+    gold = [item.expected_verdict for item in case_results]
+    total_requirements = sum(len(item.checks) for item in case_results)
+    passed_requirements = sum(
+        sum(1 for check in item.checks if check.passed) for item in case_results
+    )
+    passed_cases = sum(1 for item in case_results if item.passed)
+    requirement_pass_rate = (
+        1.0 if total_requirements == 0 else passed_requirements / total_requirements
+    )
+
+    return ScenarioSummary(
+        total_cases=len(case_results),
+        passed_cases=passed_cases,
+        overall_score=_safe_ratio(passed_cases, len(case_results)),
+        verdict_accuracy=accuracy(predictions, gold),
+        requirement_pass_rate=requirement_pass_rate,
+        requested_mode=requested_mode,
+        effective_mode=effective_mode,
+        model=resolved_model,
+        total_requirements=total_requirements,
+        passed_requirements=passed_requirements,
+        retrieval_evaluable_cases=counters.retrieval_evaluable_cases,
+        cases_with_retrieval_hits=counters.cases_with_retrieval_hits,
+        retrieval_hit_rate=_safe_ratio(
+            counters.cases_with_retrieval_hits, counters.retrieval_evaluable_cases
+        )
+        if counters.retrieval_evaluable_cases
+        else 1.0,
+        retrieval_ranked_cases=counters.retrieval_ranked_cases,
+        retrieval_top_source_accuracy=_safe_ratio(
+            counters.retrieval_top_source_hits, counters.retrieval_ranked_cases
+        ),
+        retrieval_mrr=_safe_ratio(
+            counters.retrieval_rr_total, counters.retrieval_ranked_cases
+        ),
+        retrieval_source_recall=_safe_ratio(
+            counters.retrieval_source_recall_total, counters.retrieval_ranked_cases
+        ),
+        answer_support_evaluable_cases=counters.answer_support_evaluable_cases,
+        average_citation_hit_rate=_safe_ratio(
+            counters.citation_hit_rate_total, counters.answer_support_evaluable_cases
+        ),
+        average_answer_support_score=_safe_ratio(
+            counters.answer_support_score_total,
+            counters.answer_support_evaluable_cases,
+        ),
+        supported_answer_rate=_safe_ratio(
+            counters.supported_answers, counters.answer_support_evaluable_cases
+        ),
+        token_stats=get_token_stats(),
+    )
+
+
 def run_scenario_suite(
     dataset: ScenarioDataset,
     *,
@@ -682,182 +906,26 @@ def run_scenario_suite(
     case_results: list[ScenarioCaseResult] = []
     effective_mode = "stub"
     resolved_model = model or ""
-    retrieval_evaluable_cases = 0
-    cases_with_retrieval_hits = 0
-    retrieval_ranked_cases = 0
-    retrieval_top_source_hits = 0
-    retrieval_rr_total = 0.0
-    retrieval_source_recall_total = 0.0
-    answer_support_evaluable_cases = 0
-    citation_hit_rate_total = 0.0
-    answer_support_score_total = 0.0
-    supported_answers = 0
+    counters = _ScenarioCounters()
 
     for case in dataset.cases:
-        safe_evidence_count, blocked_evidence_count = _evidence_safety_counts(
-            case.evidence
-        )
-        retriever = ScenarioRetriever(case.evidence)
-        retrieved_chunks = retriever.retrieve(case.query)
-        retrieved_sources, retrieved_relevant_chunk_count = _retrieval_details(
-            retrieved_chunks
-        )
-        (
-            expected_retrieval_sources,
-            first_expected_source_rank,
-            retrieval_source_recall,
-        ) = _retrieval_expectations(case, retrieved_sources)
-        if case.evidence:
-            retrieval_evaluable_cases += 1
-            if retrieved_relevant_chunk_count > 0:
-                cases_with_retrieval_hits += 1
-        if expected_retrieval_sources:
-            retrieval_ranked_cases += 1
-            retrieval_source_recall_total += retrieval_source_recall
-            if first_expected_source_rank is not None:
-                retrieval_rr_total += 1.0 / first_expected_source_rank
-                if first_expected_source_rank == 1:
-                    retrieval_top_source_hits += 1
-        session = run_chat_session(
-            case.query,
-            case.constraints,
-            retriever,
+        execution = _evaluate_scenario_case(
+            case,
             force_stub=force_stub,
             model=model,
             client=client,
         )
-        effective_mode = session.effective_mode
-        resolved_model = session.model or resolved_model
+        effective_mode = execution.effective_mode
+        resolved_model = execution.resolved_model or resolved_model
+        case_results.append(execution.case_result)
+        counters.record(execution)
 
-        final_answer = session.fused.final_answer
-        justification = session.fused.justification
-        next_steps = [
-            str(item).strip() for item in session.fused.next_steps if str(item).strip()
-        ]
-        combined_text = _combined_answer_text(final_answer, justification, next_steps)
-        citation_count = len(_CITATION_RE.findall(combined_text))
-        case_citation_hit_rate, case_answer_support_score, answer_supported = (
-            _answer_grounding(combined_text, retrieved_chunks)
-        )
-        if retrieved_chunks:
-            answer_support_evaluable_cases += 1
-            citation_hit_rate_total += case_citation_hit_rate
-            answer_support_score_total += case_answer_support_score
-            if answer_supported:
-                supported_answers += 1
-        check_results = _evaluate_checks(
-            case,
-            predicted_residual_risk=session.final_decision.residual_risk,
-            combined_text=combined_text,
-            citation_count=citation_count,
-            citation_hit_rate=case_citation_hit_rate,
-            answer_support_score=case_answer_support_score,
-            requires_human_review=session.final_decision.requires_human_review,
-            blocked_evidence_count=blocked_evidence_count,
-            retrieved_sources=retrieved_sources,
-        )
-        verdict_match = session.final_decision.verdict == case.expected_verdict
-        passed = verdict_match and all(check.passed for check in check_results)
-        persona_stances = {
-            name: str(getattr(payload, "stance", "unknown")).strip().lower()
-            or "unknown"
-            for name, payload in session.personas.items()
-        }
-
-        case_results.append(
-            ScenarioCaseResult(
-                id=case.id,
-                description=case.description,
-                query=case.query,
-                tags=case.tags,
-                passed=passed,
-                expected_verdict=case.expected_verdict,
-                predicted_verdict=session.final_decision.verdict,
-                verdict_match=verdict_match,
-                expected_residual_risk=case.expected_residual_risk,
-                predicted_residual_risk=session.final_decision.residual_risk,
-                citation_count=citation_count,
-                citation_hit_rate=case_citation_hit_rate,
-                answer_support_score=case_answer_support_score,
-                answer_supported=answer_supported,
-                requires_human_review=session.final_decision.requires_human_review,
-                review_reason=session.final_decision.review_reason,
-                safe_evidence_count=safe_evidence_count,
-                blocked_evidence_count=blocked_evidence_count,
-                retrieved_chunk_count=len(retrieved_chunks),
-                retrieved_relevant_chunk_count=retrieved_relevant_chunk_count,
-                expected_retrieval_sources=expected_retrieval_sources,
-                first_expected_source_rank=first_expected_source_rank,
-                retrieval_source_recall=retrieval_source_recall,
-                retrieved_sources=retrieved_sources,
-                checks=check_results,
-                final_answer=final_answer,
-                justification=justification,
-                next_steps=next_steps,
-                persona_stances=persona_stances,
-            )
-        )
-
-    predictions = [item.predicted_verdict for item in case_results]
-    gold = [item.expected_verdict for item in case_results]
-    total_requirements = sum(len(item.checks) for item in case_results)
-    passed_requirements = sum(
-        sum(1 for check in item.checks if check.passed) for item in case_results
-    )
-    requirement_pass_rate = (
-        1.0 if total_requirements == 0 else passed_requirements / total_requirements
-    )
-    passed_cases = sum(1 for item in case_results if item.passed)
-
-    summary = ScenarioSummary(
-        total_cases=len(case_results),
-        passed_cases=passed_cases,
-        overall_score=(passed_cases / len(case_results)) if case_results else 0.0,
-        verdict_accuracy=accuracy(predictions, gold),
-        requirement_pass_rate=requirement_pass_rate,
+    summary = _build_scenario_summary(
+        case_results,
+        counters,
         requested_mode=requested_mode,
         effective_mode=effective_mode,
-        model=resolved_model,
-        total_requirements=total_requirements,
-        passed_requirements=passed_requirements,
-        retrieval_evaluable_cases=retrieval_evaluable_cases,
-        cases_with_retrieval_hits=cases_with_retrieval_hits,
-        retrieval_hit_rate=(
-            1.0
-            if retrieval_evaluable_cases == 0
-            else cases_with_retrieval_hits / retrieval_evaluable_cases
-        ),
-        retrieval_ranked_cases=retrieval_ranked_cases,
-        retrieval_top_source_accuracy=(
-            0.0
-            if retrieval_ranked_cases == 0
-            else retrieval_top_source_hits / retrieval_ranked_cases
-        ),
-        retrieval_mrr=(
-            0.0 if retrieval_ranked_cases == 0 else retrieval_rr_total / retrieval_ranked_cases
-        ),
-        retrieval_source_recall=(
-            0.0
-            if retrieval_ranked_cases == 0
-            else retrieval_source_recall_total / retrieval_ranked_cases
-        ),
-        answer_support_evaluable_cases=answer_support_evaluable_cases,
-        average_citation_hit_rate=(
-            0.0
-            if answer_support_evaluable_cases == 0
-            else citation_hit_rate_total / answer_support_evaluable_cases
-        ),
-        average_answer_support_score=(
-            0.0
-            if answer_support_evaluable_cases == 0
-            else answer_support_score_total / answer_support_evaluable_cases
-        ),
-        supported_answer_rate=(
-            0.0
-            if answer_support_evaluable_cases == 0
-            else supported_answers / answer_support_evaluable_cases
-        ),
-        token_stats=get_token_stats(),
+        resolved_model=resolved_model,
     )
 
     metadata = dict(dataset.metadata)
