@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
+import sys
 from typing import Any, Dict, Iterable, List
 
 IngestRecord = Dict[str, Any]
@@ -99,12 +100,18 @@ def ingest_paths(paths: Iterable[Path]) -> List[IngestRecord]:
             if isinstance(metadata, dict):
                 content_hash = str(metadata.get("content_hash", "")).strip()
             if content_hash and content_hash in seen_hashes:
-                print(f"Warning: {path} duplicates existing content, skipping.")
+                print(
+                    f"Warning: {path} duplicates existing content, skipping.",
+                    file=sys.stderr,
+                )
                 continue
             records.append(entry)
             added = True
             if content_hash:
                 seen_hashes.add(content_hash)
         if not added:
-            print(f"Warning: {path} produced no extractable text, skipping.")
+            print(
+                f"Warning: {path} produced no extractable text, skipping.",
+                file=sys.stderr,
+            )
     return records
