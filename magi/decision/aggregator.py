@@ -6,6 +6,12 @@ import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Literal, Mapping, Tuple, cast
 
+from magi.core.text_signals import (
+    INSUFFICIENT_INFORMATION_PATTERNS as _INSUFFICIENT_PATTERNS,
+    REFUSAL_PATTERNS as _REFUSAL_PATTERNS,
+    contains_pattern,
+)
+
 from .constants import (
     APPROVE_CONSENSUS_BONUS,
     APPROVE_EVIDENCE_BONUS,
@@ -83,30 +89,6 @@ from .schema import PersonaOutput
 logger = logging.getLogger(__name__)
 
 Action = Literal["approve", "reject", "revise"]
-_INSUFFICIENT_PATTERNS = (
-    "insufficient",
-    "does not specify",
-    "doesn't specify",
-    "not specified",
-    "not enough evidence",
-    "not enough information",
-    "missing information",
-    "need additional",
-    "need more evidence",
-    "cannot determine",
-    "can't determine",
-    "not directly supported",
-    "not explicitly stated",
-)
-_REFUSAL_PATTERNS = (
-    "i can't assist",
-    "i cannot assist",
-    "can't help with that request",
-    "cannot help with that request",
-    "decline the request",
-    "do not operationalize",
-    "refuse the request",
-)
 
 
 @dataclass
@@ -497,11 +479,6 @@ def _extract_verdict(source: object) -> Action | None:
     return None
 
 
-def _contains_pattern(text: str, patterns: Tuple[str, ...]) -> bool:
-    lowered = text.lower()
-    return any(pattern in lowered for pattern in patterns)
-
-
 def _default_probabilities() -> Dict[Action, float]:
     return {
         "approve": UNIFORM_PROBABILITY,
@@ -580,10 +557,10 @@ def _fused_signals(
         answer=fused_answer,
         steps=_get_field(fused, "next_steps") or [],
         residual_risk=_get_field(fused, "residual_risk"),
-        insufficient_information=_contains_pattern(
+        insufficient_information=contains_pattern(
             combined_text, _INSUFFICIENT_PATTERNS
         ),
-        refusal_signal=_contains_pattern(combined_text, _REFUSAL_PATTERNS),
+        refusal_signal=contains_pattern(combined_text, _REFUSAL_PATTERNS),
     )
 
 
