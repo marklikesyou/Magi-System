@@ -86,6 +86,18 @@ class Settings(BaseSettings):
             "decision_trace_dir", "MAGI_DECISION_TRACE_DIR"
         ),
     )
+    run_artifact_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "run_artifact_dir", "MAGI_RUN_ARTIFACT_DIR"
+        ),
+    )
+    profile_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "profile_dir", "MAGI_PROFILE_DIR"
+        ),
+    )
 
 
 @lru_cache(maxsize=1)
