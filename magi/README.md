@@ -10,13 +10,14 @@ This repository scaffolds a MAGI-inspired multi-agent decision system using DSPy
 - `eval/`: Task suites and metrics to track quality.
 - `tests/`: Unit tests for aggregation, signatures, and safety heuristics.
 
-Most modules are lightweight skeletons intended to be fleshed out with real implementations, embeddings, and telemetry once provider credentials are available.
+The current codebase is a working CLI-oriented prototype with offline fallback, provider-backed reasoning, grounding checks, and evaluation tooling. It still leaves room for stronger telemetry and production packaging, but it is no longer just a directory skeleton.
 
 ## Getting started
 
-1. Create and edit the `.env` file in the repository root with your API credentials.
-2. Install dependencies: `uv sync --extra dev --extra openai` (add `--extra google` for Gemini support, `--extra torch` for calibrators).
-3. Ingest documents and chat with them from the terminal:
+1. Install base dependencies: `uv sync --extra dev`
+2. Add provider extras only if needed: `uv sync --extra openai` or `uv sync --extra google` (add `--extra torch` for calibrators).
+3. Create a local environment file from the example template: `cp .env.example .env.local`
+4. Ingest documents and chat with them from the terminal:
 
 ```bash
 python -m magi.app.cli ingest docs/briefing.pdf
@@ -24,7 +25,7 @@ python -m magi.app.cli chat "Should we deploy the latest patch?" --constraints "
 python -m magi.app.cli chat "Should we deploy the latest patch?" --json
 ```
 
-By default the system stays completely offline using a deterministic hashing embedder and a deterministic reasoning fallback. To activate provider-backed reasoning, set OpenAI or Google credentials in `.env` and run commands with `MAGI_FORCE_DSPY_STUB=0`; OpenAI credentials are still required for provider-backed embeddings. Use `MAGI_FORCE_HASH_EMBEDDER=1` if you ever need to fall back to hashing.
+By default the system stays completely offline using a deterministic hashing embedder and a deterministic reasoning fallback. To activate provider-backed reasoning, set OpenAI or Google credentials in `.env.local` and run commands with `MAGI_FORCE_DSPY_STUB=0`; OpenAI credentials are still required for provider-backed embeddings. Use `MAGI_FORCE_HASH_EMBEDDER=1` if you ever need to fall back to hashing.
 
 ```bash
 export MAGI_FORCE_DSPY_STUB=0
@@ -49,7 +50,14 @@ With the current defaults, unsupported approvals are downgraded to `revise`, and
 Run the lightweight unit suite anytime with:
 
 ```bash
-pytest
+uv run pytest -q
+```
+
+Run the static checks with:
+
+```bash
+uv run ruff check .
+uv run mypy magi
 ```
 
 ### Evaluation workflow
