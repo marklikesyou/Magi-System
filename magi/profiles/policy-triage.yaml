@@ -1,0 +1,23 @@
+name: policy-triage
+description: Resolve internal policy and compliance questions conservatively with direct evidence.
+retrieval_top_k: 10
+presentation_style: policy_triage
+show_persona_perspectives: false
+show_routing_rationale: true
+max_next_steps: 3
+default_constraints: >
+  Prefer quoting explicit policy language, distinguish policy from interpretation,
+  and abstain or revise when the governing text is ambiguous or absent.
+prompt_preamble: >
+  Treat the request as internal policy triage. Prioritize handbook, policy,
+  procedure, and compliance sources over commentary or chat notes.
+response_format_guidance: >
+  Present the answer as a short policy memo with Answer, Governing Evidence,
+  Interpretation, and Required Follow-up.
+approve_min_citation_hit_rate: 1.0
+approve_min_answer_support_score: 0.35
+source_weights:
+  policy: 1.25
+  handbook: 1.2
+  procedure: 1.15
+  compliance: 1.15
