@@ -11,6 +11,7 @@ import magi.core.storage as storage
 from magi.core.embeddings import HashingEmbedder
 from magi.core.storage import (
     describe_store_destination,
+    load_store_bundle,
     initialize_store,
     load_entries,
     persist_store,
@@ -90,6 +91,14 @@ def test_save_json_document_writes_atomic_json(tmp_path):
 def test_persist_store_writes_json_for_in_memory_store(sample_entries, tmp_path):
     path = tmp_path / "persisted_store.json"
     store = InMemoryVectorStore(dim=len(sample_entries[0].embedding))
+    store.metadata = {
+        "embedder": {
+            "kind": "hashing",
+            "dimension": len(sample_entries[0].embedding),
+            "bucket_size": 2,
+            "model": "hashing",
+        }
+    }
     store.add(sample_entries)
 
     persist_store(path, store)
@@ -98,6 +107,22 @@ def test_persist_store_writes_json_for_in_memory_store(sample_entries, tmp_path)
     assert [entry.document_id for entry in payload] == [
         entry.document_id for entry in sample_entries
     ]
+
+
+def test_persist_store_writes_provenance_metadata(sample_entries, tmp_path):
+    path = tmp_path / "store.json"
+    embedder = HashingEmbedder(dimension=len(sample_entries[0].embedding))
+    store = initialize_store(path, embedder)
+    store.add(sample_entries)
+
+    persist_store(path, store, embedder=embedder, chunk_size=512, chunk_overlap=64)
+
+    metadata, entries = load_store_bundle(path)
+    assert metadata["format"] == "magi_vector_store_v2"
+    assert metadata["embedder"]["kind"] == "hashing"  # type: ignore[index]
+    assert metadata["chunking"]["chunk_size"] == 512  # type: ignore[index]
+    assert metadata["chunking"]["chunk_overlap"] == 64  # type: ignore[index]
+    assert len(entries) == len(sample_entries)
 
 
 def test_initialize_store_uses_pgvector_backend_when_database_url_configured(
