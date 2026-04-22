@@ -152,6 +152,7 @@ _RECOMMENDATION_SUPPORT_PATTERNS = (
     "low-risk",
     "low risk",
 )
+_QUERY_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _GROUNDING_STOPWORDS = {
     "additional",
     "about",
@@ -195,6 +196,57 @@ _GROUNDING_STOPWORDS = {
     "trustworthy",
     "what",
     "with",
+}
+_QUERY_SUPPORT_STOPWORDS = _GROUNDING_STOPWORDS | {
+    "a",
+    "analyze",
+    "analysis",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "clarify",
+    "compare",
+    "describe",
+    "detail",
+    "details",
+    "do",
+    "does",
+    "explain",
+    "for",
+    "give",
+    "how",
+    "i",
+    "in",
+    "is",
+    "it",
+    "latest",
+    "month",
+    "my",
+    "next",
+    "of",
+    "on",
+    "one",
+    "outline",
+    "overview",
+    "our",
+    "please",
+    "provide",
+    "review",
+    "sentence",
+    "sentences",
+    "show",
+    "should",
+    "summarize",
+    "summary",
+    "tell",
+    "the",
+    "to",
+    "two",
+    "why",
+    "your",
 }
 
 
@@ -281,6 +333,128 @@ def _contains_pattern(text: str, patterns: Sequence[str]) -> bool:
     return any(pattern in lowered for pattern in patterns)
 
 
+def _normalize_query_token(token: str) -> str:
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+def _query_support_terms(text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", text.replace("’", "'")).strip().lower()
+    return [
+        _normalize_query_token(token)
+        for token in _QUERY_TOKEN_RE.findall(normalized)
+        if len(token) > 1 and token not in _QUERY_SUPPORT_STOPWORDS
+    ]
+
+
+def _query_support_phrases(tokens: Sequence[str]) -> set[str]:
+    return {
+        " ".join(tokens[index : index + 2])
+        for index in range(len(tokens) - 1)
+        if tokens[index] != tokens[index + 1]
+    }
+
+
+def _evidence_match_score(
+    query: str, item: RetrievedEvidence
+) -> tuple[float, int, float, int]:
+    query_terms = _query_support_terms(query)
+    if not query_terms:
+        return (0.0, 0, item.score, 0)
+    evidence_terms = set(_query_support_terms(item.text))
+    token_overlap = len(evidence_terms.intersection(set(query_terms)))
+    coverage = token_overlap / max(1, len(set(query_terms)))
+    normalized_text = re.sub(r"\s+", " ", item.text.replace("’", "'")).strip().lower()
+    phrase_hits = sum(
+        1 for phrase in _query_support_phrases(query_terms) if phrase in normalized_text
+    )
+    lexical_score = coverage + (0.2 * phrase_hits)
+    return (lexical_score, token_overlap, item.score, phrase_hits)
+
+
+def _rank_supporting_evidence(
+    query: str, evidence: Sequence[RetrievedEvidence]
+) -> list[RetrievedEvidence]:
+    ranked: list[tuple[tuple[float, int, float, int], int, RetrievedEvidence]] = []
+    for index, item in enumerate(evidence):
+        ranked.append((_evidence_match_score(query, item), index, item))
+    ranked.sort(
+        key=lambda entry: (
+            entry[0][0],
+            entry[0][1],
+            entry[0][3],
+            entry[0][2],
+            -entry[1],
+        ),
+        reverse=True,
+    )
+    supporting: list[RetrievedEvidence] = []
+    for rank, _index, item in ranked:
+        if rank[1] > 0 or rank[3] > 0:
+            supporting.append(item)
+    return supporting
+
+
+def _query_evidence_coverage(
+    query: str, evidence: Sequence[RetrievedEvidence]
+) -> tuple[int, float]:
+    query_terms = set(_query_support_terms(query))
+    if not query_terms:
+        return 0, 0.0
+    supporting = _rank_supporting_evidence(query, evidence)
+    evidence_terms: set[str] = set()
+    for item in supporting:
+        evidence_terms.update(_query_support_terms(item.text))
+    if not evidence_terms:
+        return 0, 0.0
+    overlap = query_terms.intersection(evidence_terms)
+    return len(overlap), len(overlap) / len(query_terms)
+
+
+def _evidence_directly_addresses_query(
+    query: str, evidence: Sequence[RetrievedEvidence]
+) -> bool:
+    if not evidence:
+        return False
+    query_terms = set(_query_support_terms(query))
+    if not query_terms:
+        return True
+    overlap_count, coverage = _query_evidence_coverage(query, evidence)
+    if len(query_terms) <= 2:
+        return overlap_count >= 1
+    return overlap_count >= 2 or coverage >= 0.5
+
+
+def _missing_query_support_terms(
+    query: str, evidence: Sequence[RetrievedEvidence], *, limit: int = 4
+) -> list[str]:
+    query_terms = set(_query_support_terms(query))
+    if not query_terms:
+        return []
+    evidence_terms: set[str] = set()
+    for item in _rank_supporting_evidence(query, evidence):
+        evidence_terms.update(_query_support_terms(item.text))
+    return sorted(query_terms - evidence_terms)[:limit]
+
+
+def _insufficient_query_support_message(
+    query: str, evidence: Sequence[RetrievedEvidence]
+) -> str:
+    missing_terms = _missing_query_support_terms(query, evidence)
+    if missing_terms:
+        return (
+            "The retrieved evidence is insufficient because the requested detail is not "
+            f"stated in the sources. Missing support for: {', '.join(missing_terms)}."
+        )
+    return (
+        "The retrieved evidence is insufficient because the requested detail is not "
+        "stated in the sources."
+    )
+
+
 def _signals_evidence_gap(text: str) -> bool:
     return _contains_pattern(text, _INSUFFICIENT_PATTERNS)
 
@@ -300,6 +474,7 @@ def _supports_grounded_synthesis(
     return (
         _is_informational(query)
         and bool(evidence)
+        and _evidence_directly_addresses_query(query, evidence)
         and _contains_pattern(text, _SYNTHESIS_PATTERNS)
     )
 
@@ -321,6 +496,7 @@ def _supports_grounded_recommendation(
     return (
         _is_decision_query(query)
         and bool(evidence)
+        and _evidence_directly_addresses_query(query, evidence)
         and _pattern_hits(combined, _RECOMMENDATION_SUPPORT_PATTERNS) >= 3
     )
 
@@ -389,7 +565,9 @@ def _is_grounded_response(
     if not text.strip():
         return False
     if verdict == "approve":
-        return _is_grounded_approve_text(text, evidence)
+        return _evidence_directly_addresses_query(
+            query, evidence
+        ) and _is_grounded_approve_text(text, evidence)
     if not evidence:
         return _signals_evidence_gap(text) or _signals_refusal(text)
     unsupported = _unsupported_grounding_tokens(query, text, evidence)
@@ -615,6 +793,7 @@ def _quoted_evidence(
 def _heuristic_melchior(
     query: str, evidence: Sequence[RetrievedEvidence]
 ) -> MelchiorResponse:
+    supporting_evidence = _rank_supporting_evidence(query, evidence)
     if not evidence:
         stance = "reject" if _is_harmful(query) else "revise"
         analysis = "The retrieved evidence is insufficient to answer reliably."
@@ -623,23 +802,31 @@ def _heuristic_melchior(
         stance = "reject"
         analysis = "The request contains clear harmful or abusive intent and should not be advanced."
         actions = ["Decline the request and redirect toward safe, lawful alternatives."]
+    elif not _evidence_directly_addresses_query(query, evidence):
+        stance = "revise"
+        analysis = _insufficient_query_support_message(query, evidence)
+        actions = [
+            "Collect source material that directly states the missing requested detail."
+        ]
     else:
         stance = "approve"
         analysis = (
-            f"The evidence directly addresses the query with {len(evidence)} supporting source "
-            f"{'chunk' if len(evidence) == 1 else 'chunks'}."
+            "The evidence directly addresses the query with "
+            f"{len(supporting_evidence)} supporting source "
+            f"{'chunk' if len(supporting_evidence) == 1 else 'chunks'}."
         )
         actions = [
             "Answer with explicit citations and avoid claims not grounded in the retrieved sources."
         ]
     outline = [
-        f"Lead with the answer supported by {item.citation}." for item in evidence[:2]
+        f"Lead with the answer supported by {item.citation}."
+        for item in supporting_evidence[:2]
     ]
     response = MelchiorResponse(
         analysis=analysis,
         answer_outline=outline,
-        confidence=min(0.92, _support_strength(evidence)),
-        evidence_quotes=_quoted_evidence(evidence),
+        confidence=min(0.92, _support_strength(supporting_evidence)),
+        evidence_quotes=_quoted_evidence(supporting_evidence),
         stance=cast(Any, stance),
         actions=actions,
     )
@@ -659,6 +846,12 @@ def _heuristic_balthasar(
         stance = "revise"
         plan = "Pause execution until more trustworthy evidence is available."
         actions = ["Request missing documents or narrower scope."]
+    elif not _evidence_directly_addresses_query(query, evidence):
+        stance = "revise"
+        plan = "Pause execution because the requested detail is not supported by the retrieved evidence."
+        actions = [
+            "Ask for source material that directly states the missing detail before answering."
+        ]
     elif _is_informational(query):
         stance = "approve"
         plan = "Deliver a concise evidence-backed answer with citations first and caveats second."
@@ -721,6 +914,16 @@ def _heuristic_casper(
         outstanding.append(
             "Need at least one trustworthy source directly addressing the query."
         )
+    elif not _evidence_directly_addresses_query(query, evidence):
+        risks.append(
+            "The retrieved sources do not state the key detail needed to answer this query safely."
+        )
+        mitigations.append(
+            "Request evidence that directly addresses the missing detail before answering."
+        )
+        stance = "revise"
+        residual_risk = "medium"
+        outstanding.append(_insufficient_query_support_message(query, evidence))
     else:
         risks.append("Risk is limited to over-claiming beyond the retrieved evidence.")
         mitigations.append("Keep the answer tightly grounded in cited evidence.")
@@ -746,6 +949,7 @@ def _heuristic_answer(
     evidence: Sequence[RetrievedEvidence],
     blocked: Sequence[RetrievedEvidence],
 ) -> tuple[str, str]:
+    supporting_evidence = _rank_supporting_evidence(query, evidence)
     if _is_harmful(query):
         answer = "I can’t help with that request."
         justification = (
@@ -758,7 +962,18 @@ def _heuristic_answer(
             "No trustworthy retrieved source directly supports a grounded answer."
         )
         return answer, justification
-    supporting = "; ".join(f"{item.citation} {item.text}" for item in evidence[:2])
+    if not _evidence_directly_addresses_query(query, evidence):
+        answer = (
+            "The current evidence is not sufficient to answer this fully because the "
+            "requested detail is not stated in the retrieved sources."
+        )
+        justification = _insufficient_query_support_message(query, evidence)
+        if blocked:
+            justification += " Unsafe retrieved instructions were ignored."
+        return answer, justification
+    supporting = "; ".join(
+        f"{item.citation} {item.text}" for item in supporting_evidence[:2]
+    )
     if _is_informational(query):
         answer = (
             f"Based on the retrieved evidence, the strongest answer is: {supporting}"
@@ -958,6 +1173,7 @@ def _normalize_casper_response(
         stance == "revise"
         and _is_informational(query)
         and evidence
+        and _evidence_directly_addresses_query(query, evidence)
         and not blocked
         and not _signals_refusal(joined)
         and not _signals_evidence_gap(joined)
@@ -1012,13 +1228,17 @@ def _normalize_fusion_response(
     )
     verdict = response.verdict
     updates: dict[str, Any] = {}
-    if not _is_harmful(query) and _signals_evidence_gap(combined):
+    direct_support = _evidence_directly_addresses_query(query, evidence)
+    if not _is_harmful(query) and evidence and not direct_support:
+        verdict = "revise"
+    elif not _is_harmful(query) and _signals_evidence_gap(combined):
         verdict = "revise"
     elif (
         not _is_harmful(query)
         and reject_votes == 0
         and approve_votes >= 2
         and evidence
+        and direct_support
         and response.residual_risk != "high"
         and not _signals_evidence_gap(combined)
     ):
