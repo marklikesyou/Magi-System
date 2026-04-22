@@ -1,0 +1,21 @@
+name: security-review
+description: Bias retrieval and answer style toward evidence-backed security triage.
+route_mode: decision
+presentation_style: security_review
+show_persona_perspectives: false
+show_routing_rationale: true
+max_next_steps: 3
+default_constraints: >
+  Prefer conservative recommendations, require explicit mitigations, and avoid
+  approving actions without cited support.
+prompt_preamble: >
+  Treat the request as a security review. Prioritize evidence, blast radius,
+  guardrails, monitoring, and rollback conditions.
+response_format_guidance: >
+  Present the answer as a security review. Lead with the recommendation, then
+  list guardrails, evidence, and residual risk. Keep the wording operational.
+approve_min_citation_hit_rate: 1.0
+approve_min_answer_support_score: 0.3
+source_weights:
+  policy: 1.2
+  runbook: 1.1
