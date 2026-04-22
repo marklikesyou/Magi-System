@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import json
 import logging
 import re
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import wraps
 from typing import Any, Callable, Dict, Optional, TypeVar
 
@@ -134,33 +131,6 @@ def sanitize_input(text: str, max_length: int = 10000) -> str:
     return text.strip()
 
 
-def validate_json_response(response: str, required_keys: list[str]) -> Dict[str, Any]:
-    if not response:
-        return {}
-
-    response = response.strip()
-    if response.startswith("```json"):
-        response = response[7:]
-    if response.startswith("```"):
-        response = response[3:]
-    if response.endswith("```"):
-        response = response[:-3]
-
-    try:
-        data = json.loads(response)
-        if not isinstance(data, dict):
-            return {}
-
-        for key in required_keys:
-            if key not in data:
-                data[key] = "" if key != "confidence" else 0.5
-
-        return data
-    except json.JSONDecodeError:
-        logger.debug(f"Failed to parse JSON response: {response[:100]}...")
-        return {}
-
-
 def count_tokens(text: str, model: str = "gpt-4") -> int:
     if TIKTOKEN_AVAILABLE:
         try:
@@ -196,28 +166,6 @@ def truncate_to_token_limit(text: str, max_tokens: int, model: str = "gpt-4") ->
     else:
         char_limit = (max_tokens * 4) - 100
         return text[:char_limit]
-
-
-def parallel_execute(functions: list[Callable], max_workers: int = 3) -> list[Any]:
-    results = [None] * len(functions)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_index = {executor.submit(func): i for i, func in enumerate(functions)}
-
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
-            try:
-                results[index] = future.result()
-            except Exception as e:
-                logger.error(f"Parallel execution failed for task {index}: {e}")
-                results[index] = None
-
-    return results
-
-
-async def async_parallel_execute(functions: list[Callable]) -> list[Any]:
-    tasks = [asyncio.create_task(asyncio.to_thread(func)) for func in functions]
-    return await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class TokenTracker:
@@ -258,49 +206,3 @@ class TokenTracker:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_cost = 0.0
-
-
-class CircuitBreaker:
-    def __init__(
-        self,
-        failure_threshold: int = 5,
-        recovery_timeout: float = 60.0,
-        expected_exception: type[BaseException] = Exception,
-    ):
-        self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
-        self.expected_exception = expected_exception
-        self.failure_count = 0
-        self.last_failure_time: float | None = None
-        self.state = "closed"
-
-    def call(self, func: Callable[..., T], *args, **kwargs) -> T:
-        if self.state == "open":
-            if (
-                self.last_failure_time
-                and time.time() - self.last_failure_time > self.recovery_timeout
-            ):
-                self.state = "half-open"
-            else:
-                raise Exception(f"Circuit breaker is open for {func.__name__}")
-
-        try:
-            result = func(*args, **kwargs)
-            if self.state == "half-open":
-                self.state = "closed"
-                self.failure_count = 0
-            return result
-        except self.expected_exception as e:
-            self.failure_count += 1
-            self.last_failure_time = time.time()
-
-            if self.failure_count >= self.failure_threshold:
-                self.state = "open"
-                logger.error(f"Circuit breaker opened for {func.__name__}")
-
-            raise e
-
-    def reset(self):
-        self.failure_count = 0
-        self.last_failure_time = None
-        self.state = "closed"
