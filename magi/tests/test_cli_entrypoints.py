@@ -4,11 +4,14 @@ import argparse
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
 import run_magi
 import magi.app.service as service
 from magi.app import cli
 from magi.app.service import ChatSessionResult, DecisionTrace
+from magi.core.embeddings import HashingEmbedder
+from magi.core.vectorstore import InMemoryVectorStore
 from magi.decision.schema import FinalDecision
 from magi.dspy_programs.schemas import FusionResponse
 
@@ -76,7 +79,11 @@ def test_command_chat_json_output(monkeypatch, tmp_path: Path, capsys) -> None:
         mitigations=[],
     )
 
-    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(decision_trace_dir=""))
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(decision_trace_dir="", run_artifact_dir=str(tmp_path / "artifacts")),
+    )
     monkeypatch.setattr(cli, "build_embedder", lambda _settings: object())
     monkeypatch.setattr(cli, "initialize_store", lambda _store, _embedder: object())
     monkeypatch.setattr(
@@ -114,6 +121,7 @@ def test_command_chat_json_output(monkeypatch, tmp_path: Path, capsys) -> None:
     assert payload["decision_trace"]["query_hash"] == "abc123"
     assert payload["decision_trace"]["used_evidence_ids"] == ["README::1"]
     assert payload["decision_record_path"] == ""
+    assert payload["artifact_path"].endswith(".json")
     assert payload["effective_mode"] == "stub"
 
 
@@ -138,7 +146,11 @@ def test_command_chat_persists_decision_record(monkeypatch, tmp_path: Path, caps
     )
     record_path = tmp_path / "records" / "decision.json"
 
-    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(decision_trace_dir=""))
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(decision_trace_dir="", run_artifact_dir=str(tmp_path / "artifacts")),
+    )
     monkeypatch.setattr(cli, "build_embedder", lambda _settings: object())
     monkeypatch.setattr(cli, "initialize_store", lambda _store, _embedder: object())
     monkeypatch.setattr(
@@ -202,7 +214,11 @@ def test_command_chat_displays_human_review_requirement(
         mitigations=[],
     )
 
-    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(decision_trace_dir=""))
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(decision_trace_dir="", run_artifact_dir=str(tmp_path / "artifacts")),
+    )
     monkeypatch.setattr(cli, "build_embedder", lambda _settings: object())
     monkeypatch.setattr(cli, "initialize_store", lambda _store, _embedder: object())
     monkeypatch.setattr(
@@ -298,6 +314,162 @@ def test_command_ingest_skips_existing_content_hashes(
     captured = capsys.readouterr()
     assert status == 0
     assert "No new documents to ingest" in captured.out
+
+
+def test_parser_accepts_batch_and_route_options(tmp_path: Path) -> None:
+    args = cli.build_parser().parse_args(
+        [
+            "batch",
+            str(tmp_path / "input.jsonl"),
+            "--store",
+            str(tmp_path / "store.json"),
+            "--route",
+            "decision",
+            "--profile",
+            "security-review",
+            "--out",
+            str(tmp_path / "results.jsonl"),
+        ]
+    )
+
+    assert args.route == "decision"
+    assert args.profile == "security-review"
+    assert args.out == tmp_path / "results.jsonl"
+
+
+def test_parser_accepts_profiles_command() -> None:
+    args = cli.build_parser().parse_args(["profiles", "security-review"])
+
+    assert args.name == "security-review"
+
+
+def test_command_explain_renders_saved_artifact(tmp_path: Path, capsys) -> None:
+    artifact_path = tmp_path / "artifacts" / "artifact.json"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "run_id": "demo",
+                "created_at": "2026-01-01T00:00:00Z",
+                "input": {"query": "Summarize MAGI", "constraints": ""},
+                "store": {"path": str(tmp_path / "store.json")},
+                "summary": {"verdict": "approve", "query_mode": "summarize"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = cli.command_explain(argparse.Namespace(artifact=str(artifact_path)))
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert "Run ID: demo" in captured.out
+    assert "Resolved Mode: summarize" in captured.out
+
+
+def test_command_profiles_lists_builtin_profiles(capsys) -> None:
+    status = cli.command_profiles(argparse.Namespace(name=""))
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert "security-review" in captured.out
+    assert "policy-triage" in captured.out
+    assert "executive_brief" in captured.out
+
+
+def test_command_profiles_shows_profile_details(capsys) -> None:
+    status = cli.command_profiles(argparse.Namespace(name="exec-brief"))
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert "Name: exec-brief" in captured.out
+    assert "Route Mode: summarize" in captured.out
+    assert "Presentation Style: executive_brief" in captured.out
+
+
+def test_command_compare_renders_profile_table(monkeypatch, tmp_path: Path, capsys) -> None:
+    def fake_result(label: str) -> ChatSessionResult:
+        verdict: Literal["approve", "reject", "revise"] = (
+            "approve" if label == "exec-brief" else "revise"
+        )
+        decision = FinalDecision(
+            verdict=verdict,
+            justification=f"{label} justification.",
+            persona_outputs=[],
+            residual_risk="low" if label == "exec-brief" else "medium",
+            requires_human_review=(label != "default"),
+            abstained=False,
+        )
+        fused = FusionResponse(
+            verdict=verdict,
+            justification=decision.justification,
+            confidence=0.8,
+            final_answer=f"{label} final answer.",
+            next_steps=["Confirm owner."],
+            consensus_points=[],
+            disagreements=[],
+            residual_risk=decision.residual_risk,
+            risks=[],
+            mitigations=[],
+        )
+        return ChatSessionResult(
+            final_decision=decision,
+            fused=fused,
+            personas={},
+            decision_trace=DecisionTrace(
+                query_hash=f"{label}-hash",
+                query_mode="summarize" if label == "exec-brief" else "decision",
+                citation_hit_rate=1.0 if label == "exec-brief" else 0.5,
+                answer_support_score=0.6 if label == "exec-brief" else 0.2,
+                requires_human_review=(label != "default"),
+                abstained=False,
+            ),
+            effective_mode="stub",
+            model="",
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(
+            decision_trace_dir="",
+            run_artifact_dir=str(tmp_path / "artifacts"),
+            profile_dir="",
+        ),
+    )
+    monkeypatch.setattr(cli, "build_embedder", lambda _settings: HashingEmbedder(dimension=64))
+    monkeypatch.setattr(cli, "initialize_store", lambda _store, _embedder: InMemoryVectorStore(dim=64))
+
+    def fake_run_single_query(**kwargs):
+        profile = kwargs["profile"]
+        label = profile.name if profile is not None else "default"
+        artifact_path = tmp_path / "artifacts" / f"{label}-run.json"
+        return fake_result(label), artifact_path, None
+
+    monkeypatch.setattr(cli, "_run_single_query", fake_run_single_query)
+
+    status = cli.command_compare(
+        argparse.Namespace(
+            query="Summarize the rollout posture.",
+            constraints="",
+            profiles=["exec-brief", "policy-triage"],
+            include_default=True,
+            store=tmp_path / "store.json",
+            route="",
+            model="",
+            verbose=False,
+            full=False,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert "PROFILE COMPARISON" in captured.out
+    assert "default" in captured.out
+    assert "exec-brief" in captured.out
+    assert "policy-triage" in captured.out
+    assert "executive_brief" in captured.out
+    assert "Use `python -m magi.app.cli explain <run_id>`" in captured.out
 
 
 def test_run_magi_skips_constraints_prompt_when_query_is_provided(
