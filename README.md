@@ -19,9 +19,15 @@ MAGI is a multi persona reasoning engine for assessing user requests against an 
 - Optional: OpenAI or Google credentials when running live reasoning; OpenAI is required for provider-backed embeddings.
 
 ## Setup
-1. Sync the pinned environment with uv: `uv sync --extra dev --extra openai`
-2. Activate the environment: `source .venv/bin/activate` (or `.\.venv\Scripts\activate` on Windows)
-3. Copy `.env` and populate any required keys (see `magi/core/config.py` for supported variables).
+1. Sync the pinned environment with uv: `uv sync --extra dev`
+2. Add provider extras only if you need live model calls:
+   - OpenAI: `uv sync --extra openai`
+   - Gemini: `uv sync --extra google`
+   - Optional calibrator training: `uv sync --extra torch`
+3. Copy the example environment file and edit only the values you need: `cp .env.example .env.local`
+4. Activate the environment: `source .venv/bin/activate` (or `.\.venv\Scripts\activate` on Windows)
+
+The project runs offline by default when provider credentials are unset. Add keys only when you want live reasoning or provider-backed embeddings.
 
 ## Usage
 ### Ingest documents and ask a question
@@ -59,7 +65,13 @@ When an `approve` answer fails the citation or support thresholds, the productio
 ## Testing
 Run the full suite with:
 ```bash
-pytest
+uv run pytest -q
+```
+
+Run static checks with:
+```bash
+uv run ruff check .
+uv run mypy magi
 ```
 
 Run the reusable scenario harness with:
