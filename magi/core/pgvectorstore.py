@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, TypeGuard
 
 from .vectorstore import RetrievedChunk, VectorEntry
 
@@ -38,7 +38,7 @@ def _coerce_metadata(raw: object) -> Dict[str, Any]:
     return {}
 
 
-def _is_filter_sequence(value: object) -> bool:
+def _is_filter_sequence(value: object) -> TypeGuard[Sequence[object]]:
     return isinstance(value, Sequence) and not isinstance(
         value, (str, bytes, bytearray)
     )
