@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from magi.decision.schema import PersonaOutput
 
-VALID_VERDICTS = {"approve", "reject", "revise"}
+VALID_VERDICTS = {"approve", "reject", "revise", "abstain"}
 VALID_PERSONAS = {"melchior", "balthasar", "casper"}
 
 
