@@ -12,6 +12,10 @@ MAGI is a multi persona reasoning engine for assessing user requests against an 
 - Retrieval augmented generation backed by DSPy personas or a lightweight stub when DSPy is unavailable.
 - Consensus loop that enforces multi persona agreement before issuing a verdict.
 - Persistent vector store on disk with hashing based embeddings for offline mode.
+- Query routing across summary, extraction, fact-check, recommendation, and decision modes.
+- Run artifacts with replayable `explain`, `replay`, and `diff` CLI workflows.
+- Profile comparison workflow for running the same prompt across multiple CLI profiles.
+- Built-in domain profiles for security review, policy triage, incident review, executive briefs, and vendor review.
 
 ## Requirements
 - Python 3.10 or newer (CI runs on Python 3.10 and 3.13).
@@ -44,6 +48,23 @@ Interactive mode is also available by invoking `python run_magi.py` with no argu
 python -m magi.app.cli ingest path/to/doc.txt
 python -m magi.app.cli chat "What risks should I consider?"
 python -m magi.app.cli chat "What risks should I consider?" --json
+python -m magi.app.cli profiles
+python -m magi.app.cli chat "Should we deploy the pilot?" --profile security-review
+python -m magi.app.cli compare "Should we deploy the pilot?" --include-default --profiles security-review exec-brief
+python -m magi.app.cli explain <run-id>
+python -m magi.app.cli diff <run-a> <run-b>
+```
+
+### Profiles
+Use built-in profiles to bias retrieval, routing, and decision thresholds toward real workflows:
+
+```bash
+python -m magi.app.cli profiles
+python -m magi.app.cli profiles policy-triage
+python -m magi.app.cli chat "What does the handbook actually require?" --profile policy-triage
+python -m magi.app.cli chat "Summarize the incident for leadership." --profile incident-review
+python -m magi.app.cli chat "Give me the executive takeaway." --profile exec-brief
+python -m magi.app.cli compare "Should we deploy the pilot?" --profiles security-review vendor-review --full
 ```
 
 ### Toggling DSPy
@@ -56,6 +77,8 @@ python -m magi.app.cli chat "What risks should I consider?" --json
 - `MAGI_PROVIDER_RETRY_INITIAL_DELAY`: initial retry backoff in seconds. Default `1.0`.
 - `MAGI_PROVIDER_REQUESTS_PER_MINUTE`: provider-side rate limit. Default `0` disables throttling.
 - `MAGI_DECISION_TRACE_DIR`: optional directory for persisted decision records when using the CLI.
+- `MAGI_RUN_ARTIFACT_DIR`: optional directory for persisted run artifacts used by `explain`, `replay`, and `diff`.
+- `MAGI_PROFILE_DIR`: optional directory for workspace-local profile YAML files.
 - `MAGI_APPROVE_MIN_CITATION_HIT_RATE`: minimum valid citation hit rate required for `approve`. Default `1.0`.
 - `MAGI_APPROVE_MIN_ANSWER_SUPPORT_SCORE`: minimum lexical evidence-overlap score required for `approve`. Default `0.2`.
 - `MAGI_REQUIRE_HUMAN_REVIEW_FOR_APPROVALS`: when `true`, grounded approvals are still marked for human review. Default `true`.
@@ -84,7 +107,7 @@ python magi/eval/run_scenarios.py \
 
 ## Project Structure
 - `run_magi.py` entry point for one shot runs.
-- `magi/app/cli.py` reusable CLI with ingest and chat commands.
+- `magi/app/cli.py` reusable CLI with ingest, chat, profiles, artifact, batch, and eval commands.
 - `magi/dspy_programs/` persona definitions, consensus logic, and DSPy wiring.
 - `magi/decision/` verdict aggregation logic and optional learned calibrators.
 - `magi/core/` embeddings, storage, retrieval, and utilities.
@@ -92,5 +115,6 @@ python magi/eval/run_scenarios.py \
 
 ## Notes
 - Vector store artifacts live in `magi/storage/` and are ignored by git.
+- Run artifacts live in `magi/artifacts/` by default and are ignored by git.
 - Evaluation artifacts and decision model weights are also ignored to keep the repository lightweight.
 - Example retrieval documents can be placed in `docs/`; everything in that directory is ignored by git so you can add PDFs or text files for local testing without affecting version control.
