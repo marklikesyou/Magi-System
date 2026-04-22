@@ -1,0 +1,23 @@
+name: incident-review
+description: Reconstruct incidents and mitigations with careful uncertainty handling.
+retrieval_top_k: 12
+presentation_style: incident_review
+show_persona_perspectives: false
+show_routing_rationale: false
+max_next_steps: 4
+default_constraints: >
+  Prefer timelines, impact, containment, remediation, and known unknowns. Do not
+  assert root cause unless the evidence states it directly.
+prompt_preamble: >
+  Treat the request as incident review. Prioritize postmortems, timelines,
+  runbooks, and remediation plans over generic summaries.
+response_format_guidance: >
+  Present the answer like an incident review with Situation, Impact,
+  Containment, and Unknowns. Be explicit about uncertainty.
+approve_min_citation_hit_rate: 1.0
+approve_min_answer_support_score: 0.3
+source_weights:
+  postmortem: 1.25
+  incident: 1.2
+  timeline: 1.15
+  runbook: 1.1
