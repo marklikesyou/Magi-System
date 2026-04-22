@@ -18,6 +18,7 @@ pytest-cache-files-*/
 .env.local
 magi/storage/dspy_cache/
 magi/storage/vector_store.json
+magi/artifacts/
 magi/eval/artifacts/
 magi/decision/model_weights.json
 datasets/
