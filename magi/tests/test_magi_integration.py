@@ -296,6 +296,33 @@ def test_chat_session_emits_decision_trace_for_retrieval():
     assert result.decision_trace.end_to_end_ms >= result.decision_trace.decision_resolution_ms
 
 
+def test_chat_session_revises_when_retrieved_docs_miss_requested_detail():
+    retriever = ScenarioRetriever(
+        [
+            ScenarioEvidence(
+                source="team_social",
+                text="The team social agenda covers lunch, demos, office logistics, and a Friday photo booth.",
+            ),
+            ScenarioEvidence(
+                source="magi_overview",
+                text="MAGI is a multi persona reasoning engine for assessing user requests against an evidence base.",
+            ),
+            ScenarioEvidence(
+                source="pilot_brief",
+                text="The pilot proposal scopes MAGI to internal policy triage for four weeks with a human reviewer.",
+            ),
+        ]
+    )
+
+    result = run_chat_session("What is MAGI's guaranteed p95 latency SLA?", "", retriever)
+
+    assert result.final_decision.verdict == "revise"
+    assert "not sufficient" in result.final_decision.justification.lower()
+    assert "not stated" in result.final_decision.justification.lower()
+    assert result.decision_trace.citation_hit_rate == 0.0
+    assert result.decision_trace.answer_supported is False
+
+
 def test_chat_session_logs_structured_decision_trace(caplog):
     retriever = ScenarioRetriever(
         [
