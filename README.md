@@ -55,6 +55,11 @@ python -m magi.app.cli explain <run-id>
 python -m magi.app.cli diff <run-a> <run-b>
 ```
 
+After installation, the native `magi` command exposes the same subcommands. Run
+`magi` with no subcommand to open the interactive shell; from there, enter a
+command such as `profiles security-review` or type a plain question to run
+`chat`.
+
 ### Profiles
 Use built-in profiles to bias retrieval, routing, and decision thresholds toward real workflows:
 
@@ -79,6 +84,12 @@ python -m magi.app.cli compare "Should we deploy the pilot?" --profiles security
 - `MAGI_DECISION_TRACE_DIR`: optional directory for persisted decision records when using the CLI.
 - `MAGI_RUN_ARTIFACT_DIR`: optional directory for persisted run artifacts used by `explain`, `replay`, and `diff`.
 - `MAGI_PROFILE_DIR`: optional directory for workspace-local profile YAML files.
+- `MAGI_ENABLE_MODEL_ROUTING`: when `true`, live OpenAI runs route harder decision, recommendation, and fact-check prompts to the strong/high-stakes model. Default `true`.
+- `MAGI_OPENAI_FAST_MODEL`: model for summary/extraction-style live OpenAI runs. Default `gpt-5-mini`.
+- `MAGI_OPENAI_STRONG_MODEL`: model for decision, recommendation, and fact-check runs. Default `gpt-5.2`.
+- `MAGI_OPENAI_HIGH_STAKES_MODEL`: model for high-stakes decision/recommendation/fact-check runs. Default `gpt-5.2`.
+- `MAGI_ENABLE_LIVE_PERSONAS`: when `true`, live runs call the provider for each persona before fusion. Default `false`; deterministic personas plus live fusion are much faster.
+- `MAGI_ENABLE_RESPONDER_LLM`: when `true`, live runs make a final responder LLM call after fusion. Default `false`; the deterministic responder is faster and cheaper.
 - `MAGI_APPROVE_MIN_CITATION_HIT_RATE`: minimum valid citation hit rate required for `approve`. Default `1.0`.
 - `MAGI_APPROVE_MIN_ANSWER_SUPPORT_SCORE`: minimum lexical evidence-overlap score required for `approve`. Default `0.2`.
 - `MAGI_REQUIRE_HUMAN_REVIEW_FOR_APPROVALS`: when `true`, grounded approvals are still marked for human review. Default `true`.
@@ -103,6 +114,18 @@ python magi/eval/run_scenarios.py \
   --cases magi/eval/live_scenarios.yaml \
   --mode auto \
   --report-out artifacts/live_scenarios.json
+```
+
+Run the production gate suite with quality, latency, and cost thresholds:
+```bash
+python magi/eval/run_scenarios.py \
+  --cases magi/eval/production_scenarios.yaml \
+  --mode stub \
+  --min-overall-score 1.0 \
+  --min-verdict-accuracy 1.0 \
+  --min-requirement-pass-rate 1.0 \
+  --max-p95-latency-ms 1000 \
+  --max-total-cost-usd 0.0
 ```
 
 ## Project Structure
