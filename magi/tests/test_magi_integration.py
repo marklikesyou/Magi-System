@@ -145,6 +145,110 @@ def test_chat_session_uses_authoritative_verdict_layer(monkeypatch):
     assert result.decision_trace.unsupported_citations == []
 
 
+def test_chat_session_selects_stronger_model_for_high_stakes_decision(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeProgram:
+        def __init__(self, *args, **kwargs):
+            captured["model"] = kwargs.get("model")
+            self.effective_mode = "live"
+            self.model_name = str(kwargs.get("model") or "test-model")
+            self.last_run_metadata = {"safe_evidence": []}
+
+        def __call__(self, query: str, constraints: str = ""):
+            del query, constraints
+            fused = FusionResponse(
+                verdict="revise",
+                justification="Need more evidence.",
+                confidence=0.6,
+                final_answer="Need more evidence.",
+                next_steps=["Add sources."],
+                consensus_points=[],
+                disagreements=[],
+                residual_risk="medium",
+                risks=[],
+                mitigations=[],
+            )
+            personas = {
+                "melchior": SimpleNamespace(text="[REVISE] [MELCHIOR] Need more evidence.", confidence=0.6),
+                "balthasar": SimpleNamespace(text="[REVISE] [BALTHASAR] Need more evidence.", confidence=0.6),
+                "casper": SimpleNamespace(text="[REVISE] [CASPER] Need more evidence.", confidence=0.6),
+            }
+            return fused, personas
+
+    monkeypatch.setattr(service, "MagiProgram", FakeProgram)
+    monkeypatch.setattr(
+        service,
+        "get_settings",
+        lambda: SimpleNamespace(
+            openai_api_key="key",
+            google_api_key="",
+            openai_model="gpt-5-mini",
+            openai_fast_model="gpt-5-mini",
+            openai_strong_model="gpt-5.2",
+            openai_high_stakes_model="gpt-5.2-pro",
+            enable_model_routing=True,
+            approve_min_citation_hit_rate=1.0,
+            approve_min_answer_support_score=0.2,
+            require_human_review_for_approvals=True,
+        ),
+    )
+
+    result = run_chat_session(
+        "Should we deploy this production security rollout?",
+        "",
+        retriever=object(),
+    )
+
+    assert captured["model"] == "gpt-5.2-pro"
+    assert result.decision_trace.model == "gpt-5.2-pro"
+    assert result.decision_trace.model_routing_reason == "high-stakes decision route"
+
+
+def test_chat_session_respects_explicit_model_override(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeProgram:
+        def __init__(self, *args, **kwargs):
+            captured["model"] = kwargs.get("model")
+            self.effective_mode = "live"
+            self.model_name = str(kwargs.get("model") or "test-model")
+            self.last_run_metadata = {"safe_evidence": []}
+
+        def __call__(self, query: str, constraints: str = ""):
+            del query, constraints
+            fused = FusionResponse(
+                verdict="revise",
+                justification="Need more evidence.",
+                confidence=0.6,
+                final_answer="Need more evidence.",
+                next_steps=[],
+                consensus_points=[],
+                disagreements=[],
+                residual_risk="medium",
+                risks=[],
+                mitigations=[],
+            )
+            personas = {
+                "melchior": SimpleNamespace(text="[REVISE] [MELCHIOR] Need more evidence.", confidence=0.6),
+                "balthasar": SimpleNamespace(text="[REVISE] [BALTHASAR] Need more evidence.", confidence=0.6),
+                "casper": SimpleNamespace(text="[REVISE] [CASPER] Need more evidence.", confidence=0.6),
+            }
+            return fused, personas
+
+    monkeypatch.setattr(service, "MagiProgram", FakeProgram)
+
+    result = run_chat_session(
+        "Should we deploy this production security rollout?",
+        "",
+        retriever=object(),
+        model="custom-model",
+    )
+
+    assert captured["model"] == "custom-model"
+    assert result.decision_trace.model_routing_reason == "explicit model override"
+
+
 def test_chat_session_downgrades_unsupported_approve(monkeypatch):
     class FakeProgram:
         def __init__(self, *args, **kwargs):
@@ -321,8 +425,8 @@ def test_chat_session_revises_when_retrieved_docs_miss_requested_detail():
     assert result.final_decision.abstained is True
     assert "not sufficient" in result.final_decision.justification.lower()
     assert "missing" in result.final_decision.justification.lower() or "directly support" in result.final_decision.justification.lower()
-    assert result.decision_trace.citation_hit_rate == 0.0
-    assert result.decision_trace.answer_supported is False
+    assert result.decision_trace.citation_hit_rate == 1.0
+    assert "did not prove" in result.final_decision.abstention_reason.lower()
 
 
 def test_chat_session_abstains_on_fact_check_without_direct_support():
@@ -340,6 +444,58 @@ def test_chat_session_abstains_on_fact_check_without_direct_support():
     assert result.final_decision.verdict == "abstain"
     assert result.final_decision.abstained is True
     assert "did not directly support" in result.final_decision.justification.lower()
+
+
+def test_chat_session_abstains_on_fact_check_revision_even_with_cited_context(monkeypatch):
+    class FakeProgram:
+        def __init__(self, *args, **kwargs):
+            self.effective_mode = "live"
+            self.model_name = str(kwargs.get("model") or "test-model")
+            self.last_run_metadata = {
+                "query_mode": "fact_check",
+                "safe_evidence": [
+                    {
+                        "citation": "[1]",
+                        "source": "operations_note",
+                        "document_id": "operations_note::1",
+                        "text": "The team tracks latency during pilots, but no production SLA has been published.",
+                    }
+                ],
+            }
+
+        def __call__(self, query: str, constraints: str = ""):
+            del query, constraints
+            fused = FusionResponse(
+                verdict="revise",
+                justification="The evidence gives related context but does not prove the requested guarantee [1].",
+                confidence=0.7,
+                final_answer="The evidence does not prove a guaranteed latency SLA; it says no production SLA has been published [1].",
+                next_steps=["Ask for a published SLA before verifying the claim."],
+                consensus_points=[],
+                disagreements=[],
+                residual_risk="medium",
+                risks=[],
+                mitigations=[],
+            )
+            personas = {
+                "melchior": SimpleNamespace(text="[REVISE] [MELCHIOR] Missing SLA proof.", confidence=0.8),
+                "balthasar": SimpleNamespace(text="[REVISE] [BALTHASAR] Ask for the SLA.", confidence=0.8),
+                "casper": SimpleNamespace(text="[REVISE] [CASPER] Avoid over-claiming.", confidence=0.8),
+            }
+            return fused, personas
+
+    monkeypatch.setattr(service, "MagiProgram", FakeProgram)
+
+    result = run_chat_session(
+        "Verify whether MAGI guarantees a 50ms p95 latency SLA.",
+        "",
+        retriever=object(),
+    )
+
+    assert result.final_decision.verdict == "abstain"
+    assert result.final_decision.abstained is True
+    assert "did not prove" in result.final_decision.abstention_reason.lower()
+    assert result.decision_trace.citation_hit_rate == 1.0
 
 
 def test_chat_session_logs_structured_decision_trace(caplog):
