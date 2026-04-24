@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from magi.core.embeddings import HashingEmbedder
 from magi.core.rag import RagRetriever
-from magi.core.vectorstore import InMemoryVectorStore, VectorEntry
+from magi.core.vectorstore import InMemoryVectorStore, RetrievedChunk, VectorEntry
 
 
 def _build_retriever() -> RagRetriever:
@@ -97,3 +97,72 @@ def test_page_requested_retrieval_respects_metadata_filters():
     )
 
     assert [chunk.document_id for chunk in results] == ["doc-b#page-2"]
+
+
+def test_retriever_uses_keyword_search_without_scanning_entries():
+    class KeywordOnlyStore:
+        dim = 2
+        revision = 1
+
+        @property
+        def entries(self):
+            raise AssertionError("entries should not be scanned when keyword search exists")
+
+        def search(self, query_embedding, top_k=5, *, metadata_filters=None):
+            return [
+                RetrievedChunk(
+                    document_id="semantic",
+                    text="Unrelated semantic candidate.",
+                    score=0.2,
+                    metadata={"source": "semantic"},
+                )
+            ]
+
+        def keyword_search(self, query, top_k=20, *, metadata_filters=None):
+            return [
+                RetrievedChunk(
+                    document_id="keyword",
+                    text="MAGI policy triage guardrails include human review.",
+                    score=1.0,
+                    metadata={"source": "keyword"},
+                )
+            ]
+
+    retriever = RagRetriever(lambda _text: [1.0, 0.0], KeywordOnlyStore())
+
+    results = retriever.retrieve("MAGI guardrails", top_k=1)
+
+    assert [chunk.document_id for chunk in results] == ["keyword"]
+
+
+def test_page_retrieval_uses_page_search_without_scanning_entries():
+    class PageOnlyStore:
+        dim = 2
+        revision = 1
+
+        @property
+        def entries(self):
+            raise AssertionError("entries should not be scanned when page search exists")
+
+        def search(self, query_embedding, top_k=5, *, metadata_filters=None):
+            return []
+
+        def keyword_search(self, query, top_k=20, *, metadata_filters=None):
+            return []
+
+        def page_search(self, page_numbers, top_k=20, *, metadata_filters=None):
+            assert set(page_numbers) == {"7"}
+            return [
+                RetrievedChunk(
+                    document_id="doc#page-7",
+                    text="[Page 7] MAGI rollout status is green.",
+                    score=1.2,
+                    metadata={"source": "doc.pdf", "page": 7},
+                )
+            ]
+
+    retriever = RagRetriever(lambda _text: [1.0, 0.0], PageOnlyStore())
+
+    results = retriever.retrieve("What does page 7 say?", top_k=1)
+
+    assert [chunk.document_id for chunk in results] == ["doc#page-7"]
