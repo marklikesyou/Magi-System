@@ -61,7 +61,46 @@ class Settings(BaseSettings):
             "MAGI_REQUIRE_HUMAN_REVIEW_FOR_APPROVALS",
         ),
     )
-    openai_model: str = "gpt-4o-mini-2024-07-18"
+    openai_model: str = "gpt-5-mini"
+    openai_fast_model: str = Field(
+        default="gpt-5-mini",
+        validation_alias=AliasChoices("openai_fast_model", "MAGI_OPENAI_FAST_MODEL"),
+    )
+    openai_strong_model: str = Field(
+        default="gpt-5.2",
+        validation_alias=AliasChoices(
+            "openai_strong_model",
+            "MAGI_OPENAI_STRONG_MODEL",
+        ),
+    )
+    openai_high_stakes_model: str = Field(
+        default="gpt-5.2",
+        validation_alias=AliasChoices(
+            "openai_high_stakes_model",
+            "MAGI_OPENAI_HIGH_STAKES_MODEL",
+        ),
+    )
+    enable_model_routing: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "enable_model_routing",
+            "MAGI_ENABLE_MODEL_ROUTING",
+        ),
+    )
+    enable_responder_llm: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "enable_responder_llm",
+            "MAGI_ENABLE_RESPONDER_LLM",
+        ),
+    )
+    enable_live_personas: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "enable_live_personas",
+            "MAGI_ENABLE_LIVE_PERSONAS",
+        ),
+    )
     gemini_model: str = "gemini-2.5-flash-lite"
     openai_embedding_model: str = "text-embedding-3-small"
     langfuse_public_key: str = ""
