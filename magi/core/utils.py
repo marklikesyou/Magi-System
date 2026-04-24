@@ -25,22 +25,26 @@ class LRUCache:
     def __init__(self, max_size: int = 100):
         self.cache: OrderedDict[str, Any] = OrderedDict()
         self.max_size = max_size
+        self._lock = threading.RLock()
 
     def get(self, key: str) -> Optional[Any]:
-        if key in self.cache:
-            self.cache.move_to_end(key)
-            return self.cache[key]
-        return None
+        with self._lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+                return self.cache[key]
+            return None
 
     def put(self, key: str, value: Any):
-        if key in self.cache:
-            self.cache.move_to_end(key)
-        self.cache[key] = value
-        if len(self.cache) > self.max_size:
-            self.cache.popitem(last=False)
+        with self._lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+            self.cache[key] = value
+            if len(self.cache) > self.max_size:
+                self.cache.popitem(last=False)
 
     def clear(self):
-        self.cache.clear()
+        with self._lock:
+            self.cache.clear()
 
 
 def hash_query(query: str, constraints: str = "") -> str:
@@ -173,36 +177,91 @@ class TokenTracker:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_cost = 0.0
+        self.model_totals: dict[str, dict[str, float]] = {}
+        self._lock = threading.Lock()
         self.model_costs = {
-            "gpt-4o": {"input": 0.03, "output": 0.06},
+            "gpt-5.2-pro": {"input": 0.021, "output": 0.168},
+            "gpt-5.2-chat-latest": {"input": 0.00175, "output": 0.014},
+            "gpt-5.2-codex": {"input": 0.00175, "output": 0.014},
+            "gpt-5.2": {"input": 0.00175, "output": 0.014},
+            "gpt-5-mini": {"input": 0.00025, "output": 0.002},
+            "gpt-5-nano": {"input": 0.00005, "output": 0.0004},
+            "gpt-5": {"input": 0.00125, "output": 0.01},
+            "gpt-4.1-mini": {"input": 0.0004, "output": 0.0016},
+            "gpt-4.1-nano": {"input": 0.0001, "output": 0.0004},
+            "gpt-4.1": {"input": 0.002, "output": 0.008},
+            "gpt-4o": {"input": 0.0025, "output": 0.01},
             "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
             "gpt-3.5-turbo": {"input": 0.0015, "output": 0.002},
             "gemini-2.0-flash-exp": {"input": 0.0, "output": 0.0},
             "gemini-2.5-flash-lite": {"input": 0.0, "output": 0.0},
         }
 
+    def _cost_for_model(self, model: str) -> dict[str, float] | None:
+        normalized = model.strip()
+        if normalized in self.model_costs:
+            return self.model_costs[normalized]
+        for prefix in sorted(self.model_costs, key=len, reverse=True):
+            if normalized.startswith(prefix):
+                return self.model_costs[prefix]
+        return None
+
     def track(self, input_text: str, output_text: str, model: str):
         input_tokens = count_tokens(input_text, model)
         output_tokens = count_tokens(output_text, model)
 
-        self.total_input_tokens += input_tokens
-        self.total_output_tokens += output_tokens
+        with self._lock:
+            self.total_input_tokens += input_tokens
+            self.total_output_tokens += output_tokens
 
-        if model in self.model_costs:
-            costs = self.model_costs[model]
-            self.total_cost += (input_tokens * costs["input"] / 1000) + (
-                output_tokens * costs["output"] / 1000
+            costs = self._cost_for_model(model)
+            normalized_model = model.strip() or "unknown"
+            model_bucket = self.model_totals.setdefault(
+                normalized_model,
+                {
+                    "input_tokens": 0.0,
+                    "output_tokens": 0.0,
+                    "total_tokens": 0.0,
+                    "estimated_cost_usd": 0.0,
+                    "calls": 0.0,
+                },
             )
+            model_bucket["input_tokens"] += input_tokens
+            model_bucket["output_tokens"] += output_tokens
+            model_bucket["total_tokens"] += input_tokens + output_tokens
+            model_bucket["calls"] += 1
+            if costs is not None:
+                call_cost = (input_tokens * costs["input"] / 1000) + (
+                    output_tokens * costs["output"] / 1000
+                )
+                self.total_cost += call_cost
+                model_bucket["estimated_cost_usd"] += call_cost
 
     def get_stats(self) -> Dict[str, Any]:
-        return {
-            "total_input_tokens": self.total_input_tokens,
-            "total_output_tokens": self.total_output_tokens,
-            "total_tokens": self.total_input_tokens + self.total_output_tokens,
-            "estimated_cost_usd": round(self.total_cost, 4),
-        }
+        with self._lock:
+            return {
+                "total_input_tokens": self.total_input_tokens,
+                "total_output_tokens": self.total_output_tokens,
+                "total_tokens": self.total_input_tokens + self.total_output_tokens,
+                "estimated_cost_usd": round(self.total_cost, 4),
+                "models": {
+                    model: {
+                        "input_tokens": int(values["input_tokens"]),
+                        "output_tokens": int(values["output_tokens"]),
+                        "total_tokens": int(values["total_tokens"]),
+                        "calls": int(values["calls"]),
+                        "estimated_cost_usd": round(
+                            values["estimated_cost_usd"],
+                            6,
+                        ),
+                    }
+                    for model, values in sorted(self.model_totals.items())
+                },
+            }
 
     def reset(self):
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-        self.total_cost = 0.0
+        with self._lock:
+            self.total_input_tokens = 0
+            self.total_output_tokens = 0
+            self.total_cost = 0.0
+            self.model_totals = {}
