@@ -8,7 +8,8 @@ from time import perf_counter
 from typing import Any, Literal, Mapping, cast
 
 from magi.core.config import get_settings
-from magi.core.utils import hash_query
+from magi.core.routing import route_query
+from magi.core.utils import hash_query, sanitize_input
 from magi.decision.aggregator import resolve_verdict_with_details
 from magi.decision.schema import EvidenceItem, FinalDecision, PersonaOutput
 from magi.dspy_programs.runtime import MagiProgram, get_token_stats
@@ -18,6 +19,23 @@ from magi.eval.metrics import answer_support_score
 logger = logging.getLogger(__name__)
 _CITATION_LABEL_RE = re.compile(r"\[\d+\]")
 _SUPPORTED_ANSWER_SCORE_THRESHOLD = 0.2
+_HIGH_STAKES_MODEL_PATTERNS = (
+    "security",
+    "breach",
+    "incident",
+    "production",
+    "deploy",
+    "launch",
+    "rollout",
+    "legal",
+    "compliance",
+    "financial",
+    "customer data",
+    "password",
+    "admin",
+    "policy",
+    "vendor",
+)
 
 
 @dataclass
@@ -70,6 +88,9 @@ class DecisionTrace:
     end_to_end_ms: float = 0.0
     effective_mode: str = "stub"
     model: str = ""
+    model_routing_reason: str = ""
+    persona_mode: str = ""
+    responder_mode: str = ""
     query_mode: str = "decision"
     routing_rationale: str = ""
     routing_scores: dict[str, int] = field(default_factory=dict)
@@ -245,6 +266,44 @@ def _safety_outcome(fused: FusionResponse, blocked_evidence_ids: list[str]) -> s
     return "passed"
 
 
+def _select_model_for_session(
+    query: str,
+    constraints: str,
+    *,
+    explicit_model: str | None,
+    route_mode: str | None,
+    force_stub: bool | None,
+    client: Any | None,
+) -> tuple[str | None, str]:
+    if explicit_model:
+        return explicit_model, "explicit model override"
+    if force_stub is True:
+        return None, "stub default model"
+    if client is not None:
+        return None, "client default model"
+
+    settings = get_settings()
+    if not settings.openai_api_key or not settings.enable_model_routing:
+        return None, "default provider model"
+
+    forced_mode = cast(Any, str(route_mode or "").strip() or None)
+    route = route_query(
+        sanitize_input(query, max_length=2000),
+        sanitize_input(constraints, max_length=500),
+        forced_mode=forced_mode,
+    )
+    combined = f"{query}\n{constraints}".lower()
+    high_stakes = any(pattern in combined for pattern in _HIGH_STAKES_MODEL_PATTERNS)
+    if high_stakes and route.mode in {"decision", "recommend", "fact_check"}:
+        model_name = settings.openai_high_stakes_model or settings.openai_strong_model
+        return model_name, f"high-stakes {route.mode} route"
+    if route.mode in {"decision", "recommend", "fact_check"}:
+        model_name = settings.openai_strong_model or settings.openai_model
+        return model_name, f"{route.mode} route"
+    model_name = settings.openai_fast_model or settings.openai_model
+    return model_name, f"{route.mode} route"
+
+
 def _citation_count(*parts: object) -> int:
     count = 0
     for part in parts:
@@ -256,6 +315,35 @@ def _citation_count(*parts: object) -> int:
 
 def _combined_answer_text(*parts: object) -> str:
     return "\n".join(str(part).strip() for part in parts if str(part).strip()).strip()
+
+
+def _signals_negative_verification(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "").lower()).strip()
+    if not normalized:
+        return False
+    return any(
+        signal in normalized
+        for signal in (
+            "does not guarantee",
+            "doesn't guarantee",
+            "no formal",
+            "not been approved",
+            "not approved",
+            "not supported",
+            "cannot be verified",
+            "did not prove",
+            "does not prove",
+            "does not authorize",
+            "doesn't authorize",
+            "being evaluated",
+            "human review",
+            "human sign-off",
+            "human sign off",
+            "no production",
+            "no customer-facing",
+            "no customer facing",
+        )
+    )
 
 
 def _safe_evidence_lookup(
@@ -323,7 +411,7 @@ def _resolved_citations(
 
 
 def _grounding_metrics(
-    program: MagiProgram, text: str
+    program: MagiProgram, text: str, *, support_text: str | None = None
 ) -> tuple[
     float,
     float,
@@ -346,7 +434,8 @@ def _grounding_metrics(
         if citations and evidence_by_citation
         else 0.0
     )
-    support_score = answer_support_score(text, evidence_texts)
+    support_basis = support_text if support_text is not None else text
+    support_score = answer_support_score(support_basis, evidence_texts)
     supported = (
         bool(evidence_texts)
         and citation_hit_rate > 0.0
@@ -435,6 +524,7 @@ def _apply_abstention(
     citation_hit_rate: float,
     support_score: float,
     decision_details: Mapping[str, object],
+    answer_text: str = "",
 ) -> tuple[FinalDecision, bool]:
     if decision.verdict in {"reject", "abstain"}:
         return decision, False
@@ -444,10 +534,29 @@ def _apply_abstention(
     if used_evidence_count == 0:
         should_abstain = True
         reason = "No trustworthy retrieved evidence was available."
-    elif query_mode in {"extract", "fact_check"} and citation_hit_rate == 0.0:
+    elif query_mode in {"extract", "fact_check"} and decision.verdict == "revise":
+        should_abstain = True
+        reason = (
+            "The evidence did not directly support the requested extraction or "
+            "verification, so it did not prove the claim."
+        )
+    elif query_mode in {"extract", "fact_check"} and (
+        citation_hit_rate == 0.0 or support_score < _SUPPORTED_ANSWER_SCORE_THRESHOLD
+    ):
         should_abstain = True
         reason = "The evidence did not directly support the requested extraction or verification."
-    elif bool(decision_details.get("insufficient_information")) and support_score < 0.2:
+    elif (
+        query_mode == "fact_check"
+        and decision.verdict == "approve"
+        and _signals_negative_verification(answer_text)
+    ):
+        should_abstain = True
+        reason = "The evidence did not prove the claim being verified."
+    elif (
+        query_mode not in {"decision", "recommend"}
+        and bool(decision_details.get("insufficient_information"))
+        and support_score < 0.2
+    ):
         should_abstain = True
         reason = "The decision layer marked the available evidence as insufficient."
 
@@ -527,10 +636,18 @@ def run_chat_session(
     approve_min_answer_support_score: float | None = None,
 ) -> ChatSessionResult:
     start = perf_counter()
+    selected_model, model_routing_reason = _select_model_for_session(
+        query,
+        constraints,
+        explicit_model=(str(model).strip() if model else None),
+        route_mode=route_mode,
+        force_stub=force_stub,
+        client=client,
+    )
     program = MagiProgram(
         retriever=retriever,
         force_stub=force_stub,
-        model=model,
+        model=selected_model,
         client=client,
         route_mode=route_mode,
         prompt_preamble=prompt_preamble,
@@ -576,33 +693,32 @@ def run_chat_session(
         mitigations=[str(item) for item in fused.mitigations],
         residual_risk=fused.residual_risk,
     )
-    query_mode = str(getattr(program, "last_run_metadata", {}).get("query_mode", "decision"))
+    run_metadata = getattr(program, "last_run_metadata", {}) or {}
+    query_mode = str(run_metadata.get("query_mode", "decision"))
     routing_rationale = str(
-        getattr(program, "last_run_metadata", {}).get("routing_rationale", "")
+        run_metadata.get("routing_rationale", "")
     )
     routing_scores = dict(
         cast(
             Mapping[str, int],
-            getattr(program, "last_run_metadata", {}).get("routing_scores", {}),
+            run_metadata.get("routing_scores", {}),
         )
     )
     routing_signals = [
         str(item).strip()
         for item in cast(
             list[object],
-            getattr(program, "last_run_metadata", {}).get("routing_signals", []),
+            run_metadata.get("routing_signals", []),
         )
         if str(item).strip()
     ]
     requested_route = str(
-        getattr(program, "last_run_metadata", {}).get("requested_route", "")
+        run_metadata.get("requested_route", "")
     )
-    grounding_text = _combined_answer_text(
-        fused.final_answer,
-        fused.justification,
-        decision.justification,
-        " ".join(str(item).strip() for item in fused.next_steps if str(item).strip()),
-    )
+    persona_mode = str(run_metadata.get("persona_mode", ""))
+    responder_mode = str(run_metadata.get("responder_mode", ""))
+    user_answer_text = _combined_answer_text(fused.final_answer)
+    grounding_text = user_answer_text or _combined_answer_text(fused.justification)
     (
         citation_hit_rate,
         support_score,
@@ -611,7 +727,7 @@ def run_chat_session(
         cited_sources,
         cited_evidence,
         unsupported_citations,
-    ) = _grounding_metrics(program, grounding_text)
+    ) = _grounding_metrics(program, grounding_text, support_text=user_answer_text)
     decision, approve_guardrail_triggered = _apply_approve_guardrail(
         decision,
         citation_hit_rate=citation_hit_rate,
@@ -626,6 +742,7 @@ def run_chat_session(
         citation_hit_rate=citation_hit_rate,
         support_score=support_score,
         decision_details=decision_details,
+        answer_text=_combined_answer_text(fused.final_answer, fused.justification),
     )
     decision, human_review_required = _apply_human_review_requirement(decision)
     decision_trace = DecisionTrace(
@@ -664,6 +781,9 @@ def run_chat_session(
         end_to_end_ms=round((perf_counter() - start) * 1000.0, 3),
         effective_mode=program.effective_mode,
         model=program.model_name,
+        model_routing_reason=model_routing_reason,
+        persona_mode=persona_mode,
+        responder_mode=responder_mode,
         query_mode=query_mode,
         routing_rationale=routing_rationale,
         routing_scores=routing_scores,
