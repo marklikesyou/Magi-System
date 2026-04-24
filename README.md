@@ -55,10 +55,34 @@ python -m magi.app.cli explain <run-id>
 python -m magi.app.cli diff <run-a> <run-b>
 ```
 
-After installation, the native `magi` command exposes the same subcommands. Run
-`magi` with no subcommand to open the interactive shell; from there, enter a
+### Native `magi` command
+The package exposes `magi = "magi.app.cli:main"` in `pyproject.toml`.
+After `uv sync`, activate the virtual environment and run the native command:
+
+```bash
+source .venv/bin/activate
+magi
+```
+
+`magi` opens the interactive shell on a real terminal. From there, enter a
 command such as `profiles security-review` or type a plain question to run
 `chat`.
+
+You can also run the native command without activating the environment:
+
+```bash
+uv run magi
+uv run magi chat "What risks should I consider?"
+```
+
+For a user-level command outside the repository, install it as a uv tool:
+
+```bash
+uv tool install -e .
+magi
+```
+
+For scripts or piped input, use `magi shell` to force shell mode.
 
 ### Profiles
 Use built-in profiles to bias retrieval, routing, and decision thresholds toward real workflows:
