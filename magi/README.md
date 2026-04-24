@@ -28,6 +28,19 @@ python -m magi.app.cli chat "Should we deploy the latest patch?" --profile secur
 python -m magi.app.cli compare "Should we deploy the latest patch?" --include-default --profiles security-review exec-brief
 ```
 
+The native CLI command is also available through the package entry point. After
+`uv sync`, activate the environment and run:
+
+```bash
+source .venv/bin/activate
+magi
+```
+
+`magi` opens the interactive shell on a real terminal. Without activating the
+environment, use `uv run magi`. For a user-level command outside the repository,
+run `uv tool install -e .` once, then run `magi` from any shell. For scripts or
+piped input, use `magi shell` to force shell mode.
+
 By default the system stays completely offline using a deterministic hashing embedder and a deterministic reasoning fallback. To activate provider-backed reasoning, set OpenAI or Google credentials in `.env.local` and run commands with `MAGI_FORCE_DSPY_STUB=0`; OpenAI credentials are still required for provider-backed embeddings. Use `MAGI_FORCE_HASH_EMBEDDER=1` if you ever need to fall back to hashing.
 
 ```bash
