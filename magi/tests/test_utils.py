@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from magi.core.utils import (
@@ -45,6 +47,20 @@ def test_lru_cache_access_refreshes():
     assert cache.get("a") == 1
     assert cache.get("b") is None
     assert cache.get("c") == 3
+
+
+def test_lru_cache_handles_concurrent_access():
+    cache = LRUCache(max_size=20)
+
+    def write_and_read(index: int) -> None:
+        key = f"key-{index % 25}"
+        cache.put(key, index)
+        cache.get(key)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(write_and_read, range(500)))
+
+    assert len(cache.cache) <= 20
 
 
 def test_retry_with_backoff_succeeds():
@@ -129,6 +145,18 @@ def test_token_tracker_accumulates():
         stats["total_tokens"]
         == stats["total_input_tokens"] + stats["total_output_tokens"]
     )
+    assert stats["models"]["gpt-4o-mini"]["calls"] == 2
+    assert stats["models"]["gpt-4o-mini"]["total_tokens"] == stats["total_tokens"]
+
+
+def test_token_tracker_matches_snapshot_model_costs_by_prefix():
+    tracker = TokenTracker()
+    tracker.track("hello world", "response one", model="gpt-5-mini-2026-04-24")
+
+    stats = tracker.get_stats()
+    model_stats = stats["models"]["gpt-5-mini-2026-04-24"]
+    assert model_stats["calls"] == 1
+    assert model_stats["estimated_cost_usd"] >= 0.0
 
 
 def test_token_tracker_reset():
@@ -142,3 +170,4 @@ def test_token_tracker_reset():
     assert stats["total_output_tokens"] == 0
     assert stats["total_tokens"] == 0
     assert stats["estimated_cost_usd"] == 0.0
+    assert stats["models"] == {}
