@@ -38,7 +38,7 @@ def test_run_scenarios_cli_fails_when_threshold_is_not_met(tmp_path: Path) -> No
         [
             sys.executable,
             str(script),
-            "--cases",
+            "--file",
             str(dataset),
             "--mode",
             "stub",
@@ -95,3 +95,46 @@ def test_run_scenarios_cli_can_gate_answer_support_metrics(tmp_path: Path) -> No
     assert completed.returncode == 1
     assert "threshold_failed" in completed.stderr
     assert "average_answer_support_score" in completed.stderr
+
+
+def test_run_scenarios_cli_can_gate_latency_metrics(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[1] / "eval" / "run_scenarios.py"
+    dataset = tmp_path / "latency_cases.yaml"
+    payload = {
+        "cases": [
+            {
+                "id": "latency_gate",
+                "query": "Summarize MAGI in one sentence.",
+                "expected_verdict": "approve",
+                "evidence": [
+                    {
+                        "source": "README",
+                        "text": "MAGI is a multi persona reasoning engine for assessing user requests against an evidence base.",
+                    }
+                ],
+            }
+        ]
+    }
+    dataset.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--cases",
+            str(dataset),
+            "--mode",
+            "stub",
+            "--max-p95-latency-ms",
+            "0",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=Path(__file__).resolve().parents[2],
+    )
+
+    assert completed.returncode == 1
+    assert "threshold_failed" in completed.stderr
+    assert "latency_p95_ms" in completed.stderr
+    assert "maximum=0.0000" in completed.stderr
