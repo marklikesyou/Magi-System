@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import heapq
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Protocol, Sequence, TypeGuard
+
+_TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 
 
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
@@ -73,6 +77,10 @@ def metadata_matches_filters(
     return True
 
 
+def _query_tokens(text: str) -> set[str]:
+    return {token for token in _TOKEN_RE.findall(text.lower()) if len(token) > 2}
+
+
 @dataclass
 class VectorEntry:
     document_id: str
@@ -123,6 +131,22 @@ class VectorStore(Protocol):
         self,
         query_embedding: Sequence[float],
         top_k: int = 5,
+        *,
+        metadata_filters: Mapping[str, object] | None = None,
+    ) -> List[RetrievedChunk]: ...
+
+    def keyword_search(
+        self,
+        query: str,
+        top_k: int = 20,
+        *,
+        metadata_filters: Mapping[str, object] | None = None,
+    ) -> List[RetrievedChunk]: ...
+
+    def page_search(
+        self,
+        page_numbers: Iterable[str],
+        top_k: int = 20,
         *,
         metadata_filters: Mapping[str, object] | None = None,
     ) -> List[RetrievedChunk]: ...
@@ -180,8 +204,10 @@ class InMemoryVectorStore:
     ) -> List[RetrievedChunk]:
         if len(query_embedding) != self.dim:
             raise ValueError("query dimension mismatch.")
+        if top_k <= 0:
+            return []
 
-        scored = [
+        scored = (
             RetrievedChunk(
                 document_id=entry.document_id,
                 text=entry.text,
@@ -190,6 +216,92 @@ class InMemoryVectorStore:
             )
             for entry in self._entries
             if metadata_matches_filters(entry.metadata, metadata_filters)
+        )
+        return heapq.nlargest(top_k, scored, key=lambda chunk: chunk.score)
+
+    def keyword_search(
+        self,
+        query: str,
+        top_k: int = 20,
+        *,
+        metadata_filters: Mapping[str, object] | None = None,
+    ) -> List[RetrievedChunk]:
+        if top_k <= 0:
+            return []
+        query_tokens = _query_tokens(query)
+        if not query_tokens:
+            return []
+
+        def score_entry(entry: VectorEntry) -> RetrievedChunk | None:
+            if not metadata_matches_filters(entry.metadata, metadata_filters):
+                return None
+            text_tokens = _query_tokens(entry.text)
+            if not text_tokens:
+                return None
+            overlap = len(query_tokens.intersection(text_tokens))
+            if overlap <= 0:
+                return None
+            return RetrievedChunk(
+                document_id=entry.document_id,
+                text=entry.text,
+                score=min(1.0, overlap / max(1, len(query_tokens))),
+                metadata=entry.metadata,
+            )
+
+        scored = (
+            chunk
+            for chunk in (score_entry(entry) for entry in self._entries)
+            if chunk is not None
+        )
+        return heapq.nlargest(top_k, scored, key=lambda chunk: chunk.score)
+
+    def page_search(
+        self,
+        page_numbers: Iterable[str],
+        top_k: int = 20,
+        *,
+        metadata_filters: Mapping[str, object] | None = None,
+    ) -> List[RetrievedChunk]:
+        if top_k <= 0:
+            return []
+        requested = {str(value).strip() for value in page_numbers if str(value).strip()}
+        if not requested:
+            return []
+        page_markers = [
+            (f"page {value}".lower(), f"page-{value}".lower())
+            for value in sorted(requested)
         ]
-        scored.sort(key=lambda chunk: chunk.score, reverse=True)
-        return scored[:top_k]
+
+        def match_entry(entry: VectorEntry) -> RetrievedChunk | None:
+            if not metadata_matches_filters(entry.metadata, metadata_filters):
+                return None
+            page = str(entry.metadata.get("page", "")).strip()
+            source = str(entry.metadata.get("source", "")).lower()
+            document_id = entry.document_id.lower()
+            text = entry.text.lower()
+            if page in requested:
+                matched = True
+            else:
+                matched = any(
+                    label in text
+                    or label in source
+                    or suffix in document_id
+                    or f"#{suffix}" in document_id
+                    or f"/{suffix}" in document_id
+                    for label, suffix in page_markers
+                )
+            if not matched:
+                return None
+            return RetrievedChunk(
+                document_id=entry.document_id,
+                text=entry.text,
+                score=1.2,
+                metadata=entry.metadata,
+            )
+
+        scored = (
+            chunk
+            for chunk in (match_entry(entry) for entry in self._entries)
+            if chunk is not None
+        )
+        return heapq.nlargest(top_k, scored, key=lambda chunk: chunk.score)
