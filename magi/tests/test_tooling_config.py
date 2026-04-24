@@ -19,3 +19,14 @@ def test_python_targets_are_aligned() -> None:
     assert 'target-version = "py310"' in pyproject
     assert "python_version = 3.10" in mypy_ini
     assert 'python-version: ["3.10", "3.13"]' in ci
+
+
+def test_container_and_ci_include_production_guards() -> None:
+    dockerfile = _read("Dockerfile")
+    ci = _read(".github/workflows/ci.yml")
+
+    assert "USER magi" in dockerfile
+    assert "HEALTHCHECK" in dockerfile
+    assert "magi/eval/production_scenarios.yaml" in ci
+    assert "--max-p95-latency-ms" in ci
+    assert "--max-total-cost-usd" in ci
