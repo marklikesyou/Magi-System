@@ -5,6 +5,7 @@ import csv
 from datetime import datetime, timezone
 import json
 import re
+import shlex
 from pathlib import Path
 import sys
 from typing import Callable, Dict, Iterable, List, Sequence, cast
@@ -915,6 +916,61 @@ def _benchmark_report_payload(
     }
 
 
+def _scenario_threshold_failures(
+    report,
+    args: argparse.Namespace,
+) -> list[tuple[str, float, float, str]]:
+    summary = report.summary
+    min_thresholds = {
+        "overall_score": getattr(args, "min_overall_score", None),
+        "verdict_accuracy": getattr(args, "min_verdict_accuracy", None),
+        "requirement_pass_rate": getattr(args, "min_requirement_pass_rate", None),
+        "retrieval_hit_rate": getattr(args, "min_retrieval_hit_rate", None),
+        "retrieval_top_source_accuracy": getattr(
+            args,
+            "min_retrieval_top_source_accuracy",
+            None,
+        ),
+        "retrieval_source_recall": getattr(
+            args,
+            "min_retrieval_source_recall",
+            None,
+        ),
+        "average_citation_hit_rate": getattr(
+            args,
+            "min_average_citation_hit_rate",
+            None,
+        ),
+        "average_answer_support_score": getattr(
+            args,
+            "min_average_answer_support_score",
+            None,
+        ),
+        "supported_answer_rate": getattr(args, "min_supported_answer_rate", None),
+    }
+    max_thresholds = {
+        "latency_p50_ms": getattr(args, "max_p50_latency_ms", None),
+        "latency_p95_ms": getattr(args, "max_p95_latency_ms", None),
+        "latency_max_ms": getattr(args, "max_max_latency_ms", None),
+        "average_estimated_cost_usd": getattr(args, "max_average_cost_usd", None),
+        "total_estimated_cost_usd": getattr(args, "max_total_cost_usd", None),
+    }
+    failures: list[tuple[str, float, float, str]] = []
+    for field, minimum in min_thresholds.items():
+        if minimum is None:
+            continue
+        actual = float(getattr(summary, field))
+        if actual < float(minimum):
+            failures.append((field, actual, float(minimum), "minimum"))
+    for field, maximum in max_thresholds.items():
+        if maximum is None:
+            continue
+        actual = float(getattr(summary, field))
+        if actual > float(maximum):
+            failures.append((field, actual, float(maximum), "maximum"))
+    return failures
+
+
 def command_eval_run(args: argparse.Namespace) -> int:
     try:
         if args.kind == "scenario":
@@ -934,6 +990,15 @@ def command_eval_run(args: argparse.Namespace) -> int:
             if args.report_out:
                 write_scenario_report(report, args.report_out)
                 print(f"report_saved\t{args.report_out}")
+            failures = _scenario_threshold_failures(report, args)
+            if failures:
+                for field, actual, threshold, direction in failures:
+                    print(
+                        "threshold_failed\t"
+                        f"{field}\tactual={actual:.4f}\t{direction}={threshold:.4f}",
+                        file=sys.stderr,
+                    )
+                return 1
             return 0
 
         benchmark_dataset = load_dataset(args.cases)
@@ -993,6 +1058,115 @@ def command_eval_regressions(args: argparse.Namespace) -> int:
         return 1
 
 
+_SHELL_EXIT_COMMANDS = {"exit", "quit", ":q", "\\q"}
+_SHELL_META_HELP = {"help", "?", ":help"}
+_SHELL_COMMANDS = {
+    "ingest",
+    "chat",
+    "batch",
+    "compare",
+    "explain",
+    "profiles",
+    "replay",
+    "diff",
+    "eval",
+    "shell",
+}
+_SHELL_STORE_COMMANDS = {"ingest", "chat", "batch", "compare", "replay"}
+
+
+def _shell_command_tokens(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped:
+        return []
+    if stripped in _SHELL_EXIT_COMMANDS:
+        return ["exit"]
+    if stripped in _SHELL_META_HELP:
+        return ["help"]
+    if stripped.startswith("help "):
+        parts = shlex.split(stripped)
+        if len(parts) == 2 and parts[1] in _SHELL_COMMANDS:
+            return [parts[1], "--help"]
+        return ["help"]
+
+    tokens = shlex.split(stripped)
+    if not tokens:
+        return []
+    if tokens[0] in _SHELL_EXIT_COMMANDS:
+        return ["exit"]
+    if tokens[0] in _SHELL_META_HELP:
+        return ["help"]
+    if tokens[0] in _SHELL_COMMANDS or tokens[0].startswith("-"):
+        return tokens
+    return ["chat", stripped]
+
+
+def _apply_shell_defaults(tokens: list[str], args: argparse.Namespace) -> list[str]:
+    if not tokens:
+        return tokens
+    command = tokens[0]
+    if command in _SHELL_STORE_COMMANDS and "--store" not in tokens:
+        store = getattr(args, "store", None)
+        if isinstance(store, Path):
+            tokens = [command, "--store", str(store), *tokens[1:]]
+    if (
+        command in _SHELL_STORE_COMMANDS
+        and getattr(args, "verbose", False)
+        and "--verbose" not in tokens
+        and "-v" not in tokens
+    ):
+        tokens = [command, "-v", *tokens[1:]]
+    return tokens
+
+
+def _print_shell_help() -> None:
+    print("MAGI interactive shell")
+    print("Type a command, or type a plain question to run `chat`.")
+    print("Commands: ingest, chat, batch, compare, explain, profiles, replay, diff, eval")
+    print("Examples:")
+    print('  chat "Summarize MAGI in one sentence."')
+    print("  profiles security-review")
+    print("  ingest docs/briefing.txt")
+    print("  explain <run-id>")
+    print("Type `help <command>` for command help, or `exit` to quit.")
+
+
+def command_shell(args: argparse.Namespace) -> int:
+    print("MAGI interactive shell. Type `help` for commands, `exit` to quit.")
+    last_status = 0
+    while True:
+        try:
+            line = input("magi> ")
+        except EOFError:
+            print()
+            return last_status
+        except KeyboardInterrupt:
+            print()
+            return last_status
+
+        try:
+            tokens = _shell_command_tokens(line)
+        except ValueError as exc:
+            _print_error(f"Error: {exc}")
+            last_status = 1
+            continue
+        if not tokens:
+            continue
+        if tokens == ["exit"]:
+            return last_status
+        if tokens == ["help"]:
+            _print_shell_help()
+            continue
+
+        tokens = _apply_shell_defaults(tokens, args)
+        try:
+            last_status = main(tokens)
+        except SystemExit as exc:
+            code = exc.code
+            last_status = int(code) if isinstance(code, int) else 1
+    return last_status
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="MAGI terminal helper")
     parser.set_defaults(handler=None)
@@ -1032,6 +1206,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_options(parser, with_defaults=True)
 
     subparsers = parser.add_subparsers(dest="command")
+
+    shell_parser = subparsers.add_parser(
+        "shell", help="Open the interactive MAGI shell."
+    )
+    add_common_options(shell_parser, with_defaults=False)
+    shell_parser.set_defaults(handler=command_shell)
 
     ingest_parser = subparsers.add_parser(
         "ingest", help="Ingest one or more documents."
@@ -1184,6 +1364,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eval_run_parser.add_argument(
         "--cases",
+        "--file",
+        dest="cases",
         type=Path,
         required=True,
         help="Path to the evaluation dataset.",
@@ -1197,6 +1379,20 @@ def build_parser() -> argparse.ArgumentParser:
     eval_run_parser.add_argument("--model", help="Optional live model override.")
     eval_run_parser.add_argument("--report-out", type=Path, help="Optional JSON report path.")
     eval_run_parser.add_argument("--features-out", type=Path, help="Optional benchmark feature log path.")
+    eval_run_parser.add_argument("--min-overall-score", type=float)
+    eval_run_parser.add_argument("--min-verdict-accuracy", type=float)
+    eval_run_parser.add_argument("--min-requirement-pass-rate", type=float)
+    eval_run_parser.add_argument("--min-retrieval-hit-rate", type=float)
+    eval_run_parser.add_argument("--min-retrieval-top-source-accuracy", type=float)
+    eval_run_parser.add_argument("--min-retrieval-source-recall", type=float)
+    eval_run_parser.add_argument("--min-average-citation-hit-rate", type=float)
+    eval_run_parser.add_argument("--min-average-answer-support-score", type=float)
+    eval_run_parser.add_argument("--min-supported-answer-rate", type=float)
+    eval_run_parser.add_argument("--max-p50-latency-ms", type=float)
+    eval_run_parser.add_argument("--max-p95-latency-ms", type=float)
+    eval_run_parser.add_argument("--max-max-latency-ms", type=float)
+    eval_run_parser.add_argument("--max-average-cost-usd", type=float)
+    eval_run_parser.add_argument("--max-total-cost-usd", type=float)
     eval_run_parser.set_defaults(handler=command_eval_run)
 
     eval_compare_parser = eval_subparsers.add_parser(
@@ -1244,6 +1440,8 @@ def main(argv: List[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "handler", None):
+        if argv is None and sys.stdin.isatty():
+            return command_shell(args)
         parser.print_help()
         return 0
     store_path = getattr(args, "store", None)
