@@ -29,6 +29,7 @@ from magi.dspy_programs.schemas import (
     ResponderResponse,
     RetrievedEvidence,
 )
+from magi.eval.scenario_harness import ScenarioEvidence, ScenarioRetriever
 
 
 class _MalformedClient(LLMClient):
@@ -185,6 +186,177 @@ def test_magi_program_records_cache_hit_metadata():
 
     assert first_run["cache_hit"] is False
     assert second_run["cache_hit"] is True
+
+
+def test_magi_program_cache_isolates_retriever_configuration():
+    runtime.clear_cache()
+    embedder = HashingEmbedder(dimension=32)
+    store = InMemoryVectorStore(dim=32)
+    store.add(
+        [
+            VectorEntry(
+                document_id="alpha",
+                embedding=embedder("MAGI alpha evidence supports a guarded pilot."),
+                text="MAGI alpha evidence supports a guarded pilot.",
+                metadata={"source": "alpha", "team": "alpha"},
+            ),
+            VectorEntry(
+                document_id="beta",
+                embedding=embedder("MAGI beta evidence says the SLA is missing."),
+                text="MAGI beta evidence says the SLA is missing.",
+                metadata={"source": "beta", "team": "beta"},
+            ),
+        ]
+    )
+
+    alpha_program = MagiProgram(
+        retriever=RagRetriever(
+            embedder,
+            store,
+            default_metadata_filters={"team": "alpha"},
+        ),
+        force_stub=True,
+    )
+    beta_program = MagiProgram(
+        retriever=RagRetriever(
+            embedder,
+            store,
+            default_metadata_filters={"team": "beta"},
+        ),
+        force_stub=True,
+    )
+
+    alpha, _ = alpha_program("Summarize MAGI evidence.", constraints="")
+    beta, _ = beta_program("Summarize MAGI evidence.", constraints="")
+
+    assert "alpha evidence" in alpha.final_answer.lower()
+    assert "beta evidence" in beta.final_answer.lower()
+    assert beta_program.last_run_metadata["cache_hit"] is False
+
+
+def test_magi_program_cache_isolates_stub_and_live_modes():
+    runtime.clear_cache()
+    query = "What is MAGI live evidence?"
+
+    def retriever(_query, **_kwargs):
+        return "MAGI live evidence is grounded."
+
+    stub_program = MagiProgram(retriever=retriever, force_stub=True)
+    stub, _ = stub_program(query, constraints="")
+
+    client = _SequenceClient(
+        [
+            {
+                "analysis": "MAGI live evidence is grounded. [1]",
+                "answer_outline": ["Use [1]."],
+                "confidence": 0.9,
+                "evidence_quotes": ['[1] "MAGI live evidence is grounded."'],
+                "stance": "approve",
+                "actions": ["Answer with [1]."],
+            },
+            {
+                "plan": "Answer from MAGI live evidence. [1]",
+                "communication_plan": ["Cite [1]."],
+                "cost_estimate": "low",
+                "confidence": 0.9,
+                "stance": "approve",
+                "actions": ["Cite [1]."],
+            },
+            {
+                "risks": ["Low risk of over-claiming."],
+                "mitigations": ["Stay within [1]."],
+                "residual_risk": "low",
+                "confidence": 0.9,
+                "stance": "approve",
+                "actions": ["Stay within [1]."],
+                "outstanding_questions": [],
+            },
+            {
+                "verdict": "approve",
+                "justification": "MAGI live evidence is grounded. [1]",
+                "confidence": 0.9,
+                "final_answer": "MAGI live evidence is grounded. [1]",
+                "next_steps": ["Use the cited answer."],
+                "consensus_points": ["Grounded in [1]."],
+                "disagreements": [],
+                "residual_risk": "low",
+                "risks": ["Low risk of over-claiming."],
+                "mitigations": ["Stay within [1]."],
+            },
+            {
+                "final_answer": "MAGI live evidence is grounded. [1]",
+                "justification": "MAGI live evidence is grounded. [1]",
+                "next_steps": ["Use the cited answer."],
+            },
+        ]
+    )
+    live_program = MagiProgram(
+        retriever=retriever,
+        force_stub=False,
+        client=client,
+        enable_live_personas=True,
+    )
+    live, _ = live_program(query, constraints="")
+
+    assert stub_program.last_run_metadata["cache_hit"] is False
+    assert live_program.last_run_metadata["cache_hit"] is False
+    assert live.final_answer == "MAGI live evidence is grounded. [1]"
+    assert live.final_answer != stub.final_answer
+
+
+def test_magi_program_skips_live_responder_by_default():
+    client = _SequenceClient(
+        [
+            {
+                "analysis": "MAGI evidence is grounded. [1]",
+                "answer_outline": ["Use [1]."],
+                "confidence": 0.9,
+                "evidence_quotes": ['[1] "MAGI evidence is grounded."'],
+                "stance": "approve",
+                "actions": ["Answer with [1]."],
+            },
+            {
+                "plan": "Answer from MAGI evidence. [1]",
+                "communication_plan": ["Cite [1]."],
+                "cost_estimate": "low",
+                "confidence": 0.9,
+                "stance": "approve",
+                "actions": ["Cite [1]."],
+            },
+            {
+                "risks": ["Low risk of over-claiming."],
+                "mitigations": ["Stay within [1]."],
+                "residual_risk": "low",
+                "confidence": 0.9,
+                "stance": "approve",
+                "actions": ["Stay within [1]."],
+                "outstanding_questions": [],
+            },
+            {
+                "verdict": "approve",
+                "justification": "MAGI evidence is grounded. [1]",
+                "confidence": 0.9,
+                "final_answer": "MAGI evidence is grounded. [1]",
+                "next_steps": ["Use the cited answer."],
+                "consensus_points": ["Grounded in [1]."],
+                "disagreements": [],
+                "residual_risk": "low",
+                "risks": ["Low risk of over-claiming."],
+                "mitigations": ["Stay within [1]."],
+            },
+        ]
+    )
+    program = MagiProgram(
+        retriever=lambda query, **kwargs: "MAGI evidence is grounded.",
+        force_stub=False,
+        client=client,
+        enable_live_personas=True,
+    )
+
+    fused, _ = program("Summarize MAGI.", constraints="")
+
+    assert fused.final_answer == "MAGI evidence is grounded. [1]"
+    assert program.last_run_metadata["responder_mode"] == "deterministic"
 
 
 def test_normalize_persona_stance_rewrites_evidence_gap_reject_to_revise():
@@ -366,7 +538,9 @@ def test_normalize_responder_response_falls_back_when_answer_conflicts_with_appr
         response,
     )
 
-    assert normalized.final_answer == fusion.final_answer
+    assert normalized.final_answer != response.final_answer
+    assert "[1]" in normalized.final_answer
+    assert "human reviewer" in normalized.final_answer
 
 
 def test_live_program_falls_back_to_grounded_approve_answer_when_model_is_uncited():
@@ -422,6 +596,7 @@ def test_live_program_falls_back_to_grounded_approve_answer_when_model_is_uncite
         retriever=lambda query, **kwargs: "MAGI is a multi persona reasoning engine.",
         force_stub=False,
         client=client,
+        enable_live_personas=True,
     )
     fused, _ = program("What is MAGI?", constraints="")
 
@@ -429,3 +604,99 @@ def test_live_program_falls_back_to_grounded_approve_answer_when_model_is_uncite
     assert "[1]" in fused.final_answer
     assert "multi persona reasoning engine" in fused.final_answer.lower()
     assert "modified adjusted gross income" not in fused.final_answer.lower()
+
+
+def test_human_like_summary_uses_relevant_evidence_not_distractor():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="incident-review_notes",
+                    text=(
+                        "The incident review process collects customer impact, timeline, "
+                        "root cause, mitigations, and follow-up owners before leadership sign-off."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="unrelated_calendar",
+                    text="The team lunch calendar lists birthdays, office snacks, and optional Friday demos.",
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, _ = program(
+        "Can you summarize the incident review notes in one concise sentence?",
+        constraints="",
+    )
+
+    assert fused.verdict == "approve"
+    assert "[1]" in fused.final_answer
+    assert "birthday" not in fused.final_answer.lower()
+
+
+def test_guarded_decision_uses_control_evidence_and_skips_distractor():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="proposal_brief",
+                    text=(
+                        "The pilot proposal scopes the work to internal policy triage for four weeks, "
+                        "caps budget at 10k, and keeps a human reviewer on every decision."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="control_plan",
+                    text=(
+                        "Weekly evidence refreshes, rollback criteria, and audit logs are required "
+                        "guardrails before launch."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="travel_policy",
+                    text="The travel policy covers meal limits, hotel booking rules, and receipt deadlines.",
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, personas = program(
+        "Should we move forward with the internal policy triage pilot next month?",
+        constraints="Keep human review in the loop and stay under the approved budget.",
+    )
+
+    assert fused.verdict == "approve"
+    assert {persona.stance for persona in personas.values()} == {"approve"}
+    assert "travel policy" not in fused.final_answer.lower()
+    assert "[1]" in fused.final_answer and "[3]" in fused.final_answer
+
+
+def test_incomplete_decision_revises_instead_of_cautious_approval():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="proposal_note",
+                    text=(
+                        "The note says the current approval workflow is slow, but it does not include "
+                        "budget, owner, risk controls, or rollback plan."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="calendar_note",
+                    text="The calendar note lists planning meetings and social events.",
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, personas = program("Should we replace the approval workflow?", constraints="")
+
+    assert fused.verdict == "revise"
+    assert {persona.stance for persona in personas.values()} == {"revise"}
+    assert "calendar note" not in fused.final_answer.lower()
+    assert "proceeding cautiously" not in fused.final_answer.lower()
