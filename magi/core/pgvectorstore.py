@@ -3,11 +3,13 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import re
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, TypeGuard
 
 from .vectorstore import RetrievedChunk, VectorEntry
 
 _STATE_TABLE = "magi_vector_store_state"
+_TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 
 
 def _vector_literal(values: Sequence[float]) -> str:
@@ -52,6 +54,19 @@ def _metadata_filter_text(value: object) -> str:
     return str(value)
 
 
+def _query_terms(text: str, *, limit: int = 12) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in _TOKEN_RE.findall(text.lower()):
+        if len(token) <= 2 or token in seen:
+            continue
+        terms.append(token)
+        seen.add(token)
+        if len(terms) >= limit:
+            break
+    return terms
+
+
 class PgVectorStore:
     def __init__(self, dsn: str, dim: int, *, store_path: Path):
         if dim <= 0:
@@ -66,6 +81,7 @@ class PgVectorStore:
         self._entry_table = f"magi_vector_entries_{dim}"
         self._entry_index = f"{self._entry_table}_embedding_idx"
         self._metadata_index = f"{self._entry_table}_metadata_idx"
+        self._search_index = f"{self._entry_table}_search_idx"
         self._revision = 0
         self._ensure_schema()
 
@@ -133,6 +149,13 @@ class PgVectorStore:
                 )
                 cursor.execute(
                     f"""
+                    ALTER TABLE {self._entry_table}
+                    ADD COLUMN IF NOT EXISTS search_vector tsvector
+                    GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+                    """
+                )
+                cursor.execute(
+                    f"""
                     CREATE INDEX IF NOT EXISTS {self._entry_index}
                     ON {self._entry_table}
                     USING hnsw (embedding vector_cosine_ops)
@@ -143,6 +166,13 @@ class PgVectorStore:
                     CREATE INDEX IF NOT EXISTS {self._metadata_index}
                     ON {self._entry_table}
                     USING gin (metadata)
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS {self._search_index}
+                    ON {self._entry_table}
+                    USING gin (search_vector)
                     """
                 )
                 cursor.execute(
@@ -326,6 +356,159 @@ class PgVectorStore:
                     LIMIT %s
                     """,
                     (query_vector, *filter_params, query_vector, top_k),
+                )
+                rows = cursor.fetchall()
+        return [
+            RetrievedChunk(
+                document_id=str(document_id),
+                text=str(text),
+                score=float(score),
+                metadata=_coerce_metadata(metadata),
+            )
+            for document_id, text, metadata, score in rows
+        ]
+
+    def keyword_search(
+        self,
+        query: str,
+        top_k: int = 20,
+        *,
+        metadata_filters: Mapping[str, object] | None = None,
+    ) -> List[RetrievedChunk]:
+        if top_k <= 0:
+            return []
+        terms = _query_terms(query)
+        if not terms:
+            return []
+
+        filter_clauses = ["store_key = %s"]
+        filter_params: list[object] = [self.store_key]
+        for key, expected in (metadata_filters or {}).items():
+            if _is_filter_sequence(expected):
+                options = [_metadata_filter_text(item) for item in expected]
+                if not options:
+                    return []
+                placeholders = ", ".join(["%s"] * len(options))
+                filter_clauses.append(
+                    "(metadata ? %s AND jsonb_extract_path_text(metadata, %s) "
+                    f"IN ({placeholders}))"
+                )
+                filter_params.extend([key, key, *options])
+                continue
+            filter_clauses.append(
+                "(metadata ? %s AND jsonb_extract_path_text(metadata, %s) = %s)"
+            )
+            filter_params.extend([key, key, _metadata_filter_text(expected)])
+
+        where_clause = " AND ".join(
+            [
+                *filter_clauses,
+                "search_vector @@ websearch_to_tsquery('english', %s)",
+            ]
+        )
+        search_query = " ".join(terms)
+        with self._connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT
+                        document_id,
+                        text,
+                        metadata,
+                        ts_rank_cd(
+                            search_vector,
+                            websearch_to_tsquery('english', %s)
+                        ) AS score
+                    FROM {self._entry_table}
+                    WHERE {where_clause}
+                    ORDER BY score DESC, document_id
+                    LIMIT %s
+                    """,
+                    (
+                        search_query,
+                        *filter_params,
+                        search_query,
+                        top_k,
+                    ),
+                )
+                rows = cursor.fetchall()
+        return [
+            RetrievedChunk(
+                document_id=str(document_id),
+                text=str(text),
+                score=float(score),
+                metadata=_coerce_metadata(metadata),
+            )
+            for document_id, text, metadata, score in rows
+        ]
+
+    def page_search(
+        self,
+        page_numbers: Iterable[str],
+        top_k: int = 20,
+        *,
+        metadata_filters: Mapping[str, object] | None = None,
+    ) -> List[RetrievedChunk]:
+        if top_k <= 0:
+            return []
+        requested = {str(value).strip() for value in page_numbers if str(value).strip()}
+        if not requested:
+            return []
+
+        filter_clauses = ["store_key = %s"]
+        filter_params: list[object] = [self.store_key]
+        for key, expected in (metadata_filters or {}).items():
+            if _is_filter_sequence(expected):
+                options = [_metadata_filter_text(item) for item in expected]
+                if not options:
+                    return []
+                placeholders = ", ".join(["%s"] * len(options))
+                filter_clauses.append(
+                    "(metadata ? %s AND jsonb_extract_path_text(metadata, %s) "
+                    f"IN ({placeholders}))"
+                )
+                filter_params.extend([key, key, *options])
+                continue
+            filter_clauses.append(
+                "(metadata ? %s AND jsonb_extract_path_text(metadata, %s) = %s)"
+            )
+            filter_params.extend([key, key, _metadata_filter_text(expected)])
+
+        page_placeholders = ", ".join(["%s"] * len(requested))
+        match_clauses = [
+            f"jsonb_extract_path_text(metadata, 'page') IN ({page_placeholders})"
+        ]
+        match_params: list[object] = list(sorted(requested))
+        for value in sorted(requested):
+            label = f"%page {value}%"
+            suffix = f"%page-{value}%"
+            match_clauses.extend(
+                [
+                    "LOWER(text) LIKE %s",
+                    "LOWER(document_id) LIKE %s",
+                    "LOWER(COALESCE(jsonb_extract_path_text(metadata, 'source'), '')) LIKE %s",
+                ]
+            )
+            match_params.extend([label, suffix, suffix])
+
+        where_clause = " AND ".join(
+            [*filter_clauses, "(" + " OR ".join(match_clauses) + ")"]
+        )
+        with self._connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT
+                        document_id,
+                        text,
+                        metadata,
+                        1.2 AS score
+                    FROM {self._entry_table}
+                    WHERE {where_clause}
+                    ORDER BY document_id
+                    LIMIT %s
+                    """,
+                    (*filter_params, *match_params, top_k),
                 )
                 rows = cursor.fetchall()
         return [
