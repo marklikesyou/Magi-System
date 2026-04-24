@@ -40,6 +40,27 @@ def test_live_scenarios_suite_passes_in_stub_mode() -> None:
     assert report.summary.verdict_accuracy == 1.0
     assert report.summary.overall_score == 1.0
     assert report.summary.requirement_pass_rate == 1.0
+    assert report.summary.latency_p50_ms >= 0.0
+    assert report.summary.latency_p95_ms >= report.summary.latency_p50_ms
+    assert report.summary.latency_max_ms >= report.summary.latency_p50_ms
+    assert report.summary.average_estimated_cost_usd == 0.0
+    assert report.cases[0].latency_ms >= 0.0
+
+
+def test_production_scenarios_suite_passes_in_stub_mode() -> None:
+    dataset_path = (
+        Path(__file__).resolve().parents[1]
+        / "eval"
+        / "production_scenarios.yaml"
+    )
+    dataset = load_scenario_dataset(dataset_path)
+
+    report = run_scenario_suite(dataset, force_stub=True, requested_mode="stub")
+
+    assert report.summary.effective_mode == "stub"
+    assert report.summary.overall_score == 1.0
+    assert report.summary.verdict_accuracy == 1.0
+    assert report.summary.requirement_pass_rate == 1.0
 
 
 def test_run_scenarios_cli_writes_json_report(tmp_path: Path) -> None:
@@ -265,6 +286,8 @@ def test_run_scenario_suite_tracks_retrieved_sources_and_hits() -> None:
     assert report.summary.average_citation_hit_rate >= 1.0
     assert report.summary.average_answer_support_score > 0.2
     assert report.summary.supported_answer_rate == 1.0
+    assert report.summary.latency_p50_ms >= 0.0
+    assert report.summary.total_estimated_cost_usd == 0.0
 
 
 def test_run_scenario_suite_fails_when_required_source_is_not_retrieved() -> None:
