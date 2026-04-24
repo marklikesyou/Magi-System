@@ -42,6 +42,10 @@ The most relevant environment variables for production-style runs are:
 
 - `MAGI_PROVIDER_MAX_RETRIES` and `MAGI_PROVIDER_RETRY_INITIAL_DELAY` for provider retry policy.
 - `MAGI_PROVIDER_REQUESTS_PER_MINUTE` for provider-side throttling.
+- `MAGI_ENABLE_MODEL_ROUTING`, `MAGI_OPENAI_FAST_MODEL`, `MAGI_OPENAI_STRONG_MODEL`,
+  and `MAGI_OPENAI_HIGH_STAKES_MODEL` for route-aware live OpenAI model selection.
+- `MAGI_ENABLE_LIVE_PERSONAS` to opt into provider calls for each persona before fusion. It defaults to `false` so live runs use deterministic personas plus live fusion.
+- `MAGI_ENABLE_RESPONDER_LLM` to opt into the extra live responder call after fusion. It defaults to `false` so live runs use the faster deterministic responder.
 - `MAGI_DECISION_TRACE_DIR` to persist structured decision records from CLI runs.
 - `MAGI_RUN_ARTIFACT_DIR` to persist replayable run artifacts from CLI runs.
 - `MAGI_PROFILE_DIR` to expose workspace-local profile YAML files to the CLI.
@@ -72,13 +76,16 @@ uv run mypy magi
   - `python magi/eval/train_decision_model.py --cases /path/to/cases.yaml --model-out magi/decision/model_weights.json`
 - Run the end-to-end scenario harness against prompt-sensitive live scenarios:
   - `python magi/eval/run_scenarios.py --cases magi/eval/live_scenarios.yaml --mode auto --report-out artifacts/live_scenarios.json`
-  - `python magi/eval/run_scenarios.py --cases /path/to/scenarios.yaml --mode live --model gpt-4o-mini-2024-07-18`
+  - `python magi/eval/run_scenarios.py --cases /path/to/scenarios.yaml --mode live --model gpt-5-mini`
+- Run stricter production gates with latency/cost thresholds:
+  - `python magi/eval/run_scenarios.py --cases magi/eval/production_scenarios.yaml --mode stub --min-overall-score 1.0 --min-verdict-accuracy 1.0 --min-requirement-pass-rate 1.0 --max-p95-latency-ms 1000 --max-total-cost-usd 0.0`
 - Enforce the benchmark accuracy threshold in CI: `pytest magi/tests/test_decision_bench.py`
 - See `magi/eval/cases.template.yaml` and `magi/eval/scenarios.template.yaml` for dataset format guidance.
 
 ### Profiles and artifacts
 
 - Inspect built-in profiles: `python -m magi.app.cli profiles`
+- Open the native interactive shell: `magi`
 - Show one profile in detail: `python -m magi.app.cli profiles incident-review`
 - Compare multiple profiles on the same prompt: `python -m magi.app.cli compare "Should we deploy the pilot?" --profiles security-review exec-brief`
 - Explain a saved run: `python -m magi.app.cli explain <run-id>`
