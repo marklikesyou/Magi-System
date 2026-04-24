@@ -94,6 +94,14 @@ def test_eval_run_parser_accepts_file_alias_and_full_thresholds(tmp_path: Path) 
     assert args.max_average_cost_usd == 0.001
 
 
+def test_main_opens_shell_without_subcommand_on_tty(monkeypatch) -> None:
+    monkeypatch.setattr(cli.sys, "argv", ["magi"])
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(cli, "command_shell", lambda _args: 0)
+
+    assert cli.main(None) == 0
+
+
 def test_command_chat_json_output(monkeypatch, tmp_path: Path, capsys) -> None:
     decision = FinalDecision(
         verdict="revise",
