@@ -59,6 +59,41 @@ def test_parser_accepts_common_options_after_subcommand(tmp_path: Path) -> None:
     assert args.decision_record_out == record_path
 
 
+def test_eval_run_parser_accepts_file_alias_and_full_thresholds(tmp_path: Path) -> None:
+    cases_path = tmp_path / "production.yaml"
+
+    args = cli.build_parser().parse_args(
+        [
+            "eval",
+            "run",
+            "--kind",
+            "scenario",
+            "--file",
+            str(cases_path),
+            "--min-retrieval-top-source-accuracy",
+            "1.0",
+            "--min-retrieval-source-recall",
+            "1.0",
+            "--min-average-citation-hit-rate",
+            "1.0",
+            "--max-p50-latency-ms",
+            "100",
+            "--max-max-latency-ms",
+            "500",
+            "--max-average-cost-usd",
+            "0.001",
+        ]
+    )
+
+    assert args.cases == cases_path
+    assert args.min_retrieval_top_source_accuracy == 1.0
+    assert args.min_retrieval_source_recall == 1.0
+    assert args.min_average_citation_hit_rate == 1.0
+    assert args.max_p50_latency_ms == 100.0
+    assert args.max_max_latency_ms == 500.0
+    assert args.max_average_cost_usd == 0.001
+
+
 def test_command_chat_json_output(monkeypatch, tmp_path: Path, capsys) -> None:
     decision = FinalDecision(
         verdict="revise",
@@ -337,10 +372,60 @@ def test_parser_accepts_batch_and_route_options(tmp_path: Path) -> None:
     assert args.out == tmp_path / "results.jsonl"
 
 
+def test_parser_accepts_eval_scenario_thresholds(tmp_path: Path) -> None:
+    args = cli.build_parser().parse_args(
+        [
+            "eval",
+            "run",
+            "--kind",
+            "scenario",
+            "--cases",
+            str(tmp_path / "cases.yaml"),
+            "--min-overall-score",
+            "1.0",
+            "--max-p95-latency-ms",
+            "1000",
+        ]
+    )
+
+    assert args.kind == "scenario"
+    assert args.min_overall_score == 1.0
+    assert args.max_p95_latency_ms == 1000
+
+
 def test_parser_accepts_profiles_command() -> None:
     args = cli.build_parser().parse_args(["profiles", "security-review"])
 
     assert args.name == "security-review"
+
+
+def test_parser_accepts_shell_command(tmp_path: Path) -> None:
+    args = cli.build_parser().parse_args(
+        ["shell", "--store", str(tmp_path / "store.json")]
+    )
+
+    assert args.handler == cli.command_shell
+    assert args.store == tmp_path / "store.json"
+
+
+def test_shell_plain_text_defaults_to_chat() -> None:
+    assert cli._shell_command_tokens("Summarize MAGI") == ["chat", "Summarize MAGI"]
+    assert cli._shell_command_tokens("help chat") == ["chat", "--help"]
+    assert cli._shell_command_tokens("exit") == ["exit"]
+
+
+def test_shell_applies_session_store(tmp_path: Path) -> None:
+    tokens = cli._apply_shell_defaults(
+        ["chat", "Summarize MAGI"],
+        argparse.Namespace(store=tmp_path / "store.json", verbose=False),
+    )
+
+    assert tokens == [
+        "chat",
+        "--store",
+        str(tmp_path / "store.json"),
+        "Summarize MAGI",
+    ]
 
 
 def test_command_explain_renders_saved_artifact(tmp_path: Path, capsys) -> None:
