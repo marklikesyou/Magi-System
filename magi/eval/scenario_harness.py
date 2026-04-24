@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, List, Mapping, Sequence
 
 import yaml  # type: ignore[import-untyped]
@@ -235,6 +237,8 @@ class ScenarioCaseResult(BaseModel):
     citation_hit_rate: float = 0.0
     answer_support_score: float = 0.0
     answer_supported: bool = False
+    latency_ms: float = 0.0
+    program_run_ms: float = 0.0
     requires_human_review: bool = False
     review_reason: str = ""
     safe_evidence_count: int
@@ -274,6 +278,11 @@ class ScenarioSummary(BaseModel):
     average_citation_hit_rate: float = 0.0
     average_answer_support_score: float = 0.0
     supported_answer_rate: float = 0.0
+    latency_p50_ms: float = 0.0
+    latency_p95_ms: float = 0.0
+    latency_max_ms: float = 0.0
+    total_estimated_cost_usd: float = 0.0
+    average_estimated_cost_usd: float = 0.0
     token_stats: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -298,6 +307,7 @@ class _ScenarioExecution:
     citation_hit_rate: float = 0.0
     answer_support_score: float = 0.0
     answer_supported: bool = False
+    latency_ms: float = 0.0
 
 
 @dataclass
@@ -335,6 +345,21 @@ class _ScenarioCounters:
 class ScenarioRetriever:
     def __init__(self, evidence: Sequence[ScenarioEvidence]):
         self._evidence = list(evidence)
+        payload = [
+            {
+                "source": item.source,
+                "text": item.text,
+                "score": item.score,
+                "persona": item.persona or "",
+            }
+            for item in self._evidence
+        ]
+        self._cache_token = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def cache_token(self) -> str:
+        return f"scenario:{self._cache_token}"
 
     @staticmethod
     def _score_evidence(query: str, item: ScenarioEvidence) -> tuple[float, int, float]:
@@ -724,6 +749,27 @@ def _safe_ratio(numerator: float, denominator: int) -> float:
     return numerator / denominator
 
 
+def _percentile(values: Sequence[float], percentile: float) -> float:
+    cleaned = sorted(value for value in values if value >= 0.0)
+    if not cleaned:
+        return 0.0
+    if len(cleaned) == 1:
+        return cleaned[0]
+    rank = (len(cleaned) - 1) * max(0.0, min(1.0, percentile))
+    lower = int(rank)
+    upper = min(lower + 1, len(cleaned) - 1)
+    fraction = rank - lower
+    return cleaned[lower] + ((cleaned[upper] - cleaned[lower]) * fraction)
+
+
+def _token_cost(token_stats: Mapping[str, Any]) -> float:
+    try:
+        value = token_stats.get("estimated_cost_usd", 0.0)
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _evaluate_scenario_case(
     case: ScenarioCase,
     *,
@@ -742,6 +788,7 @@ def _evaluate_scenario_case(
         first_expected_source_rank,
         retrieval_source_recall,
     ) = _retrieval_expectations(case, retrieved_sources)
+    started = perf_counter()
     session = run_chat_session(
         case.query,
         case.constraints,
@@ -750,6 +797,8 @@ def _evaluate_scenario_case(
         model=model,
         client=client,
     )
+    measured_latency_ms = round((perf_counter() - started) * 1000.0, 3)
+    latency_ms = session.decision_trace.end_to_end_ms or measured_latency_ms
 
     final_answer = session.fused.final_answer
     justification = session.fused.justification
@@ -795,6 +844,8 @@ def _evaluate_scenario_case(
             citation_hit_rate=case_citation_hit_rate,
             answer_support_score=case_answer_support_score,
             answer_supported=answer_supported,
+            latency_ms=latency_ms,
+            program_run_ms=session.decision_trace.program_run_ms,
             requires_human_review=session.final_decision.requires_human_review,
             review_reason=session.final_decision.review_reason,
             safe_evidence_count=safe_evidence_count,
@@ -827,6 +878,7 @@ def _evaluate_scenario_case(
         citation_hit_rate=case_citation_hit_rate,
         answer_support_score=case_answer_support_score,
         answer_supported=answer_supported,
+        latency_ms=latency_ms,
     )
 
 
@@ -845,6 +897,9 @@ def _build_scenario_summary(
         sum(1 for check in item.checks if check.passed) for item in case_results
     )
     passed_cases = sum(1 for item in case_results if item.passed)
+    latency_values = [item.latency_ms for item in case_results]
+    token_stats = get_token_stats()
+    total_cost = _token_cost(token_stats)
     requirement_pass_rate = (
         1.0 if total_requirements == 0 else passed_requirements / total_requirements
     )
@@ -888,7 +943,12 @@ def _build_scenario_summary(
         supported_answer_rate=_safe_ratio(
             counters.supported_answers, counters.answer_support_evaluable_cases
         ),
-        token_stats=get_token_stats(),
+        latency_p50_ms=round(_percentile(latency_values, 0.5), 3),
+        latency_p95_ms=round(_percentile(latency_values, 0.95), 3),
+        latency_max_ms=round(max(latency_values, default=0.0), 3),
+        total_estimated_cost_usd=round(total_cost, 6),
+        average_estimated_cost_usd=round(_safe_ratio(total_cost, len(case_results)), 6),
+        token_stats=token_stats,
     )
 
 
@@ -935,7 +995,7 @@ def run_scenario_suite(
 
 def render_scenario_report(report: ScenarioReport) -> str:
     lines = [
-        "case_id\texpected\tpredicted\tpassed\tcitations\tcitation_hit_rate\tanswer_support\tsupported\tblocked\tretrieved\tretrieval_hits\tfirst_expected_rank\tsource_recall"
+        "case_id\texpected\tpredicted\tpassed\tcitations\tcitation_hit_rate\tanswer_support\tsupported\tlatency_ms\tblocked\tretrieved\tretrieval_hits\tfirst_expected_rank\tsource_recall"
     ]
     for item in report.cases:
         lines.append(
@@ -949,6 +1009,7 @@ def render_scenario_report(report: ScenarioReport) -> str:
                     f"{item.citation_hit_rate:.2f}",
                     f"{item.answer_support_score:.2f}",
                     "yes" if item.answer_supported else "no",
+                    f"{item.latency_ms:.3f}",
                     str(item.blocked_evidence_count),
                     str(item.retrieved_chunk_count),
                     str(item.retrieved_relevant_chunk_count),
@@ -981,6 +1042,12 @@ def render_scenario_report(report: ScenarioReport) -> str:
             "average_answer_support_score\t"
             f"{report.summary.average_answer_support_score:.4f}",
             f"supported_answer_rate\t{report.summary.supported_answer_rate:.2%}",
+            f"latency_p50_ms\t{report.summary.latency_p50_ms:.3f}",
+            f"latency_p95_ms\t{report.summary.latency_p95_ms:.3f}",
+            f"latency_max_ms\t{report.summary.latency_max_ms:.3f}",
+            f"total_estimated_cost_usd\t{report.summary.total_estimated_cost_usd:.6f}",
+            "average_estimated_cost_usd\t"
+            f"{report.summary.average_estimated_cost_usd:.6f}",
         ]
     )
     token_stats = report.summary.token_stats
