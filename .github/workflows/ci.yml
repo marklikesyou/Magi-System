@@ -44,6 +44,23 @@ jobs:
       - name: Run tests
         run: uv run pytest magi/tests/ -v --tb=short
 
+      - name: Run production scenario gates
+        if: ${{ matrix.python-version == '3.10' }}
+        run: |
+          uv run python magi/eval/run_scenarios.py \
+            --cases magi/eval/production_scenarios.yaml \
+            --mode stub \
+            --min-overall-score 1.0 \
+            --min-verdict-accuracy 1.0 \
+            --min-requirement-pass-rate 1.0 \
+            --min-retrieval-hit-rate 1.0 \
+            --min-retrieval-top-source-accuracy 1.0 \
+            --min-retrieval-source-recall 1.0 \
+            --min-average-answer-support-score 0.10 \
+            --max-p95-latency-ms 1000 \
+            --max-average-cost-usd 0.001 \
+            --max-total-cost-usd 0.0
+
       - name: Run live provider smoke test
         if: ${{ matrix.python-version == '3.13' && (secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') }}
         env:
@@ -74,7 +91,9 @@ jobs:
             --min-retrieval-source-recall 1.0 \
             --min-average-citation-hit-rate 1.0 \
             --min-average-answer-support-score 0.20 \
-            --min-supported-answer-rate 1.0
+            --min-supported-answer-rate 1.0 \
+            --max-p95-latency-ms 60000 \
+            --max-average-cost-usd 0.02
 
       - name: Upload live scenario report
         if: ${{ always() && matrix.python-version == '3.13' && (secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') }}
