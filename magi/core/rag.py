@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -50,7 +51,19 @@ class RagRetriever:
 
     def cache_token(self) -> str:
         revision = getattr(self.store, "revision", "unknown")
-        return f"{id(self.store)}:{revision}"
+        token_payload = {
+            "store_id": id(self.store),
+            "revision": revision,
+            "default_metadata_filters": self.default_metadata_filters,
+            "source_weights": self.source_weights,
+            "preferred_top_k": getattr(self, "preferred_top_k", None),
+            "embedder": {
+                "class": self.embedder.__class__.__qualname__,
+                "dimension": getattr(self.embedder, "dimension", None),
+                "model": getattr(self.embedder, "model", None),
+            },
+        }
+        return json.dumps(token_payload, sort_keys=True, default=str)
 
     def _combined_filters(
         self, metadata_filters: Mapping[str, object] | None
@@ -108,34 +121,68 @@ class RagRetriever:
             top_k=semantic_top_k,
             metadata_filters=metadata_filters,
         )
-        candidates: dict[str, RetrievedChunk] = {
-            item.document_id: item for item in semantic_results
-        }
-        for entry in self.store.entries:
-            if not metadata_matches_filters(entry.metadata, metadata_filters):
-                continue
-            chunk = RetrievedChunk(
-                document_id=entry.document_id,
-                text=entry.text,
-                score=0.0,
-                metadata=entry.metadata,
+        keyword_search = getattr(self.store, "keyword_search", None)
+        lexical_results: list[RetrievedChunk]
+        if callable(keyword_search):
+            lexical_results = keyword_search(
+                query,
+                top_k=max(top_k * 8, 40),
+                metadata_filters=metadata_filters,
             )
-            lexical = self._lexical_score(query, chunk)
-            if lexical <= 0.0 and entry.document_id not in candidates:
+        else:
+            lexical_results = []
+            for entry in self.store.entries:
+                if not metadata_matches_filters(entry.metadata, metadata_filters):
+                    continue
+                base_chunk = RetrievedChunk(
+                    document_id=entry.document_id,
+                    text=entry.text,
+                    score=0.0,
+                    metadata=entry.metadata,
+                )
+                lexical_score = self._lexical_score(query, base_chunk)
+                if lexical_score <= 0.0:
+                    continue
+                chunk = RetrievedChunk(
+                    document_id=entry.document_id,
+                    text=entry.text,
+                    score=lexical_score,
+                    metadata=entry.metadata,
+                )
+                lexical_results.append(chunk)
+
+        semantic_by_id = {item.document_id: item for item in semantic_results}
+        lexical_by_id = {item.document_id: item for item in lexical_results}
+        candidate_ids = list(
+            dict.fromkeys(
+                [item.document_id for item in semantic_results]
+                + [item.document_id for item in lexical_results]
+            )
+        )
+        candidates: dict[str, RetrievedChunk] = {}
+        for document_id in candidate_ids:
+            existing = semantic_by_id.get(document_id)
+            lexical_chunk = lexical_by_id.get(document_id)
+            candidate = existing or lexical_chunk
+            if candidate is None:
                 continue
-            existing = candidates.get(entry.document_id)
             semantic = 0.0 if existing is None else max(0.0, float(existing.score))
-            section_boost = self._section_boost(query, chunk)
-            source_boost = self._source_weight(chunk)
+            lexical = (
+                max(0.0, float(lexical_chunk.score))
+                if lexical_chunk is not None
+                else self._lexical_score(query, candidate)
+            )
+            section_boost = self._section_boost(query, candidate)
+            source_boost = self._source_weight(candidate)
             hybrid = (semantic * 0.65) + (lexical * 0.35) + section_boost + source_boost
-            metadata = dict(chunk.metadata)
+            metadata = dict(candidate.metadata)
             metadata["semantic_score"] = round(semantic, 4)
             metadata["lexical_score"] = round(lexical, 4)
             metadata["section_boost"] = round(section_boost, 4)
             metadata["source_boost"] = round(source_boost, 4)
-            candidates[entry.document_id] = RetrievedChunk(
-                document_id=chunk.document_id,
-                text=chunk.text,
+            candidates[document_id] = RetrievedChunk(
+                document_id=candidate.document_id,
+                text=candidate.text,
                 score=hybrid,
                 metadata=metadata,
             )
@@ -164,35 +211,46 @@ class RagRetriever:
             match.group(1)
             for match in re.finditer(r"page\s+(\d+)", query, re.IGNORECASE)
         }
+        page_tokens = {f"page {value}" for value in page_numbers}
         if page_numbers:
-            page_tokens = {f"page {value}" for value in page_numbers}
-            page_suffixes = {f"#page-{value}" for value in page_numbers}
-            matched: list[RetrievedChunk] = []
-            for entry in self.store.entries:
-                if not metadata_matches_filters(entry.metadata, combined_filters):
-                    continue
-                entry_id = entry.document_id.lower()
-                lower_text = entry.text.lower()
-                matched_request = False
-                for token in page_tokens:
-                    token_lower = token.lower()
-                    suffix = token_lower.replace(" ", "-")
-                    if (
-                        token_lower in lower_text
-                        or suffix in entry_id
-                        or any(suffix_alt in entry_id for suffix_alt in page_suffixes)
-                    ):
-                        matched_request = True
-                        break
-                if matched_request:
-                    matched.append(
-                        RetrievedChunk(
-                            document_id=entry.document_id,
-                            text=entry.text,
-                            score=1.2,
-                            metadata=entry.metadata,
+            page_search = getattr(self.store, "page_search", None)
+            if callable(page_search):
+                matched = page_search(
+                    page_numbers,
+                    top_k=max(top_k * 4, 20),
+                    metadata_filters=combined_filters,
+                )
+            else:
+                page_suffixes = {f"#page-{value}" for value in page_numbers}
+                matched = []
+                for entry in self.store.entries:
+                    if not metadata_matches_filters(entry.metadata, combined_filters):
+                        continue
+                    entry_id = entry.document_id.lower()
+                    lower_text = entry.text.lower()
+                    matched_request = False
+                    for token in page_tokens:
+                        token_lower = token.lower()
+                        suffix = token_lower.replace(" ", "-")
+                        if (
+                            token_lower in lower_text
+                            or suffix in entry_id
+                            or any(
+                                suffix_alt in entry_id
+                                for suffix_alt in page_suffixes
+                            )
+                        ):
+                            matched_request = True
+                            break
+                    if matched_request:
+                        matched.append(
+                            RetrievedChunk(
+                                document_id=entry.document_id,
+                                text=entry.text,
+                                score=1.2,
+                                metadata=entry.metadata,
+                            )
                         )
-                    )
             if matched:
                 seen: set[tuple[str, str]] = set()
                 combined: list[RetrievedChunk] = []
