@@ -28,9 +28,9 @@ def _bounded_rate(value: str) -> float:
 
 def _threshold_failures(
     report, args: argparse.Namespace
-) -> list[tuple[str, float, float]]:
+) -> list[tuple[str, float, float, str]]:
     summary = report.summary
-    thresholds = {
+    min_thresholds = {
         "overall_score": args.min_overall_score,
         "verdict_accuracy": args.min_verdict_accuracy,
         "requirement_pass_rate": args.min_requirement_pass_rate,
@@ -41,13 +41,26 @@ def _threshold_failures(
         "average_answer_support_score": args.min_average_answer_support_score,
         "supported_answer_rate": args.min_supported_answer_rate,
     }
-    failures: list[tuple[str, float, float]] = []
-    for field, minimum in thresholds.items():
+    max_thresholds = {
+        "latency_p50_ms": args.max_p50_latency_ms,
+        "latency_p95_ms": args.max_p95_latency_ms,
+        "latency_max_ms": args.max_max_latency_ms,
+        "average_estimated_cost_usd": args.max_average_cost_usd,
+        "total_estimated_cost_usd": args.max_total_cost_usd,
+    }
+    failures: list[tuple[str, float, float, str]] = []
+    for field, minimum in min_thresholds.items():
         if minimum is None:
             continue
         actual = float(getattr(summary, field))
         if actual < minimum:
-            failures.append((field, actual, minimum))
+            failures.append((field, actual, minimum, "minimum"))
+    for field, maximum in max_thresholds.items():
+        if maximum is None:
+            continue
+        actual = float(getattr(summary, field))
+        if actual > maximum:
+            failures.append((field, actual, maximum, "maximum"))
     return failures
 
 
@@ -57,6 +70,8 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--cases",
+        "--file",
+        dest="cases",
         type=Path,
         required=True,
         help="Path to YAML dataset containing scenario cases.",
@@ -121,6 +136,31 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         type=_bounded_rate,
         help="Fail if supported_answer_rate falls below this threshold.",
     )
+    parser.add_argument(
+        "--max-p50-latency-ms",
+        type=float,
+        help="Fail if latency_p50_ms exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--max-p95-latency-ms",
+        type=float,
+        help="Fail if latency_p95_ms exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--max-max-latency-ms",
+        type=float,
+        help="Fail if latency_max_ms exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--max-average-cost-usd",
+        type=float,
+        help="Fail if average_estimated_cost_usd exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--max-total-cost-usd",
+        type=float,
+        help="Fail if total_estimated_cost_usd exceeds this threshold.",
+    )
     return parser.parse_args(argv)
 
 
@@ -145,9 +185,9 @@ def main(argv: List[str] | None = None) -> int:
         print(f"report_saved\t{args.report_out}")
     failures = _threshold_failures(report, args)
     if failures:
-        for field, actual, minimum in failures:
+        for field, actual, threshold, direction in failures:
             print(
-                f"threshold_failed\t{field}\tactual={actual:.4f}\tminimum={minimum:.4f}",
+                f"threshold_failed\t{field}\tactual={actual:.4f}\t{direction}={threshold:.4f}",
                 file=sys.stderr,
             )
         return 1
