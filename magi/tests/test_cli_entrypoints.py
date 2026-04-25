@@ -69,6 +69,23 @@ def test_parser_accepts_setup_command() -> None:
     assert args.status is True
 
 
+def test_parser_accepts_friendly_aliases(tmp_path: Path) -> None:
+    ask_args = cli.build_parser().parse_args(
+        ["ask", "Summarize MAGI", "--store", str(tmp_path / "store.json")]
+    )
+    docs_args = cli.build_parser().parse_args(
+        ["docs", "add", str(tmp_path / "brief.txt")]
+    )
+    runs_args = cli.build_parser().parse_args(["runs", "show", "run-123"])
+    status_args = cli.build_parser().parse_args(["status"])
+
+    assert ask_args.handler == cli.command_chat
+    assert docs_args.handler == cli.command_ingest
+    assert runs_args.handler == cli.command_explain
+    assert runs_args.artifact == "run-123"
+    assert status_args.handler == cli.command_status
+
+
 def test_command_setup_writes_user_api_key(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
@@ -94,6 +111,74 @@ def test_command_setup_writes_user_api_key(
     cli.get_settings.cache_clear()
 
 
+def test_command_setup_reset_removes_saved_provider_keys(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MAGI_CONFIG_DIR", str(tmp_path / "config"))
+    config_file = tmp_path / "config" / ".env"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        'OPENAI_API_KEY="sk-test-key"\nGOOGLE_API_KEY="google-key"\n',
+        encoding="utf-8",
+    )
+    cli.get_settings.cache_clear()
+
+    status = cli.command_setup(
+        argparse.Namespace(
+            provider="openai",
+            api_key="",
+            status=False,
+            check=False,
+            reset=True,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert "Removed OPENAI_API_KEY" in captured.out
+    content = config_file.read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY" not in content
+    assert "GOOGLE_API_KEY" in content
+    cli.get_settings.cache_clear()
+
+
+def test_command_status_reports_ready_store(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    monkeypatch.setattr(cli, "_module_available", lambda _module_name: True)
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(
+            openai_api_key="sk-test-key",
+            google_api_key="",
+            vector_db_url="",
+            run_artifact_dir=str(tmp_path / "artifacts"),
+            decision_trace_dir="",
+            profile_dir="",
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_store_bundle",
+        lambda _path: ({"entry_count": 3}, []),
+    )
+    monkeypatch.setattr(cli, "user_env_file", lambda: tmp_path / "config" / ".env")
+
+    status = cli.command_status(
+        argparse.Namespace(store=tmp_path / "store.json", verbose=False)
+    )
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert "MAGI status" in captured.out
+    assert "Provider ready: yes" in captured.out
+    assert "OpenAI API key: set" in captured.out
+    assert "Store backend: local json + numpy exact search" in captured.out
+    assert "Store entries: 3" in captured.out
+
+
 def test_main_requires_provider_setup_for_chat(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
@@ -112,6 +197,45 @@ def test_main_requires_provider_setup_for_chat(
     assert status == 1
     assert "No AI provider API key is configured" in captured.err
     assert "magi setup" in captured.err
+
+
+def test_command_chat_empty_store_suggests_ingest(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(decision_trace_dir="", run_artifact_dir=""),
+    )
+    monkeypatch.setattr(cli, "build_embedder", lambda _settings: HashingEmbedder())
+    monkeypatch.setattr(
+        cli,
+        "initialize_store",
+        lambda _store, _embedder: InMemoryVectorStore(dim=384),
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_chat_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("run_chat_session should not run with an empty store")
+        ),
+    )
+
+    status = cli.command_chat(
+        argparse.Namespace(
+            query="Summarize MAGI",
+            constraints="",
+            store=tmp_path / "store.json",
+            decision_record_out=None,
+            verbose=False,
+            json=False,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "No documents are available" in captured.err
+    assert "magi ingest" in captured.err
 
 
 def test_eval_run_parser_accepts_file_alias_and_full_thresholds(tmp_path: Path) -> None:
