@@ -1,6 +1,29 @@
+import os
 from functools import lru_cache
+from pathlib import Path
+from typing import Any, cast
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def user_config_dir() -> Path:
+    """Return the user-level MAGI config directory."""
+    explicit = os.getenv("MAGI_CONFIG_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    xdg_config_home = os.getenv("XDG_CONFIG_HOME", "").strip()
+    if xdg_config_home:
+        return Path(xdg_config_home).expanduser() / "magi-system"
+    return Path.home() / ".config" / "magi-system"
+
+
+def user_env_file() -> Path:
+    return user_config_dir() / ".env"
+
+
+def settings_env_files() -> tuple[Path | str, ...]:
+    return (user_env_file(), ".env", ".env.local")
 
 
 class Settings(BaseSettings):
@@ -141,4 +164,4 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    return cast(Any, Settings)(_env_file=settings_env_files())

@@ -59,6 +59,61 @@ def test_parser_accepts_common_options_after_subcommand(tmp_path: Path) -> None:
     assert args.decision_record_out == record_path
 
 
+def test_parser_accepts_setup_command() -> None:
+    args = cli.build_parser().parse_args(
+        ["setup", "--provider", "google", "--status"]
+    )
+
+    assert args.handler == cli.command_setup
+    assert args.provider == "google"
+    assert args.status is True
+
+
+def test_command_setup_writes_user_api_key(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MAGI_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(cli, "_module_available", lambda _module_name: True)
+    cli.get_settings.cache_clear()
+
+    status = cli.command_setup(
+        argparse.Namespace(
+            provider="openai",
+            api_key="sk-test-key",
+            status=False,
+            check=False,
+        )
+    )
+
+    captured = capsys.readouterr()
+    config_file = tmp_path / "config" / ".env"
+    assert status == 0
+    assert "MAGI provider setup is ready." in captured.out
+    assert 'OPENAI_API_KEY="sk-test-key"' in config_file.read_text(encoding="utf-8")
+    cli.get_settings.cache_clear()
+
+
+def test_main_requires_provider_setup_for_chat(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    monkeypatch.delenv("MAGI_ALLOW_OFFLINE", raising=False)
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(openai_api_key="", google_api_key=""),
+    )
+
+    status = cli.main(
+        ["chat", "Summarize MAGI", "--store", str(tmp_path / "store.json")]
+    )
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "No AI provider API key is configured" in captured.err
+    assert "magi setup" in captured.err
+
+
 def test_eval_run_parser_accepts_file_alias_and_full_thresholds(tmp_path: Path) -> None:
     cases_path = tmp_path / "production.yaml"
 
@@ -585,6 +640,7 @@ def test_run_magi_skips_constraints_prompt_when_query_is_provided(
         return 0
 
     monkeypatch.setattr(run_magi, "prompt_text", fail_prompt)
+    monkeypatch.setattr(run_magi, "ensure_provider_setup", lambda: True)
     monkeypatch.setattr(run_magi, "command_ingest", fake_ingest)
     monkeypatch.setattr(run_magi, "command_chat", fake_chat)
 
@@ -617,6 +673,7 @@ def test_run_magi_returns_ingest_failure_without_calling_chat(
 
     monkeypatch.setattr(run_magi, "command_ingest", fake_ingest)
     monkeypatch.setattr(run_magi, "command_chat", fail_chat)
+    monkeypatch.setattr(run_magi, "ensure_provider_setup", lambda: True)
 
     status = run_magi.main(
         [

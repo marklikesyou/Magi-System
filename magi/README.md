@@ -14,9 +14,23 @@ The current codebase is a working CLI-oriented prototype with offline fallback, 
 
 ## Getting started
 
-1. Install base dependencies: `uv sync --extra dev`
-2. Add provider extras only if needed: `uv sync --extra openai` or `uv sync --extra google` (add `--extra torch` for calibrators).
-3. Create a local environment file from the example template: `cp .env.example .env.local`
+Install the user-level CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marklikesyou/Magi-System/main/scripts/install.sh | sh
+```
+
+Then configure an AI provider key once:
+
+```bash
+magi setup
+```
+
+For local development from a checkout:
+
+1. Install dependencies: `uv sync --extra dev --extra openai --extra google`
+2. Optional calibrator training: `uv sync --extra torch`
+3. Configure a provider key: `uv run magi setup`
 4. Ingest documents and chat with them from the terminal:
 
 ```bash
@@ -29,25 +43,19 @@ python -m magi.app.cli compare "Should we deploy the latest patch?" --include-de
 ```
 
 The native CLI command is also available through the package entry point. After
-`uv sync`, activate the environment and run:
+install and setup, run:
 
 ```bash
-source .venv/bin/activate
 magi
 ```
 
 `magi` opens the interactive shell on a real terminal. Without activating the
 environment, use `uv run magi`. For a user-level command outside the repository,
-run `uv tool install -e .` once, then run `magi` from any shell. For scripts or
-piped input, use `magi shell` to force shell mode.
+run `uv tool install --force "magi-system[openai,google] @ git+https://github.com/marklikesyou/Magi-System.git@main"` once, then run `magi setup` and `magi` from any shell. For scripts or piped input, use `magi shell` to force shell mode.
 
-By default the system stays completely offline using a deterministic hashing embedder and a deterministic reasoning fallback. To activate provider-backed reasoning, set OpenAI or Google credentials in `.env.local` and run commands with `MAGI_FORCE_DSPY_STUB=0`; OpenAI credentials are still required for provider-backed embeddings. Use `MAGI_FORCE_HASH_EMBEDDER=1` if you ever need to fall back to hashing.
+MAGI requires an OpenAI or Google key before running user-facing ingest/chat workflows. `magi setup` writes the key to `~/.config/magi-system/.env`; project-local `.env` and `.env.local` files still override that user config during repository development. Use `MAGI_ALLOW_OFFLINE=1` with `MAGI_FORCE_DSPY_STUB=1` and `MAGI_FORCE_HASH_EMBEDDER=1` only for local offline development or CI.
 
-```bash
-export MAGI_FORCE_DSPY_STUB=0
-python -m magi.app.cli ingest docs/briefing.pdf
-python -m magi.app.cli chat "Should we deploy the latest patch?" --constraints "Budget <= 50k"
-```
+The default local vector store persists entries as JSON and builds a NumPy matrix for exact cosine search at runtime. Set `DATABASE_URL` to switch to the PostgreSQL + pgvector backend for larger shared stores.
 
 ### Runtime controls
 

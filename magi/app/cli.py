@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 import csv
 from datetime import datetime, timezone
+import getpass
+import importlib.util
 import json
+import os
 import re
 import shlex
 from pathlib import Path
@@ -21,7 +24,7 @@ from magi.app.artifacts import (
 )
 from magi.app.presentation import format_chat_report, response_format_guidance
 from magi.app.service import ChatSessionResult, DecisionTrace, run_chat_session
-from magi.core.config import Settings, get_settings
+from magi.core.config import Settings, get_settings, user_env_file
 from magi.core.embeddings import HashingEmbedder, build_embedder
 from magi.core.profiles import Profile, list_profiles, load_profile
 from magi.core.rag import RagRetriever
@@ -55,6 +58,12 @@ from magi.eval.scenario_harness import (
 )
 
 DEFAULT_STORE = Path(__file__).resolve().parents[1] / "storage" / "vector_store.json"
+_SETUP_PROVIDERS = {
+    "openai": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+}
+_PROVIDER_REQUIRED_COMMANDS = {"ingest", "chat", "batch", "compare", "replay"}
+_ENV_KEY_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 
 _PERSONA_TAG_RE = re.compile(
@@ -65,6 +74,178 @@ _PERSONA_TAG_RE = re.compile(
 
 def _strip_persona_tags(text: str) -> str:
     return _PERSONA_TAG_RE.sub("", text).strip()
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def _offline_mode_allowed() -> bool:
+    return _truthy(os.getenv("MAGI_ALLOW_OFFLINE", ""))
+
+
+def _provider_setup_issue(settings: Settings) -> str:
+    openai_key = str(getattr(settings, "openai_api_key", "") or "").strip()
+    google_key = str(getattr(settings, "google_api_key", "") or "").strip()
+
+    if openai_key:
+        if not _module_available("openai"):
+            return (
+                "OPENAI_API_KEY is set, but the openai package is not installed. "
+                "Reinstall with `magi-system[openai]` or rerun the curl installer."
+            )
+        return ""
+    if google_key:
+        if not _module_available("google.genai"):
+            return (
+                "GOOGLE_API_KEY is set, but the google-genai package is not installed. "
+                "Reinstall with `magi-system[google]` or rerun the curl installer."
+            )
+        return ""
+    return "No AI provider API key is configured."
+
+
+def _requires_provider_setup(args: argparse.Namespace) -> bool:
+    command = str(getattr(args, "command", "") or "")
+    if command in _PROVIDER_REQUIRED_COMMANDS:
+        return True
+    if command == "eval":
+        return (
+            str(getattr(args, "eval_command", "") or "") == "run"
+            and str(getattr(args, "mode", "") or "") == "live"
+        )
+    return False
+
+
+def ensure_provider_setup() -> bool:
+    if _offline_mode_allowed():
+        return True
+
+    issue = _provider_setup_issue(get_settings())
+    if not issue:
+        return True
+
+    _print_error(f"Error: {issue}")
+    _print_error("Run `magi setup` to save an OpenAI or Google API key before using MAGI.")
+    _print_error(f"Config file: {user_env_file()}")
+    return False
+
+
+def _quote_env_value(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _write_user_env_value(key: str, value: str) -> Path:
+    path = user_env_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    else:
+        lines = [
+            "# MAGI user configuration.\n",
+            "# Managed by `magi setup`.\n",
+            "\n",
+        ]
+
+    replacement = f"{key}={_quote_env_value(value)}\n"
+    wrote_key = False
+    for index, line in enumerate(lines):
+        match = _ENV_KEY_RE.match(line)
+        if match and match.group(1) == key:
+            lines[index] = replacement
+            wrote_key = True
+            break
+    if not wrote_key:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] = f"{lines[-1]}\n"
+        lines.append(replacement)
+
+    path.write_text("".join(lines), encoding="utf-8")
+    return path
+
+
+def _prompt_provider() -> str:
+    if not sys.stdin.isatty():
+        return ""
+    raw = input("AI provider [openai/google] (openai): ").strip().lower()
+    provider = raw or "openai"
+    if provider in {"o", "openai"}:
+        return "openai"
+    if provider in {"g", "google", "gemini"}:
+        return "google"
+    return provider
+
+
+def command_setup(args: argparse.Namespace) -> int:
+    try:
+        settings = get_settings()
+        issue = _provider_setup_issue(settings)
+        config_path = user_env_file()
+
+        if getattr(args, "status", False):
+            print(f"Config file: {config_path}")
+            print(
+                "OpenAI API key: "
+                f"{'set' if str(getattr(settings, 'openai_api_key', '') or '').strip() else 'unset'}"
+            )
+            print(
+                "Google API key: "
+                f"{'set' if str(getattr(settings, 'google_api_key', '') or '').strip() else 'unset'}"
+            )
+            print(f"Ready: {'yes' if not issue else 'no'}")
+            if issue:
+                print(f"Issue: {issue}")
+            return 0
+
+        if getattr(args, "check", False):
+            if issue:
+                _print_error(f"Error: {issue}")
+                _print_error(f"Config file: {config_path}")
+                return 1
+            print("MAGI provider setup is ready.")
+            return 0
+
+        provider = str(getattr(args, "provider", "") or "").strip().lower()
+        if not provider:
+            provider = _prompt_provider()
+        if provider not in _SETUP_PROVIDERS:
+            _print_error("Error: provider must be `openai` or `google`.")
+            return 1
+
+        env_name = _SETUP_PROVIDERS[provider]
+        api_key = str(getattr(args, "api_key", "") or "").strip()
+        if not api_key:
+            if not sys.stdin.isatty():
+                _print_error(
+                    f"Error: pass --provider {provider} --api-key <key>, or run `magi setup` interactively."
+                )
+                return 1
+            api_key = getpass.getpass(f"{env_name}: ").strip()
+        if not api_key:
+            _print_error("Error: API key cannot be empty.")
+            return 1
+
+        path = _write_user_env_value(env_name, api_key)
+        get_settings.cache_clear()
+        print(f"Saved {env_name} to {path}")
+
+        package_issue = _provider_setup_issue(get_settings())
+        if package_issue:
+            _print_error(f"Warning: {package_issue}")
+            return 1
+        print("MAGI provider setup is ready.")
+        return 0
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
 
 
 def _truncate_trace_text(text: object, limit: int = 120) -> str:
@@ -1207,6 +1388,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command")
 
+    setup_parser = subparsers.add_parser(
+        "setup", help="Save or verify the AI provider key used by MAGI."
+    )
+    setup_parser.add_argument(
+        "--provider",
+        choices=tuple(_SETUP_PROVIDERS),
+        help="AI provider to configure.",
+    )
+    setup_parser.add_argument(
+        "--api-key",
+        help="API key to save. Omit to enter it securely in an interactive terminal.",
+    )
+    setup_parser.add_argument(
+        "--status",
+        action="store_true",
+        default=False,
+        help="Print provider setup status without revealing key values.",
+    )
+    setup_parser.add_argument(
+        "--check",
+        action="store_true",
+        default=False,
+        help="Exit successfully only when MAGI has a usable provider key.",
+    )
+    setup_parser.set_defaults(handler=command_setup)
+
     shell_parser = subparsers.add_parser(
         "shell", help="Open the interactive MAGI shell."
     )
@@ -1444,6 +1651,8 @@ def main(argv: List[str] | None = None) -> int:
             return command_shell(args)
         parser.print_help()
         return 0
+    if _requires_provider_setup(args) and not ensure_provider_setup():
+        return 1
     store_path = getattr(args, "store", None)
     if isinstance(store_path, Path):
         store_path.parent.mkdir(parents=True, exist_ok=True)

@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 from typing import Iterable, List
 
-from magi.app.cli import DEFAULT_STORE, command_chat, command_ingest
+from magi.app.cli import DEFAULT_STORE, command_chat, command_ingest, ensure_provider_setup
 
 
 def prompt_list(message: str) -> List[str]:
@@ -60,6 +60,8 @@ def main(argv: List[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     args.store.parent.mkdir(parents=True, exist_ok=True)
+    if not ensure_provider_setup():
+        return 1
 
     docs = args.docs or prompt_list(
         "Enter document paths (comma-separated), or leave blank: "

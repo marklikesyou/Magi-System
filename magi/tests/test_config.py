@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from magi.core.config import Settings
+from magi.core.config import Settings, get_settings, user_env_file
 
 
 def test_settings_default_runtime_controls() -> None:
@@ -60,3 +60,17 @@ def test_settings_read_runtime_controls_from_env(monkeypatch) -> None:
     assert settings.decision_trace_dir == "/tmp/magi-traces"
     assert settings.run_artifact_dir == "/tmp/magi-artifacts"
     assert settings.profile_dir == "/tmp/magi-profiles"
+
+
+def test_get_settings_reads_user_config_file(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MAGI_CONFIG_DIR", str(tmp_path / "config"))
+    config_file = user_env_file()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text('GOOGLE_API_KEY="google-test-key"\n', encoding="utf-8")
+
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    assert settings.google_api_key == "google-test-key"
+    get_settings.cache_clear()

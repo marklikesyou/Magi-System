@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Protocol, Sequence, TypeGuard
 
+import numpy as np
+
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 
 
@@ -156,7 +158,50 @@ class InMemoryVectorStore:
     def __init__(self, dim: int):
         self.dim = dim
         self._entries: List[VectorEntry] = []
+        self._embedding_matrix = np.empty((0, dim), dtype=np.float32)
+        self._normalized_matrix = np.empty((0, dim), dtype=np.float32)
         self._revision = 0
+
+    def _rebuild_matrix(self) -> None:
+        if not self._entries:
+            self._embedding_matrix = np.empty((0, self.dim), dtype=np.float32)
+            self._normalized_matrix = np.empty((0, self.dim), dtype=np.float32)
+            return
+
+        matrix = np.asarray(
+            [entry.embedding for entry in self._entries],
+            dtype=np.float32,
+        )
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        safe_norms = np.where(norms == 0.0, np.float32(1.0), norms)
+        self._embedding_matrix = matrix
+        self._normalized_matrix = (matrix / safe_norms).astype(np.float32)
+
+    def _normalized_query(self, query_embedding: Sequence[float]) -> np.ndarray:
+        query = np.asarray(query_embedding, dtype=np.float32)
+        norm = float(np.linalg.norm(query))
+        if norm == 0.0:
+            return np.zeros((self.dim,), dtype=np.float32)
+        return query / norm
+
+    @staticmethod
+    def _top_score_positions(
+        scores: np.ndarray,
+        source_indices: Sequence[int],
+        top_k: int,
+    ) -> list[int]:
+        available = len(source_indices)
+        limit = min(top_k, available)
+        if limit <= 0:
+            return []
+        if limit < available:
+            candidate_positions = np.argpartition(scores, -limit)[-limit:]
+        else:
+            candidate_positions = np.arange(available)
+        return sorted(
+            (int(position) for position in candidate_positions),
+            key=lambda position: (-float(scores[position]), source_indices[position]),
+        )
 
     def add(self, entries: Iterable[VectorEntry]) -> None:
         pending = list(entries)
@@ -174,6 +219,7 @@ class InMemoryVectorStore:
                     self._entries.append(entry)
                 else:
                     self._entries[existing_idx] = entry
+            self._rebuild_matrix()
             self._revision += 1
 
     def load(self, entries: Iterable[VectorEntry]) -> None:
@@ -182,6 +228,7 @@ class InMemoryVectorStore:
             if len(entry.embedding) != self.dim:
                 raise ValueError("embedding dimension mismatch.")
         self._entries = pending
+        self._rebuild_matrix()
         self._revision += 1
 
     def dump(self) -> List[Dict[str, Any]]:
@@ -207,17 +254,39 @@ class InMemoryVectorStore:
         if top_k <= 0:
             return []
 
-        scored = (
-            RetrievedChunk(
-                document_id=entry.document_id,
-                text=entry.text,
-                score=cosine_similarity(query_embedding, entry.embedding),
-                metadata=entry.metadata,
-            )
-            for entry in self._entries
-            if metadata_matches_filters(entry.metadata, metadata_filters)
+        if metadata_filters:
+            source_indices: Sequence[int] = [
+                index
+                for index, entry in enumerate(self._entries)
+                if metadata_matches_filters(entry.metadata, metadata_filters)
+            ]
+            matrix = self._normalized_matrix[list(source_indices)]
+        else:
+            source_indices = range(len(self._entries))
+            matrix = self._normalized_matrix
+        if not source_indices:
+            return []
+
+        query = self._normalized_query(query_embedding)
+        scores = matrix @ query
+        ranked_positions = self._top_score_positions(
+            scores,
+            source_indices,
+            top_k,
         )
-        return heapq.nlargest(top_k, scored, key=lambda chunk: chunk.score)
+        results: list[RetrievedChunk] = []
+        for position in ranked_positions:
+            entry_index = source_indices[position]
+            entry = self._entries[entry_index]
+            results.append(
+                RetrievedChunk(
+                    document_id=entry.document_id,
+                    text=entry.text,
+                    score=float(scores[position]),
+                    metadata=entry.metadata,
+                )
+            )
+        return results
 
     def keyword_search(
         self,

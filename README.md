@@ -11,7 +11,7 @@ MAGI is a multi persona reasoning engine for assessing user requests against an 
 - Command line helper (`run_magi.py`) that supports optional document ingestion before answering a query.
 - Retrieval augmented generation backed by DSPy personas or a lightweight stub when DSPy is unavailable.
 - Consensus loop that enforces multi persona agreement before issuing a verdict.
-- Persistent vector store on disk with hashing based embeddings for offline mode.
+- Persistent vector store on disk with NumPy-backed exact local search.
 - Query routing across summary, extraction, fact-check, recommendation, and decision modes.
 - Run artifacts with replayable `explain`, `replay`, and `diff` CLI workflows.
 - Profile comparison workflow for running the same prompt across multiple CLI profiles.
@@ -20,18 +20,30 @@ MAGI is a multi persona reasoning engine for assessing user requests against an 
 ## Requirements
 - Python 3.10 or newer (CI runs on Python 3.10 and 3.13).
 - uv package manager.
-- Optional: OpenAI or Google credentials when running live reasoning; OpenAI is required for provider-backed embeddings.
+- OpenAI or Google credentials configured through `magi setup` before running MAGI commands.
 
 ## Setup
-1. Sync the pinned environment with uv: `uv sync --extra dev`
-2. Add provider extras only if you need live model calls:
-   - OpenAI: `uv sync --extra openai`
-   - Gemini: `uv sync --extra google`
-   - Optional calibrator training: `uv sync --extra torch`
-3. Copy the example environment file and edit only the values you need: `cp .env.example .env.local`
+Install the user-level CLI from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marklikesyou/Magi-System/main/scripts/install.sh | sh
+```
+
+The installer uses `uv tool install`, installs OpenAI and Google provider extras, and runs `magi setup` when the terminal is interactive. If setup did not run during installation, run it once before using MAGI:
+
+```bash
+magi setup
+magi
+```
+
+Manual repository setup is still available for local development:
+
+1. Sync the pinned environment with uv: `uv sync --extra dev --extra openai --extra google`
+2. Optional calibrator training: `uv sync --extra torch`
+3. Configure a provider key: `uv run magi setup`
 4. Activate the environment: `source .venv/bin/activate` (or `.\.venv\Scripts\activate` on Windows)
 
-The project runs offline by default when provider credentials are unset. Add keys only when you want live reasoning or provider-backed embeddings.
+`magi setup` stores keys in the user-level config file at `~/.config/magi-system/.env`, or under `$XDG_CONFIG_HOME/magi-system/.env` when `XDG_CONFIG_HOME` is set. Project-local `.env` and `.env.local` files still work and override the user config for repository development.
 
 ## Usage
 ### Ingest documents and ask a question
@@ -57,10 +69,9 @@ python -m magi.app.cli diff <run-a> <run-b>
 
 ### Native `magi` command
 The package exposes `magi = "magi.app.cli:main"` in `pyproject.toml`.
-After `uv sync`, activate the virtual environment and run the native command:
+After install and setup, run the native command:
 
 ```bash
-source .venv/bin/activate
 magi
 ```
 
@@ -78,7 +89,8 @@ uv run magi chat "What risks should I consider?"
 For a user-level command outside the repository, install it as a uv tool:
 
 ```bash
-uv tool install -e .
+uv tool install --force "magi-system[openai,google] @ git+https://github.com/marklikesyou/Magi-System.git@main"
+magi setup
 magi
 ```
 
@@ -100,6 +112,7 @@ python -m magi.app.cli compare "Should we deploy the pilot?" --profiles security
 - Default behavior uses structured provider outputs when OpenAI or Google credentials are available.
 - Set `MAGI_FORCE_DSPY_STUB=1` to force the deterministic offline fallback without external LLM calls.
 - Set `MAGI_FORCE_HASH_EMBEDDER=1` to use the deterministic hashing embedder instead of OpenAI embeddings.
+- Set `MAGI_ALLOW_OFFLINE=1` only for local development or CI when intentionally running without a provider key.
 
 ### Runtime Controls
 - `MAGI_PROVIDER_MAX_RETRIES`: retry budget for provider calls. Default `3`.
@@ -117,6 +130,8 @@ python -m magi.app.cli compare "Should we deploy the pilot?" --profiles security
 - `MAGI_APPROVE_MIN_CITATION_HIT_RATE`: minimum valid citation hit rate required for `approve`. Default `1.0`.
 - `MAGI_APPROVE_MIN_ANSWER_SUPPORT_SCORE`: minimum lexical evidence-overlap score required for `approve`. Default `0.2`.
 - `MAGI_REQUIRE_HUMAN_REVIEW_FOR_APPROVALS`: when `true`, grounded approvals are still marked for human review. Default `true`.
+
+The default local store keeps persisted entries in JSON and builds an in-memory NumPy matrix for exact cosine search at runtime. Set `DATABASE_URL` to use the PostgreSQL + pgvector backend for larger shared stores.
 
 When an `approve` answer fails the citation or support thresholds, the production path downgrades it to `revise`. When an `approve` answer passes those thresholds, the default behavior is still to mark it as requiring human review.
 
