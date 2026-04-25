@@ -34,9 +34,12 @@ For local development from a checkout:
 4. Ingest documents and chat with them from the terminal:
 
 ```bash
+python -m magi.app.cli status
 python -m magi.app.cli ingest docs/briefing.pdf
+python -m magi.app.cli ask "Should we deploy the latest patch?" --constraints "Budget <= 50k"
 python -m magi.app.cli chat "Should we deploy the latest patch?" --constraints "Budget <= 50k"
 python -m magi.app.cli chat "Should we deploy the latest patch?" --json
+python -m magi.app.cli docs add docs/briefing.pdf
 python -m magi.app.cli profiles
 python -m magi.app.cli chat "Should we deploy the latest patch?" --profile security-review
 python -m magi.app.cli compare "Should we deploy the latest patch?" --include-default --profiles security-review exec-brief
@@ -52,6 +55,10 @@ magi
 `magi` opens the interactive shell on a real terminal. Without activating the
 environment, use `uv run magi`. For a user-level command outside the repository,
 run `uv tool install --force "magi-system[openai,google] @ git+https://github.com/marklikesyou/Magi-System.git@main"` once, then run `magi setup` and `magi` from any shell. For scripts or piped input, use `magi shell` to force shell mode.
+
+Friendly aliases are available for the common workflow: `magi ask` is the same as
+`magi chat`, `magi docs add` is the same as `magi ingest`, and
+`magi runs show` is the same as `magi explain`.
 
 MAGI requires an OpenAI or Google key before running user-facing ingest/chat workflows. `magi setup` writes the key to `~/.config/magi-system/.env`; project-local `.env` and `.env.local` files still override that user config during repository development. Use `MAGI_ALLOW_OFFLINE=1` with `MAGI_FORCE_DSPY_STUB=1` and `MAGI_FORCE_HASH_EMBEDDER=1` only for local offline development or CI.
 
