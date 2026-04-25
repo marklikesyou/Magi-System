@@ -14,6 +14,7 @@ import sys
 from typing import Callable, Dict, Iterable, List, Sequence, cast
 
 from magi.app.artifacts import (
+    artifact_dir,
     decision_payload,
     diff_run_artifacts,
     load_run_artifact,
@@ -31,6 +32,7 @@ from magi.core.rag import RagRetriever
 from magi.core.storage import (
     describe_store_destination,
     initialize_store,
+    load_store_bundle,
     persist_store,
     save_json_document,
     store_metadata,
@@ -62,7 +64,7 @@ _SETUP_PROVIDERS = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
 }
-_PROVIDER_REQUIRED_COMMANDS = {"ingest", "chat", "batch", "compare", "replay"}
+_PROVIDER_REQUIRED_COMMANDS = {"ask", "ingest", "chat", "batch", "compare", "replay"}
 _ENV_KEY_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 
@@ -116,6 +118,8 @@ def _requires_provider_setup(args: argparse.Namespace) -> bool:
     command = str(getattr(args, "command", "") or "")
     if command in _PROVIDER_REQUIRED_COMMANDS:
         return True
+    if command == "docs":
+        return str(getattr(args, "docs_command", "") or "") == "add"
     if command == "eval":
         return (
             str(getattr(args, "eval_command", "") or "") == "run"
@@ -172,6 +176,28 @@ def _write_user_env_value(key: str, value: str) -> Path:
     return path
 
 
+def _remove_user_env_values(keys: set[str]) -> Path:
+    path = user_env_file()
+    if not path.exists():
+        return path
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept_lines: list[str] = []
+    for line in lines:
+        match = _ENV_KEY_RE.match(line)
+        if match and match.group(1) in keys:
+            continue
+        kept_lines.append(line)
+    path.write_text("".join(kept_lines), encoding="utf-8")
+    return path
+
+
+def _masked_key_status(value: object) -> str:
+    key = str(value or "").strip()
+    if not key:
+        return "unset"
+    return "set"
+
+
 def _prompt_provider() -> str:
     if not sys.stdin.isatty():
         return ""
@@ -186,23 +212,40 @@ def _prompt_provider() -> str:
 
 def command_setup(args: argparse.Namespace) -> int:
     try:
+        config_path = user_env_file()
+        if getattr(args, "reset", False):
+            provider = str(getattr(args, "provider", "") or "").strip().lower()
+            if provider and provider not in _SETUP_PROVIDERS:
+                _print_error("Error: provider must be `openai` or `google`.")
+                return 1
+            keys = (
+                {_SETUP_PROVIDERS[provider]}
+                if provider
+                else set(_SETUP_PROVIDERS.values())
+            )
+            path = _remove_user_env_values(keys)
+            get_settings.cache_clear()
+            print(f"Removed {', '.join(sorted(keys))} from {path}")
+            print("Run `magi setup` to configure a new provider key.")
+            return 0
+
         settings = get_settings()
         issue = _provider_setup_issue(settings)
-        config_path = user_env_file()
 
         if getattr(args, "status", False):
             print(f"Config file: {config_path}")
             print(
                 "OpenAI API key: "
-                f"{'set' if str(getattr(settings, 'openai_api_key', '') or '').strip() else 'unset'}"
+                f"{_masked_key_status(getattr(settings, 'openai_api_key', ''))}"
             )
             print(
                 "Google API key: "
-                f"{'set' if str(getattr(settings, 'google_api_key', '') or '').strip() else 'unset'}"
+                f"{_masked_key_status(getattr(settings, 'google_api_key', ''))}"
             )
             print(f"Ready: {'yes' if not issue else 'no'}")
             if issue:
                 print(f"Issue: {issue}")
+                print("Next: run `magi setup`")
             return 0
 
         if getattr(args, "check", False):
@@ -242,10 +285,88 @@ def command_setup(args: argparse.Namespace) -> int:
             _print_error(f"Warning: {package_issue}")
             return 1
         print("MAGI provider setup is ready.")
+        print("Next: run `magi status` or add docs with `magi ingest path/to/file.pdf`.")
         return 0
     except Exception as e:
         _print_error(f"Error: {e}")
         return 1
+
+
+def _configured_vector_db_url(settings: Settings) -> str:
+    return str(getattr(settings, "vector_db_url", "") or "").strip()
+
+
+def _status_entry_count(settings: Settings, store_path: Path) -> str:
+    if _configured_vector_db_url(settings):
+        return "unknown (postgresql backend)"
+    try:
+        metadata, entries = load_store_bundle(store_path)
+    except Exception as exc:
+        return f"unavailable ({exc})"
+    metadata_count = metadata.get("entry_count") if metadata else None
+    if metadata_count is not None:
+        return str(metadata_count)
+    return str(len(entries))
+
+
+def _status_store_backend(settings: Settings) -> str:
+    if _configured_vector_db_url(settings):
+        return "postgresql + pgvector"
+    return "local json + numpy exact search"
+
+
+def command_status(args: argparse.Namespace) -> int:
+    try:
+        settings = get_settings()
+        issue = _provider_setup_issue(settings)
+        store_path = Path(getattr(args, "store", DEFAULT_STORE))
+        entry_count = _status_entry_count(settings, store_path)
+        profile_dir = str(getattr(settings, "profile_dir", "") or "").strip()
+        trace_dir = str(getattr(settings, "decision_trace_dir", "") or "").strip()
+
+        print("MAGI status")
+        print(f"Provider ready: {'yes' if not issue else 'no'}")
+        if issue:
+            print(f"Provider issue: {issue}")
+        print(f"Config file: {user_env_file()}")
+        print(
+            "OpenAI API key: "
+            f"{_masked_key_status(getattr(settings, 'openai_api_key', ''))}"
+        )
+        print(
+            "Google API key: "
+            f"{_masked_key_status(getattr(settings, 'google_api_key', ''))}"
+        )
+        print(f"Store backend: {_status_store_backend(settings)}")
+        print(f"Store path: {store_path}")
+        print(f"Store entries: {entry_count}")
+        print(f"Artifact dir: {artifact_dir(settings)}")
+        print(f"Decision trace dir: {trace_dir or 'disabled'}")
+        print(f"Profile dir: {profile_dir or 'built-in profiles only'}")
+
+        if issue:
+            print("Next: run `magi setup`")
+        elif entry_count in {"0", "unavailable"} or entry_count.startswith(
+            "unavailable"
+        ):
+            print("Next: add docs with `magi ingest path/to/file.pdf`")
+        else:
+            print('Next: ask a question with `magi ask "what should i know?"`')
+        return 0
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
+
+
+def _shell_status_summary(args: argparse.Namespace) -> str:
+    try:
+        settings = get_settings()
+        provider = "ready" if not _provider_setup_issue(settings) else "needs setup"
+        store_path = Path(getattr(args, "store", DEFAULT_STORE))
+        entries = _status_entry_count(settings, store_path)
+        return f"provider: {provider}; store entries: {entries}; type `help` for commands"
+    except Exception:
+        return "type `help` for commands"
 
 
 def _truncate_trace_text(text: object, limit: int = 120) -> str:
@@ -631,6 +752,7 @@ def command_ingest(args: argparse.Namespace) -> int:
         )
         if not documents:
             print("No new documents to ingest; all content already exists in the store.")
+            print('Next: ask a question with `magi ask "what changed?"`')
             return 0
 
         chunks = _chunk_documents(
@@ -656,12 +778,14 @@ def command_ingest(args: argparse.Namespace) -> int:
             chunk_overlap=args.chunk_overlap,
         )
 
-        print(f"Ingested {len(entries)} chunks from {len(documents)} document(s).")
+        print(f"Documents processed: {len(documents)}")
+        print(f"Chunks added: {len(entries)}")
         if skipped_existing:
-            print(
-                f"Skipped {skipped_existing} duplicate document(s) already present in the store."
-            )
+            print(f"Duplicates skipped: {skipped_existing}")
+        else:
+            print("Duplicates skipped: 0")
         print(describe_store_destination(args.store, store))
+        print('Next: ask a question with `magi ask "what should i know?"`')
         if verbose:
             _print_embedder_mode(embedder, settings)
         return 0
@@ -687,6 +811,23 @@ def command_chat(args: argparse.Namespace) -> int:
         profile = _load_profile_from_args(settings, args)
         embedder, store, retriever = _build_retriever(settings, args.store, profile)
         constraints = _effective_constraints(args, profile, getattr(args, "constraints", ""))
+        entries = getattr(store, "entries", None)
+        if isinstance(entries, list) and len(entries) == 0:
+            if json_output:
+                payload: dict[str, object] = {
+                    "error": "empty_store",
+                    "message": "No documents are available in the MAGI store.",
+                    "next": "Run `magi ingest path/to/file.pdf` before asking questions.",
+                    "store": str(args.store),
+                }
+                print(json.dumps(payload, ensure_ascii=True, indent=2))
+            else:
+                _print_error("Error: No documents are available in the MAGI store.")
+                _print_error(
+                    "Run `magi ingest path/to/file.pdf` before asking questions."
+                )
+                _print_error(f"Store: {args.store}")
+            return 1
 
         if verbose and not json_output:
             _print_chat_preamble(args, settings, embedder, store, profile)
@@ -1242,18 +1383,23 @@ def command_eval_regressions(args: argparse.Namespace) -> int:
 _SHELL_EXIT_COMMANDS = {"exit", "quit", ":q", "\\q"}
 _SHELL_META_HELP = {"help", "?", ":help"}
 _SHELL_COMMANDS = {
+    "ask",
     "ingest",
+    "docs",
     "chat",
     "batch",
     "compare",
     "explain",
+    "runs",
     "profiles",
     "replay",
     "diff",
     "eval",
     "shell",
+    "setup",
+    "status",
 }
-_SHELL_STORE_COMMANDS = {"ingest", "chat", "batch", "compare", "replay"}
+_SHELL_STORE_COMMANDS = {"ask", "ingest", "chat", "batch", "compare", "replay"}
 
 
 def _shell_command_tokens(line: str) -> list[str]:
@@ -1286,6 +1432,24 @@ def _apply_shell_defaults(tokens: list[str], args: argparse.Namespace) -> list[s
     if not tokens:
         return tokens
     command = tokens[0]
+    if (
+        command == "docs"
+        and len(tokens) >= 2
+        and tokens[1] == "add"
+        and "--store" not in tokens
+    ):
+        store = getattr(args, "store", None)
+        if isinstance(store, Path):
+            tokens = ["docs", "add", "--store", str(store), *tokens[2:]]
+    if (
+        command == "docs"
+        and len(tokens) >= 2
+        and tokens[1] == "add"
+        and getattr(args, "verbose", False)
+        and "--verbose" not in tokens
+        and "-v" not in tokens
+    ):
+        tokens = ["docs", "add", "-v", *tokens[2:]]
     if command in _SHELL_STORE_COMMANDS and "--store" not in tokens:
         store = getattr(args, "store", None)
         if isinstance(store, Path):
@@ -1303,17 +1467,20 @@ def _apply_shell_defaults(tokens: list[str], args: argparse.Namespace) -> list[s
 def _print_shell_help() -> None:
     print("MAGI interactive shell")
     print("Type a command, or type a plain question to run `chat`.")
-    print("Commands: ingest, chat, batch, compare, explain, profiles, replay, diff, eval")
+    print("Commands: status, ask, docs add, ingest, chat, compare, profiles")
+    print("Also available: batch, runs show, explain, replay, diff, eval, setup")
     print("Examples:")
-    print('  chat "Summarize MAGI in one sentence."')
+    print("  status")
+    print('  ask "Summarize MAGI in one sentence."')
     print("  profiles security-review")
-    print("  ingest docs/briefing.txt")
-    print("  explain <run-id>")
+    print("  docs add docs/briefing.txt")
+    print("  runs show <run-id>")
     print("Type `help <command>` for command help, or `exit` to quit.")
 
 
 def command_shell(args: argparse.Namespace) -> int:
     print("MAGI interactive shell. Type `help` for commands, `exit` to quit.")
+    print(_shell_status_summary(args))
     last_status = 0
     while True:
         try:
@@ -1349,7 +1516,21 @@ def command_shell(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="MAGI terminal helper")
+    parser = argparse.ArgumentParser(
+        description="MAGI terminal helper",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""workflow:
+  magi setup
+  magi status
+  magi ingest docs/briefing.pdf
+  magi ask "what risks should i consider?"
+
+friendly aliases:
+  magi ask ...          same as magi chat ...
+  magi docs add ...     same as magi ingest ...
+  magi runs show <id>   same as magi explain <id>
+""",
+    )
     parser.set_defaults(handler=None)
 
     def add_common_options(
@@ -1389,7 +1570,15 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     setup_parser = subparsers.add_parser(
-        "setup", help="Save or verify the AI provider key used by MAGI."
+        "setup",
+        help="Save or verify the AI provider key used by MAGI.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  magi setup
+  magi setup --provider openai
+  magi setup --status
+  magi setup --reset
+""",
     )
     setup_parser.add_argument(
         "--provider",
@@ -1412,7 +1601,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Exit successfully only when MAGI has a usable provider key.",
     )
+    setup_parser.add_argument(
+        "--reset",
+        action="store_true",
+        default=False,
+        help="Remove saved provider key values from the MAGI user config.",
+    )
     setup_parser.set_defaults(handler=command_setup)
+
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show provider, store, artifact, and profile status.",
+    )
+    add_common_options(status_parser, with_defaults=False)
+    status_parser.set_defaults(handler=command_status)
 
     shell_parser = subparsers.add_parser(
         "shell", help="Open the interactive MAGI shell."
@@ -1441,8 +1643,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest_parser.set_defaults(handler=command_ingest)
 
+    docs_parser = subparsers.add_parser(
+        "docs",
+        help="Manage documents in the MAGI store.",
+    )
+    docs_subparsers = docs_parser.add_subparsers(dest="docs_command")
+    docs_add_parser = docs_subparsers.add_parser(
+        "add",
+        help="Add documents to the MAGI store.",
+        description="Friendly alias for `magi ingest`.",
+    )
+    add_common_options(docs_add_parser, with_defaults=False)
+    docs_add_parser.add_argument(
+        "paths", nargs="+", help="Paths to documents for ingestion."
+    )
+    docs_add_parser.add_argument(
+        "--chunk-size", type=int, default=1500, help="Chunk size in characters."
+    )
+    docs_add_parser.add_argument(
+        "--chunk-overlap", type=int, default=200, help="Overlap between chunks."
+    )
+    docs_add_parser.add_argument(
+        "--reset-store",
+        action="store_true",
+        default=False,
+        help="Delete the existing local store file before ingesting.",
+    )
+    docs_add_parser.set_defaults(handler=command_ingest)
+
     chat_parser = subparsers.add_parser(
-        "chat", help="Ask a question against ingested documents."
+        "chat",
+        help="Ask a question against ingested documents.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  magi chat "summarize the uploaded policy"
+  magi chat "should we deploy?" --profile security-review
+  magi chat "what changed?" --json
+""",
     )
     add_common_options(chat_parser, with_defaults=False)
     add_profile_options(chat_parser)
@@ -1462,6 +1699,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path to persist the structured decision record as JSON.",
     )
     chat_parser.set_defaults(handler=command_chat)
+
+    ask_parser = subparsers.add_parser(
+        "ask",
+        help="Ask a question against ingested documents.",
+        description="Friendly alias for `magi chat`.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  magi ask "summarize the uploaded policy"
+  magi ask "should we deploy?" --profile security-review
+  magi ask "what changed?" --json
+""",
+    )
+    add_common_options(ask_parser, with_defaults=False)
+    add_profile_options(ask_parser)
+    ask_parser.add_argument("query", help="User query to send to the MAGI system.")
+    ask_parser.add_argument(
+        "--constraints", help="Optional constraints for Balthasar."
+    )
+    ask_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print the chat result as JSON.",
+    )
+    ask_parser.add_argument(
+        "--decision-record-out",
+        type=Path,
+        help="Optional path to persist the structured decision record as JSON.",
+    )
+    ask_parser.set_defaults(handler=command_chat)
 
     batch_parser = subparsers.add_parser(
         "batch", help="Run a batch of queries from JSONL, JSON, CSV, or TSV."
@@ -1525,6 +1792,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     explain_parser.add_argument("artifact", help="Artifact path or run id.")
     explain_parser.set_defaults(handler=command_explain)
+
+    runs_parser = subparsers.add_parser(
+        "runs",
+        help="Inspect saved MAGI runs.",
+    )
+    runs_subparsers = runs_parser.add_subparsers(dest="runs_command")
+    runs_show_parser = runs_subparsers.add_parser(
+        "show",
+        help="Render a saved run artifact.",
+        description="Friendly alias for `magi explain`.",
+    )
+    runs_show_parser.add_argument("artifact", help="Artifact path or run id.")
+    runs_show_parser.set_defaults(handler=command_explain)
 
     profiles_parser = subparsers.add_parser(
         "profiles", help="List or inspect built-in and workspace profiles."
