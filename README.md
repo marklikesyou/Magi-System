@@ -57,13 +57,17 @@ Interactive mode is also available by invoking `python run_magi.py` with no argu
 
 ### CLI subcommands
 ```bash
+python -m magi.app.cli status
 python -m magi.app.cli ingest path/to/doc.txt
+python -m magi.app.cli ask "What risks should I consider?"
 python -m magi.app.cli chat "What risks should I consider?"
 python -m magi.app.cli chat "What risks should I consider?" --json
+python -m magi.app.cli docs add path/to/doc.txt
 python -m magi.app.cli profiles
 python -m magi.app.cli chat "Should we deploy the pilot?" --profile security-review
 python -m magi.app.cli compare "Should we deploy the pilot?" --include-default --profiles security-review exec-brief
 python -m magi.app.cli explain <run-id>
+python -m magi.app.cli runs show <run-id>
 python -m magi.app.cli diff <run-a> <run-b>
 ```
 
@@ -76,8 +80,8 @@ magi
 ```
 
 `magi` opens the interactive shell on a real terminal. From there, enter a
-command such as `profiles security-review` or type a plain question to run
-`chat`.
+command such as `status`, `docs add docs/briefing.txt`, or
+`profiles security-review`. You can also type a plain question to run `chat`.
 
 You can also run the native command without activating the environment:
 
