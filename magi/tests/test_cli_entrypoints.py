@@ -601,6 +601,15 @@ def test_shell_plain_text_defaults_to_chat() -> None:
     assert cli._shell_command_tokens("exit") == ["exit"]
 
 
+def test_shell_banner_renders_ascii_logo(capsys) -> None:
+    cli._print_shell_banner()
+
+    captured = capsys.readouterr()
+    assert "__  __" in captured.out
+    assert "multi-agent governance interface" in captured.out
+    assert "Type `help`" in captured.out
+
+
 def test_shell_applies_session_store(tmp_path: Path) -> None:
     tokens = cli._apply_shell_defaults(
         ["chat", "Summarize MAGI"],

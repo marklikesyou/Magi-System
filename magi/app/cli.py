@@ -60,6 +60,15 @@ from magi.eval.scenario_harness import (
 )
 
 DEFAULT_STORE = Path(__file__).resolve().parents[1] / "storage" / "vector_store.json"
+MAGI_ASCII_LOGO = r"""
+ __  __    _    ____ ___
+|  \/  |  / \  / ___|_ _|
+| |\/| | / _ \| |  _ | |
+| |  | |/ ___ \ |_| || |
+|_|  |_/_/   \_\____|___|
+
+multi-agent governance interface
+""".strip()
 _SETUP_PROVIDERS = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
@@ -1478,8 +1487,13 @@ def _print_shell_help() -> None:
     print("Type `help <command>` for command help, or `exit` to quit.")
 
 
+def _print_shell_banner() -> None:
+    print(MAGI_ASCII_LOGO)
+    print("Type `help` for commands, `exit` to quit.")
+
+
 def command_shell(args: argparse.Namespace) -> int:
-    print("MAGI interactive shell. Type `help` for commands, `exit` to quit.")
+    _print_shell_banner()
     print(_shell_status_summary(args))
     last_status = 0
     while True:
