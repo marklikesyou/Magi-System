@@ -26,7 +26,7 @@ MAGI is a multi persona reasoning engine for assessing user requests against an 
 Install the user-level CLI from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/marklikesyou/Magi-System/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/marklikesyou/Magi-System/master/scripts/install.sh | sh
 ```
 
 The installer uses `uv tool install`, installs OpenAI and Google provider extras, and runs `magi setup` when the terminal is interactive. If setup did not run during installation, run it once before using MAGI:
@@ -93,7 +93,7 @@ uv run magi chat "What risks should I consider?"
 For a user-level command outside the repository, install it as a uv tool:
 
 ```bash
-uv tool install --force "magi-system[openai,google] @ git+https://github.com/marklikesyou/Magi-System.git@main"
+uv tool install --force "magi-system[openai,google] @ git+https://github.com/marklikesyou/Magi-System.git@master"
 magi setup
 magi
 ```

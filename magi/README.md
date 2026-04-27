@@ -17,7 +17,7 @@ The current codebase is a working CLI-oriented prototype with offline fallback, 
 Install the user-level CLI:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/marklikesyou/Magi-System/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/marklikesyou/Magi-System/master/scripts/install.sh | sh
 ```
 
 Then configure an AI provider key once:
@@ -54,7 +54,7 @@ magi
 
 `magi` opens the interactive shell on a real terminal. Without activating the
 environment, use `uv run magi`. For a user-level command outside the repository,
-run `uv tool install --force "magi-system[openai,google] @ git+https://github.com/marklikesyou/Magi-System.git@main"` once, then run `magi setup` and `magi` from any shell. For scripts or piped input, use `magi shell` to force shell mode.
+run `uv tool install --force "magi-system[openai,google] @ git+https://github.com/marklikesyou/Magi-System.git@master"` once, then run `magi setup` and `magi` from any shell. For scripts or piped input, use `magi shell` to force shell mode.
 
 Friendly aliases are available for the common workflow: `magi ask` is the same as
 `magi chat`, `magi docs add` is the same as `magi ingest`, and

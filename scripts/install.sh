@@ -2,7 +2,7 @@
 set -eu
 
 REPO_URL="${MAGI_REPO_URL:-https://github.com/marklikesyou/Magi-System.git}"
-INSTALL_REF="${MAGI_INSTALL_REF:-main}"
+INSTALL_REF="${MAGI_INSTALL_REF:-master}"
 INSTALL_SPEC="${MAGI_INSTALL_SPEC:-magi-system[openai,google] @ git+${REPO_URL}@${INSTALL_REF}}"
 
 log() {
