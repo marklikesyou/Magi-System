@@ -11,7 +11,7 @@ import re
 import shlex
 from pathlib import Path
 import sys
-from typing import Callable, Dict, Iterable, List, Sequence, cast
+from typing import Any, Callable, Dict, Iterable, List, Sequence, cast
 
 from magi.app.artifacts import (
     artifact_dir,
@@ -24,9 +24,9 @@ from magi.app.artifacts import (
     resolve_artifact_path,
 )
 from magi.app.presentation import format_chat_report, response_format_guidance
-from magi.app.service import ChatSessionResult, DecisionTrace, run_chat_session
+from magi.app.service import ChatSessionResult, run_chat_session
 from magi.core.config import Settings, get_settings, user_env_file
-from magi.core.embeddings import HashingEmbedder, build_embedder
+from magi.core.embeddings import build_embedder
 from magi.core.profiles import Profile, list_profiles, load_profile
 from magi.core.rag import RagRetriever
 from magi.core.storage import (
@@ -41,8 +41,6 @@ from magi.core.vectorstore import VectorEntry, VectorStore
 from magi.data_pipeline.chunkers import sliding_window_chunk
 from magi.data_pipeline.embed import embed_chunks
 from magi.data_pipeline.ingest import ingest_paths
-from magi.decision.schema import PersonaOutput
-from magi.dspy_programs.personas import USING_STUB
 from magi.eval.dataset import export_feature_log, load_dataset
 from magi.eval.metrics import accuracy, classification_report, confidence_interval
 from magi.eval.reporting import (
@@ -75,16 +73,7 @@ _SETUP_PROVIDERS = {
 }
 _PROVIDER_REQUIRED_COMMANDS = {"ask", "ingest", "chat", "batch", "compare", "replay"}
 _ENV_KEY_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
-
-
-_PERSONA_TAG_RE = re.compile(
-    r"^\[(?:APPROVE|REJECT|REVISE)\]\s*\[(?:MELCHIOR|BALTHASAR|CASPER)\]\s*",
-    re.IGNORECASE,
-)
-
-
-def _strip_persona_tags(text: str) -> str:
-    return _PERSONA_TAG_RE.sub("", text).strip()
+_ROUTE_CHOICES = ("summarize", "extract", "fact_check", "recommend", "decision")
 
 
 def _truthy(value: str) -> bool:
@@ -378,16 +367,6 @@ def _shell_status_summary(args: argparse.Namespace) -> str:
         return "type `help` for commands"
 
 
-def _truncate_trace_text(text: object, limit: int = 120) -> str:
-    compact = re.sub(r"\s+", " ", str(text or "")).strip()
-    if len(compact) <= limit:
-        return compact
-    trimmed = compact[:limit]
-    if " " in trimmed:
-        trimmed = trimmed.rsplit(" ", 1)[0]
-    return trimmed + "..."
-
-
 def _vector_entries(payload: Iterable[Dict[str, object]]) -> List[VectorEntry]:
     entries = []
     for record in payload:
@@ -468,108 +447,6 @@ def _chunk_documents(
             )
         )
     return chunks
-
-
-def _print_embedder_mode(embedder: object, settings: Settings) -> None:
-    if isinstance(embedder, HashingEmbedder):
-        print("[verbose] Using hashing embedder (offline mode).")
-        return
-    print(f"[verbose] Using OpenAI embeddings ({settings.openai_embedding_model}).")
-
-
-def _print_chat_preamble(
-    args: argparse.Namespace,
-    settings: Settings,
-    embedder: object,
-    store: VectorStore,
-    profile: Profile | None,
-) -> None:
-    _print_embedder_mode(embedder, settings)
-    if USING_STUB and not isinstance(embedder, HashingEmbedder):
-        print(
-            "[verbose] Deterministic reasoning fallback active; embeddings remain provider-backed."
-        )
-    print(f"[verbose] Store loaded from {args.store} ({len(store.entries)} entries).")
-    if profile is not None:
-        print(f"[verbose] Active profile: {profile.name}")
-
-
-def _print_trace_summary(
-    result: ChatSessionResult,
-    decision_record_path: Path | None,
-    artifact_path: Path,
-) -> None:
-    trace = result.decision_trace
-    print(f"[verbose] Received responses from {len(result.personas)} persona(s).")
-    print(
-        "[verbose] Decision trace: "
-        f"mode={trace.query_mode} "
-        f"route_scores={trace.routing_scores} "
-        f"used_evidence={len(trace.used_evidence_ids)} "
-        f"cited_evidence={len(trace.cited_evidence_ids)} "
-        f"blocked_evidence={len(trace.blocked_evidence_ids)} "
-        f"safety={trace.safety_outcome} "
-        f"review_required={trace.requires_human_review} "
-        f"abstained={trace.abstained} "
-        f"citation_hit_rate={trace.citation_hit_rate:.2f} "
-        f"answer_support={trace.answer_support_score:.2f}"
-    )
-    if trace.routing_signals:
-        print(f"[verbose] Routing signals: {', '.join(trace.routing_signals)}")
-    if decision_record_path is not None:
-        print(f"[verbose] Decision record saved to {decision_record_path}")
-    print(f"[verbose] Run artifact saved to {artifact_path}")
-
-
-def _print_bullet_section(
-    title: str,
-    items: Iterable[object],
-    *,
-    leading_newline: bool = False,
-) -> None:
-    lines = []
-    for item in items:
-        text = item.strip() if isinstance(item, str) else str(item).strip()
-        if text:
-            lines.append(text)
-    if not lines:
-        return
-    if leading_newline:
-        print()
-    print(f"{title}:")
-    for line in lines:
-        print(f"  - {line}")
-
-
-def _print_trace_evidence(trace: DecisionTrace) -> None:
-    if trace.cited_evidence:
-        print("Cited Evidence:")
-        for cited_item in trace.cited_evidence:
-            snippet = _truncate_trace_text(cited_item.text)
-            print(f"  - {cited_item.citation} {cited_item.source}: {snippet}")
-        print()
-    if trace.blocked_evidence:
-        print("Blocked Evidence:")
-        for blocked_item in trace.blocked_evidence:
-            reasons = ", ".join(blocked_item.safety_reasons) or "blocked"
-            snippet = _truncate_trace_text(blocked_item.text)
-            print(f"  - {blocked_item.citation} {blocked_item.source}: {reasons}")
-            if snippet:
-                print(f"    {snippet}")
-        print()
-
-
-def _print_persona_outputs(persona_outputs: Iterable[PersonaOutput]) -> None:
-    print(f"{'-' * 60}")
-    print("Persona Perspectives:\n")
-    for persona in persona_outputs:
-        clean_text = _strip_persona_tags(persona.text)
-        print(f"  [{persona.name.title()}] (confidence {persona.confidence:.2f})")
-        for line in clean_text.splitlines():
-            stripped = line.strip()
-            if stripped:
-                print(f"    {stripped}")
-        print()
 
 
 def _print_chat_report(
@@ -746,7 +623,6 @@ def _run_single_query(
 
 
 def command_ingest(args: argparse.Namespace) -> int:
-    verbose = getattr(args, "verbose", False)
     try:
         settings = get_settings()
         if getattr(args, "reset_store", False) and Path(args.store).exists():
@@ -770,12 +646,6 @@ def command_ingest(args: argparse.Namespace) -> int:
             chunk_overlap=args.chunk_overlap,
         )
 
-        if verbose:
-            print(
-                f"[verbose] Chunked {len(documents)} document(s) into {len(chunks)} chunks "
-                f"(size={args.chunk_size}, overlap={args.chunk_overlap})."
-            )
-
         embedded = embed_chunks(chunks, embedder)
         entries = _vector_entries(embedded)
         store.add(entries)
@@ -795,8 +665,6 @@ def command_ingest(args: argparse.Namespace) -> int:
             print("Duplicates skipped: 0")
         print(describe_store_destination(args.store, store))
         print('Next: ask a question with `magi ask "what should i know?"`')
-        if verbose:
-            _print_embedder_mode(embedder, settings)
         return 0
     except FileNotFoundError as e:
         _print_error(f"Error: File not found - {e}")
@@ -813,7 +681,6 @@ def command_ingest(args: argparse.Namespace) -> int:
 
 
 def command_chat(args: argparse.Namespace) -> int:
-    verbose = getattr(args, "verbose", False)
     json_output = getattr(args, "json", False)
     try:
         settings = get_settings()
@@ -838,9 +705,6 @@ def command_chat(args: argparse.Namespace) -> int:
                 _print_error(f"Store: {args.store}")
             return 1
 
-        if verbose and not json_output:
-            _print_chat_preamble(args, settings, embedder, store, profile)
-
         result, artifact_path, decision_record_path = _run_single_query(
             args=args,
             settings=settings,
@@ -850,9 +714,6 @@ def command_chat(args: argparse.Namespace) -> int:
             retriever=retriever,
             profile=profile,
         )
-
-        if verbose and not json_output:
-            _print_trace_summary(result, decision_record_path, artifact_path)
 
         if json_output:
             payload = decision_payload(result)
@@ -986,9 +847,6 @@ def command_batch(args: argparse.Namespace) -> int:
         print(f"skipped\t{skipped}")
         if args.out:
             print(f"output\t{args.out}")
-        if getattr(args, "verbose", False):
-            _print_embedder_mode(embedder, settings)
-            print(describe_store_destination(args.store, store))
         return 0
     except FileNotFoundError as e:
         _print_error(f"Error: File not found - {e}")
@@ -1005,7 +863,6 @@ def command_batch(args: argparse.Namespace) -> int:
 
 
 def command_compare(args: argparse.Namespace) -> int:
-    verbose = getattr(args, "verbose", False)
     try:
         settings = get_settings()
         embedder = build_embedder(settings)
@@ -1014,11 +871,6 @@ def command_compare(args: argparse.Namespace) -> int:
         comparisons: list[
             tuple[str, Profile | None, str, ChatSessionResult, Path]
         ] = []
-
-        if verbose:
-            _print_embedder_mode(embedder, settings)
-            print(f"[verbose] Store loaded from {args.store} ({len(store.entries)} entries).")
-            print(f"[verbose] Comparing {len(targets)} profile target(s).")
 
         for label, profile in targets:
             retriever = _configured_retriever(embedder, store, profile)
@@ -1529,60 +1381,76 @@ def command_shell(args: argparse.Namespace) -> int:
     return last_status
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="MAGI terminal helper",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""workflow:
-  magi setup
-  magi status
-  magi ingest docs/briefing.pdf
-  magi ask "what risks should i consider?"
-
-friendly aliases:
-  magi ask ...          same as magi chat ...
-  magi docs add ...     same as magi ingest ...
-  magi runs show <id>   same as magi explain <id>
-""",
+def _add_common_options(
+    target: argparse.ArgumentParser, *, with_defaults: bool
+) -> None:
+    target.add_argument(
+        "--store",
+        type=Path,
+        default=DEFAULT_STORE if with_defaults else argparse.SUPPRESS,
+        help=f"Path to persisted vector store (default: {DEFAULT_STORE})",
     )
-    parser.set_defaults(handler=None)
+    target.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=False if with_defaults else argparse.SUPPRESS,
+        help="Accepted for compatibility; debug trace output is not printed.",
+    )
 
-    def add_common_options(
-        target: argparse.ArgumentParser, *, with_defaults: bool
-    ) -> None:
-        target.add_argument(
-            "--store",
-            type=Path,
-            default=DEFAULT_STORE if with_defaults else argparse.SUPPRESS,
-            help=f"Path to persisted vector store (default: {DEFAULT_STORE})",
-        )
-        target.add_argument(
-            "-v",
-            "--verbose",
-            action="store_true",
-            default=False if with_defaults else argparse.SUPPRESS,
-            help="Print additional diagnostic information (embedder, chunks, scores).",
-        )
 
-    def add_profile_options(target: argparse.ArgumentParser) -> None:
-        target.add_argument(
-            "--profile",
-            help="Optional domain profile name or path.",
-        )
-        target.add_argument(
-            "--route",
-            choices=("summarize", "extract", "fact_check", "recommend", "decision"),
-            help="Optional query route override.",
-        )
-        target.add_argument(
-            "--model",
-            help="Optional model override for live runs.",
-        )
+def _add_profile_options(target: argparse.ArgumentParser) -> None:
+    target.add_argument("--profile", help="Optional domain profile name or path.")
+    target.add_argument(
+        "--route",
+        choices=_ROUTE_CHOICES,
+        help="Optional query route override.",
+    )
+    target.add_argument("--model", help="Optional model override for live runs.")
 
-    add_common_options(parser, with_defaults=True)
 
-    subparsers = parser.add_subparsers(dest="command")
+def _add_ingest_options(target: argparse.ArgumentParser) -> None:
+    _add_common_options(target, with_defaults=False)
+    target.add_argument("paths", nargs="+", help="Paths to documents for ingestion.")
+    target.add_argument(
+        "--chunk-size",
+        type=int,
+        default=1500,
+        help="Chunk size in characters.",
+    )
+    target.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=200,
+        help="Overlap between chunks.",
+    )
+    target.add_argument(
+        "--reset-store",
+        action="store_true",
+        default=False,
+        help="Delete the existing local store file before ingesting.",
+    )
 
+
+def _add_chat_options(target: argparse.ArgumentParser) -> None:
+    _add_common_options(target, with_defaults=False)
+    _add_profile_options(target)
+    target.add_argument("query", help="User query to send to the MAGI system.")
+    target.add_argument("--constraints", help="Optional constraints for Balthasar.")
+    target.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print the chat result as JSON.",
+    )
+    target.add_argument(
+        "--decision-record-out",
+        type=Path,
+        help="Optional path to persist the structured decision record as JSON.",
+    )
+
+
+def _add_setup_parser(subparsers: Any) -> None:
     setup_parser = subparsers.add_parser(
         "setup",
         help="Save or verify the AI provider key used by MAGI.",
@@ -1623,38 +1491,24 @@ friendly aliases:
     )
     setup_parser.set_defaults(handler=command_setup)
 
-    status_parser = subparsers.add_parser(
-        "status",
-        help="Show provider, store, artifact, and profile status.",
-    )
-    add_common_options(status_parser, with_defaults=False)
-    status_parser.set_defaults(handler=command_status)
 
-    shell_parser = subparsers.add_parser(
-        "shell", help="Open the interactive MAGI shell."
-    )
-    add_common_options(shell_parser, with_defaults=False)
-    shell_parser.set_defaults(handler=command_shell)
+def _add_basic_parser(
+    subparsers: Any,
+    name: str,
+    *,
+    help_text: str,
+    handler: Callable[[argparse.Namespace], int],
+) -> None:
+    command_parser = subparsers.add_parser(name, help=help_text)
+    _add_common_options(command_parser, with_defaults=False)
+    command_parser.set_defaults(handler=handler)
 
+
+def _add_ingest_parsers(subparsers: Any) -> None:
     ingest_parser = subparsers.add_parser(
         "ingest", help="Ingest one or more documents."
     )
-    add_common_options(ingest_parser, with_defaults=False)
-    ingest_parser.add_argument(
-        "paths", nargs="+", help="Paths to documents for ingestion."
-    )
-    ingest_parser.add_argument(
-        "--chunk-size", type=int, default=1500, help="Chunk size in characters."
-    )
-    ingest_parser.add_argument(
-        "--chunk-overlap", type=int, default=200, help="Overlap between chunks."
-    )
-    ingest_parser.add_argument(
-        "--reset-store",
-        action="store_true",
-        default=False,
-        help="Delete the existing local store file before ingesting.",
-    )
+    _add_ingest_options(ingest_parser)
     ingest_parser.set_defaults(handler=command_ingest)
 
     docs_parser = subparsers.add_parser(
@@ -1667,88 +1521,37 @@ friendly aliases:
         help="Add documents to the MAGI store.",
         description="Friendly alias for `magi ingest`.",
     )
-    add_common_options(docs_add_parser, with_defaults=False)
-    docs_add_parser.add_argument(
-        "paths", nargs="+", help="Paths to documents for ingestion."
-    )
-    docs_add_parser.add_argument(
-        "--chunk-size", type=int, default=1500, help="Chunk size in characters."
-    )
-    docs_add_parser.add_argument(
-        "--chunk-overlap", type=int, default=200, help="Overlap between chunks."
-    )
-    docs_add_parser.add_argument(
-        "--reset-store",
-        action="store_true",
-        default=False,
-        help="Delete the existing local store file before ingesting.",
-    )
+    _add_ingest_options(docs_add_parser)
     docs_add_parser.set_defaults(handler=command_ingest)
 
-    chat_parser = subparsers.add_parser(
-        "chat",
+
+def _add_chat_parser(
+    subparsers: Any,
+    name: str,
+    *,
+    description: str | None = None,
+) -> None:
+    command_parser = subparsers.add_parser(
+        name,
         help="Ask a question against ingested documents.",
+        description=description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""examples:
-  magi chat "summarize the uploaded policy"
-  magi chat "should we deploy?" --profile security-review
-  magi chat "what changed?" --json
+        epilog=f"""examples:
+  magi {name} "summarize the uploaded policy"
+  magi {name} "should we deploy?" --profile security-review
+  magi {name} "what changed?" --json
 """,
     )
-    add_common_options(chat_parser, with_defaults=False)
-    add_profile_options(chat_parser)
-    chat_parser.add_argument("query", help="User query to send to the MAGI system.")
-    chat_parser.add_argument(
-        "--constraints", help="Optional constraints for Balthasar."
-    )
-    chat_parser.add_argument(
-        "--json",
-        action="store_true",
-        default=False,
-        help="Print the chat result as JSON.",
-    )
-    chat_parser.add_argument(
-        "--decision-record-out",
-        type=Path,
-        help="Optional path to persist the structured decision record as JSON.",
-    )
-    chat_parser.set_defaults(handler=command_chat)
+    _add_chat_options(command_parser)
+    command_parser.set_defaults(handler=command_chat)
 
-    ask_parser = subparsers.add_parser(
-        "ask",
-        help="Ask a question against ingested documents.",
-        description="Friendly alias for `magi chat`.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""examples:
-  magi ask "summarize the uploaded policy"
-  magi ask "should we deploy?" --profile security-review
-  magi ask "what changed?" --json
-""",
-    )
-    add_common_options(ask_parser, with_defaults=False)
-    add_profile_options(ask_parser)
-    ask_parser.add_argument("query", help="User query to send to the MAGI system.")
-    ask_parser.add_argument(
-        "--constraints", help="Optional constraints for Balthasar."
-    )
-    ask_parser.add_argument(
-        "--json",
-        action="store_true",
-        default=False,
-        help="Print the chat result as JSON.",
-    )
-    ask_parser.add_argument(
-        "--decision-record-out",
-        type=Path,
-        help="Optional path to persist the structured decision record as JSON.",
-    )
-    ask_parser.set_defaults(handler=command_chat)
 
+def _add_batch_parser(subparsers: Any) -> None:
     batch_parser = subparsers.add_parser(
         "batch", help="Run a batch of queries from JSONL, JSON, CSV, or TSV."
     )
-    add_common_options(batch_parser, with_defaults=False)
-    add_profile_options(batch_parser)
+    _add_common_options(batch_parser, with_defaults=False)
+    _add_profile_options(batch_parser)
     batch_parser.add_argument("input", type=Path, help="Batch input file.")
     batch_parser.add_argument("--out", type=Path, help="Optional JSONL output path.")
     batch_parser.add_argument(
@@ -1765,13 +1568,16 @@ friendly aliases:
     )
     batch_parser.set_defaults(handler=command_batch)
 
+
+def _add_compare_parser(subparsers: Any) -> None:
     compare_parser = subparsers.add_parser(
         "compare", help="Run the same query across multiple profiles."
     )
-    add_common_options(compare_parser, with_defaults=False)
+    _add_common_options(compare_parser, with_defaults=False)
     compare_parser.add_argument("query", help="User query to compare across profiles.")
     compare_parser.add_argument(
-        "--constraints", help="Optional explicit constraints shared across runs."
+        "--constraints",
+        help="Optional explicit constraints shared across runs.",
     )
     compare_parser.add_argument(
         "--profiles",
@@ -1786,13 +1592,10 @@ friendly aliases:
     )
     compare_parser.add_argument(
         "--route",
-        choices=("summarize", "extract", "fact_check", "recommend", "decision"),
+        choices=_ROUTE_CHOICES,
         help="Optional query route override shared across compared runs.",
     )
-    compare_parser.add_argument(
-        "--model",
-        help="Optional model override for live runs.",
-    )
+    compare_parser.add_argument("--model", help="Optional model override for live runs.")
     compare_parser.add_argument(
         "--full",
         action="store_true",
@@ -1801,16 +1604,15 @@ friendly aliases:
     )
     compare_parser.set_defaults(handler=command_compare)
 
+
+def _add_artifact_parsers(subparsers: Any) -> None:
     explain_parser = subparsers.add_parser(
         "explain", help="Render a saved run artifact."
     )
     explain_parser.add_argument("artifact", help="Artifact path or run id.")
     explain_parser.set_defaults(handler=command_explain)
 
-    runs_parser = subparsers.add_parser(
-        "runs",
-        help="Inspect saved MAGI runs.",
-    )
+    runs_parser = subparsers.add_parser("runs", help="Inspect saved MAGI runs.")
     runs_subparsers = runs_parser.add_subparsers(dest="runs_command")
     runs_show_parser = runs_subparsers.add_parser(
         "show",
@@ -1820,6 +1622,27 @@ friendly aliases:
     runs_show_parser.add_argument("artifact", help="Artifact path or run id.")
     runs_show_parser.set_defaults(handler=command_explain)
 
+    replay_parser = subparsers.add_parser(
+        "replay", help="Replay a saved run artifact against the current code."
+    )
+    _add_common_options(replay_parser, with_defaults=False)
+    _add_profile_options(replay_parser)
+    replay_parser.add_argument("artifact", help="Artifact path or run id.")
+    replay_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print the replay result as JSON.",
+    )
+    replay_parser.set_defaults(handler=command_replay)
+
+    diff_parser = subparsers.add_parser("diff", help="Diff two saved run artifacts.")
+    diff_parser.add_argument("left", help="Left artifact path or run id.")
+    diff_parser.add_argument("right", help="Right artifact path or run id.")
+    diff_parser.set_defaults(handler=command_diff)
+
+
+def _add_profiles_parser(subparsers: Any) -> None:
     profiles_parser = subparsers.add_parser(
         "profiles", help="List or inspect built-in and workspace profiles."
     )
@@ -1830,27 +1653,25 @@ friendly aliases:
     )
     profiles_parser.set_defaults(handler=command_profiles)
 
-    replay_parser = subparsers.add_parser(
-        "replay", help="Replay a saved run artifact against the current code."
-    )
-    add_common_options(replay_parser, with_defaults=False)
-    add_profile_options(replay_parser)
-    replay_parser.add_argument("artifact", help="Artifact path or run id.")
-    replay_parser.add_argument(
-        "--json",
-        action="store_true",
-        default=False,
-        help="Print the replay result as JSON.",
-    )
-    replay_parser.set_defaults(handler=command_replay)
 
-    diff_parser = subparsers.add_parser(
-        "diff", help="Diff two saved run artifacts."
-    )
-    diff_parser.add_argument("left", help="Left artifact path or run id.")
-    diff_parser.add_argument("right", help="Right artifact path or run id.")
-    diff_parser.set_defaults(handler=command_diff)
+def _add_eval_run_thresholds(target: argparse.ArgumentParser) -> None:
+    target.add_argument("--min-overall-score", type=float)
+    target.add_argument("--min-verdict-accuracy", type=float)
+    target.add_argument("--min-requirement-pass-rate", type=float)
+    target.add_argument("--min-retrieval-hit-rate", type=float)
+    target.add_argument("--min-retrieval-top-source-accuracy", type=float)
+    target.add_argument("--min-retrieval-source-recall", type=float)
+    target.add_argument("--min-average-citation-hit-rate", type=float)
+    target.add_argument("--min-average-answer-support-score", type=float)
+    target.add_argument("--min-supported-answer-rate", type=float)
+    target.add_argument("--max-p50-latency-ms", type=float)
+    target.add_argument("--max-p95-latency-ms", type=float)
+    target.add_argument("--max-max-latency-ms", type=float)
+    target.add_argument("--max-average-cost-usd", type=float)
+    target.add_argument("--max-total-cost-usd", type=float)
 
+
+def _add_eval_parsers(subparsers: Any) -> None:
     eval_parser = subparsers.add_parser("eval", help="Run or compare evaluation suites.")
     eval_subparsers = eval_parser.add_subparsers(dest="eval_command")
 
@@ -1878,22 +1699,17 @@ friendly aliases:
         help="Scenario execution mode.",
     )
     eval_run_parser.add_argument("--model", help="Optional live model override.")
-    eval_run_parser.add_argument("--report-out", type=Path, help="Optional JSON report path.")
-    eval_run_parser.add_argument("--features-out", type=Path, help="Optional benchmark feature log path.")
-    eval_run_parser.add_argument("--min-overall-score", type=float)
-    eval_run_parser.add_argument("--min-verdict-accuracy", type=float)
-    eval_run_parser.add_argument("--min-requirement-pass-rate", type=float)
-    eval_run_parser.add_argument("--min-retrieval-hit-rate", type=float)
-    eval_run_parser.add_argument("--min-retrieval-top-source-accuracy", type=float)
-    eval_run_parser.add_argument("--min-retrieval-source-recall", type=float)
-    eval_run_parser.add_argument("--min-average-citation-hit-rate", type=float)
-    eval_run_parser.add_argument("--min-average-answer-support-score", type=float)
-    eval_run_parser.add_argument("--min-supported-answer-rate", type=float)
-    eval_run_parser.add_argument("--max-p50-latency-ms", type=float)
-    eval_run_parser.add_argument("--max-p95-latency-ms", type=float)
-    eval_run_parser.add_argument("--max-max-latency-ms", type=float)
-    eval_run_parser.add_argument("--max-average-cost-usd", type=float)
-    eval_run_parser.add_argument("--max-total-cost-usd", type=float)
+    eval_run_parser.add_argument(
+        "--report-out",
+        type=Path,
+        help="Optional JSON report path.",
+    )
+    eval_run_parser.add_argument(
+        "--features-out",
+        type=Path,
+        help="Optional benchmark feature log path.",
+    )
+    _add_eval_run_thresholds(eval_run_parser)
     eval_run_parser.set_defaults(handler=command_eval_run)
 
     eval_compare_parser = eval_subparsers.add_parser(
@@ -1933,6 +1749,60 @@ friendly aliases:
         help="Minimum allowed delta for average_answer_support_score.",
     )
     eval_regression_parser.set_defaults(handler=command_eval_regressions)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="MAGI terminal helper",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""workflow:
+  magi setup
+  magi status
+  magi ingest docs/briefing.pdf
+  magi ask "what risks should i consider?"
+
+friendly aliases:
+  magi ask ...          same as magi chat ...
+  magi docs add ...     same as magi ingest ...
+  magi runs show <id>   same as magi explain <id>
+""",
+    )
+    parser.set_defaults(handler=None)
+    _add_common_options(parser, with_defaults=True)
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    _add_setup_parser(subparsers)
+    _add_basic_parser(
+        subparsers,
+        "status",
+        help_text="Show provider, store, artifact, and profile status.",
+        handler=command_status,
+    )
+    _add_basic_parser(
+        subparsers,
+        "shell",
+        help_text="Open the interactive MAGI shell.",
+        handler=command_shell,
+    )
+
+    _add_ingest_parsers(subparsers)
+
+    _add_chat_parser(subparsers, "chat")
+    _add_chat_parser(
+        subparsers,
+        "ask",
+        description="Friendly alias for `magi chat`.",
+    )
+
+    _add_batch_parser(subparsers)
+
+    _add_compare_parser(subparsers)
+
+    _add_artifact_parsers(subparsers)
+    _add_profiles_parser(subparsers)
+
+    _add_eval_parsers(subparsers)
 
     return parser
 
