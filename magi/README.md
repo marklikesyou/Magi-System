@@ -5,7 +5,7 @@ This repository scaffolds a MAGI-inspired multi-agent decision system using DSPy
 - `app/`: CLI entrypoint that runs the MAGI pipeline.
 - `core/`: Shared configuration, LLM clients, safety helpers, RAG building blocks.
 - `dspy_programs/`: Persona signatures, modules, and compilation helpers.
-- `decision/`: Aggregation logic, schemas, and optional PyTorch calibrators.
+- `decision/`: Aggregation logic, schemas, and learned decision-model weights.
 - `data_pipeline/`: Ingestion, chunking, and embedding utilities for RAG.
 - `eval/`: Task suites and metrics to track quality.
 - `tests/`: Unit tests for aggregation, signatures, and safety heuristics.
@@ -29,9 +29,8 @@ magi setup
 For local development from a checkout:
 
 1. Install dependencies: `uv sync --extra dev --extra openai --extra google`
-2. Optional calibrator training: `uv sync --extra torch`
-3. Configure a provider key: `uv run magi setup`
-4. Ingest documents and chat with them from the terminal:
+2. Configure a provider key: `uv run magi setup`
+3. Ingest documents and chat with them from the terminal:
 
 ```bash
 python -m magi.app.cli status
