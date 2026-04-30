@@ -1664,6 +1664,140 @@ def _normalize_casper_response(
     )
 
 
+def _persona_vote_counts(
+    melchior: MelchiorResponse,
+    balthasar: BalthasarResponse,
+    casper: CasperResponse,
+) -> tuple[int, int]:
+    stances = (melchior.stance, balthasar.stance, casper.stance)
+    return (
+        sum(1 for stance in stances if stance == "approve"),
+        sum(1 for stance in stances if stance == "reject"),
+    )
+
+
+def _fusion_verdict_policy_update(
+    query: str,
+    evidence: Sequence[RetrievedEvidence],
+    response: FusionResponse,
+    *,
+    approve_votes: int,
+    reject_votes: int,
+) -> dict[str, Any]:
+    combined = _join_text(
+        (
+            response.final_answer,
+            response.justification,
+            response.disagreements,
+            response.next_steps,
+        )
+    )
+    direct_support = _has_semantic_support(query, evidence)
+    query_is_safe = not _is_harmful(query)
+    verdict: str = response.verdict
+    if query_is_safe and _has_decision_blocking_gap(query, evidence):
+        verdict = "revise"
+    elif (
+        query_is_safe
+        and _is_fact_check_query(query)
+        and evidence
+        and not _evidence_directly_addresses_query(query, evidence)
+    ):
+        verdict = "revise"
+    elif query_is_safe and evidence and not direct_support:
+        verdict = "revise"
+    elif (
+        query_is_safe
+        and _signals_evidence_gap(combined)
+        and not (direct_support and approve_votes >= 2 and not _is_fact_check_query(query))
+    ):
+        verdict = "revise"
+    elif (
+        query_is_safe
+        and reject_votes == 0
+        and approve_votes >= 2
+        and evidence
+        and direct_support
+        and response.residual_risk != "high"
+        and not _signals_evidence_gap(combined)
+    ):
+        verdict = "approve"
+    return {"verdict": verdict} if verdict != response.verdict else {}
+
+
+def _fusion_grounding_policy_update(
+    query: str,
+    evidence: Sequence[RetrievedEvidence],
+    *,
+    verdict: str,
+    final_answer: str,
+    justification: str,
+    heuristic: FusionResponse,
+) -> dict[str, Any]:
+    if _is_grounded_response(query, final_answer or justification, evidence, verdict):
+        return {}
+    return {
+        "verdict": heuristic.verdict,
+        "final_answer": heuristic.final_answer,
+        "justification": heuristic.justification,
+        "next_steps": heuristic.next_steps,
+    }
+
+
+def _approved_answer_policy_update(
+    query: str,
+    evidence: Sequence[RetrievedEvidence],
+    blocked: Sequence[RetrievedEvidence],
+    *,
+    verdict: str,
+    final_answer: str,
+    justification: str,
+) -> dict[str, Any]:
+    if verdict != "approve":
+        return {}
+    if _needs_status_control_answer(
+        blocked=blocked,
+        evidence=evidence,
+        text=final_answer or justification,
+    ):
+        return {
+            "final_answer": _build_status_answer(query, evidence),
+            "justification": "The answer is grounded in safe retrieved status and control evidence.",
+        }
+    if _is_field_extraction_query(query) and _has_extractive_support(query, evidence):
+        return {
+            "final_answer": _build_extractive_answer(query, evidence),
+            "justification": "The answer directly extracts the requested field from cited evidence.",
+        }
+    if _wants_key_points(query) and _has_informational_support(query, evidence):
+        return {
+            "final_answer": _build_summary_answer(query, evidence),
+            "justification": "The answer summarizes the relevant cited evidence without using distractors.",
+        }
+    return {}
+
+
+def _verdict_alignment_policy_update(
+    *,
+    verdict: str,
+    final_answer: str,
+    justification: str,
+    heuristic: FusionResponse,
+) -> dict[str, Any]:
+    text = _join_text((final_answer, justification))
+    if verdict == "revise" and not _signals_evidence_gap(text):
+        return {
+            "final_answer": heuristic.final_answer,
+            "justification": heuristic.justification,
+        }
+    if verdict == "reject" and not _signals_refusal(text):
+        return {
+            "final_answer": heuristic.final_answer,
+            "justification": heuristic.justification,
+        }
+    return {}
+
+
 def _normalize_fusion_response(
     query: str,
     melchior: MelchiorResponse,
@@ -1673,99 +1807,55 @@ def _normalize_fusion_response(
     blocked: Sequence[RetrievedEvidence],
     response: FusionResponse,
 ) -> FusionResponse:
-    approve_votes = sum(
-        1
-        for stance in (melchior.stance, balthasar.stance, casper.stance)
-        if stance == "approve"
-    )
-    reject_votes = sum(
-        1
-        for stance in (melchior.stance, balthasar.stance, casper.stance)
-        if stance == "reject"
-    )
-    combined = _join_text(
-        (
-            response.final_answer,
-            response.justification,
-            response.disagreements,
-            response.next_steps,
-        )
-    )
-    verdict = response.verdict
-    updates: dict[str, Any] = {}
-    direct_support = _has_semantic_support(query, evidence)
-    decision_gap = _has_decision_blocking_gap(query, evidence)
-    if not _is_harmful(query) and decision_gap:
-        verdict = "revise"
-    elif (
-        not _is_harmful(query)
-        and _is_fact_check_query(query)
-        and evidence
-        and not _evidence_directly_addresses_query(query, evidence)
-    ):
-        verdict = "revise"
-    elif not _is_harmful(query) and evidence and not direct_support:
-        verdict = "revise"
-    elif (
-        not _is_harmful(query)
-        and _signals_evidence_gap(combined)
-        and not (direct_support and approve_votes >= 2 and not _is_fact_check_query(query))
-    ):
-        verdict = "revise"
-    elif (
-        not _is_harmful(query)
-        and reject_votes == 0
-        and approve_votes >= 2
-        and evidence
-        and direct_support
-        and response.residual_risk != "high"
-        and not _signals_evidence_gap(combined)
-    ):
-        verdict = "approve"
-    if verdict != response.verdict:
-        updates["verdict"] = verdict
-    heuristic = _heuristic_fusion(query, melchior, balthasar, casper, evidence, blocked)
+    approve_votes, reject_votes = _persona_vote_counts(melchior, balthasar, casper)
+    verdict: str = response.verdict
     final_answer = response.final_answer
     justification = response.justification
-    if not _is_grounded_response(
-        query, final_answer or justification, evidence, verdict
-    ):
-        verdict = heuristic.verdict
-        final_answer = heuristic.final_answer
-        justification = heuristic.justification
-        updates["verdict"] = verdict
-        updates["next_steps"] = heuristic.next_steps
-    if verdict == "approve" and _needs_status_control_answer(
-        blocked=blocked,
+    updates = _fusion_verdict_policy_update(
+        query,
+        evidence,
+        response,
+        approve_votes=approve_votes,
+        reject_votes=reject_votes,
+    )
+    verdict = str(updates.get("verdict", verdict))
+
+    heuristic = _heuristic_fusion(query, melchior, balthasar, casper, evidence, blocked)
+    grounding_update = _fusion_grounding_policy_update(
+        query,
+        evidence,
+        verdict=verdict,
+        final_answer=final_answer,
+        justification=justification,
+        heuristic=heuristic,
+    )
+    updates.update(grounding_update)
+    verdict = str(grounding_update.get("verdict", verdict))
+    final_answer = str(grounding_update.get("final_answer", final_answer))
+    justification = str(grounding_update.get("justification", justification))
+
+    approved_answer_update = _approved_answer_policy_update(
+        query,
         evidence=evidence,
-        text=final_answer or justification,
-    ):
-        final_answer = _build_status_answer(query, evidence)
-        justification = "The answer is grounded in safe retrieved status and control evidence."
-    elif (
-        verdict == "approve"
-        and _is_field_extraction_query(query)
-        and _has_extractive_support(query, evidence)
-    ):
-        final_answer = _build_extractive_answer(query, evidence)
-        justification = "The answer directly extracts the requested field from cited evidence."
-    elif (
-        verdict == "approve"
-        and _wants_key_points(query)
-        and _has_informational_support(query, evidence)
-    ):
-        final_answer = _build_summary_answer(query, evidence)
-        justification = "The answer summarizes the relevant cited evidence without using distractors."
-    if verdict == "revise" and not _signals_evidence_gap(
-        _join_text((final_answer, justification))
-    ):
-        final_answer = heuristic.final_answer
-        justification = heuristic.justification
-    if verdict == "reject" and not _signals_refusal(
-        _join_text((final_answer, justification))
-    ):
-        final_answer = heuristic.final_answer
-        justification = heuristic.justification
+        blocked=blocked,
+        verdict=verdict,
+        final_answer=final_answer,
+        justification=justification,
+    )
+    updates.update(approved_answer_update)
+    final_answer = str(approved_answer_update.get("final_answer", final_answer))
+    justification = str(approved_answer_update.get("justification", justification))
+
+    alignment_update = _verdict_alignment_policy_update(
+        verdict=verdict,
+        final_answer=final_answer,
+        justification=justification,
+        heuristic=heuristic,
+    )
+    updates.update(alignment_update)
+    final_answer = str(alignment_update.get("final_answer", final_answer))
+    justification = str(alignment_update.get("justification", justification))
+
     updates["final_answer"] = final_answer
     updates["justification"] = justification
     updates["text"] = final_answer or justification
@@ -2196,60 +2286,27 @@ class MagiProgram:
             label="responder",
         )
 
-    def forward(
-        self, query: str, constraints: str = ""
-    ) -> tuple[FusionResponse, dict[str, Any]]:
-        def build_run_metadata(
-            *,
-            cache_hit: bool,
-            safe_evidence: Sequence[RetrievedEvidence],
-            blocked_evidence: Sequence[RetrievedEvidence],
-            route: Any,
-            retrieval_top_k: int,
-        ) -> dict[str, Any]:
-            def evidence_payload(items: Sequence[RetrievedEvidence]) -> list[dict[str, object]]:
-                return [
-                    {
-                        "citation": item.citation,
-                        "source": item.source,
-                        "document_id": item.document_id,
-                        "text": item.text,
-                        "score": item.score,
-                        "blocked": item.blocked,
-                        "safety_reasons": list(item.safety_reasons),
-                    }
-                    for item in items
-                ]
+    def _retrieval_top_k(self, route: Any) -> int:
+        preferred = getattr(self.retriever, "preferred_top_k", route.retrieval_top_k)
+        return max(1, int(preferred or route.retrieval_top_k))
 
-            return {
-                "cache_hit": cache_hit,
-                "safe_evidence": evidence_payload(safe_evidence),
-                "blocked_evidence": evidence_payload(blocked_evidence),
-                "query_mode": route.mode,
-                "routing_rationale": route.rationale,
-                "routing_scores": dict(route.scores),
-                "routing_signals": list(route.signals),
-                "requested_route": self._route_mode_override or "",
-                "retrieval_top_k": retrieval_top_k,
-                "persona_mode": "live"
-                if self._runner.enabled() and self._enable_live_personas
-                else "deterministic",
-                "responder_mode": "live"
-                if self._runner.enabled() and self._enable_responder_llm
-                else "deterministic",
-            }
-
-        clean_query = sanitize_input(query, max_length=2000)
-        clean_constraints = sanitize_input(constraints, max_length=500)
-        route = self._route_decision(clean_query, clean_constraints)
-        retrieval_top_k = max(
-            1,
-            int(
-                getattr(self.retriever, "preferred_top_k", route.retrieval_top_k)
-                or route.retrieval_top_k
-            ),
+    def _runtime_cache_key(
+        self,
+        clean_query: str,
+        clean_constraints: str,
+        route: Any,
+        retrieval_top_k: int,
+    ) -> str:
+        client_signature = (
+            _client_cache_signature(self._client)
+            if self.effective_mode == "live"
+            else "stub"
         )
-        cache_key = (
+        prompt_signature = hash_query(
+            self._prompt_preamble,
+            self._response_format_guidance,
+        )
+        return (
             f"{_RUNTIME_CACHE_VERSION}::"
             f"{_retriever_cache_token(self.retriever)}::"
             f"{hash_query(clean_query, clean_constraints)}::"
@@ -2258,89 +2315,187 @@ class MagiProgram:
             f"{retrieval_top_k}::"
             f"{self.effective_mode}::"
             f"{self.model_name}::"
-            f"{_client_cache_signature(self._client) if self.effective_mode == 'live' else 'stub'}::"
+            f"{client_signature}::"
             f"{int(self._enable_live_personas)}::"
             f"{int(self._enable_responder_llm)}::"
-            f"{hash_query(self._prompt_preamble, self._response_format_guidance)}"
+            f"{prompt_signature}"
         )
-        cached = _CACHE.get(cache_key)
-        if cached is not None:
-            cached_metadata = cast(dict[str, Any] | None, _TRACE_CACHE.get(cache_key))
-            self.last_run_metadata = dict(cached_metadata or {})
-            self.last_run_metadata["cache_hit"] = True
-            return cast(tuple[FusionResponse, dict[str, Any]], cached)
 
-        safety_client: Any | None = (
-            self._safety_client() if self._runner.enabled() else False
+    def _cached_result(
+        self, cache_key: str
+    ) -> tuple[FusionResponse, dict[str, Any]] | None:
+        cached = _CACHE.get(cache_key)
+        if cached is None:
+            return None
+        cached_metadata = cast(dict[str, Any] | None, _TRACE_CACHE.get(cache_key))
+        self.last_run_metadata = dict(cached_metadata or {})
+        self.last_run_metadata["cache_hit"] = True
+        return cast(tuple[FusionResponse, dict[str, Any]], cached)
+
+    @staticmethod
+    def _evidence_metadata(
+        items: Sequence[RetrievedEvidence],
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "citation": item.citation,
+                "source": item.source,
+                "document_id": item.document_id,
+                "text": item.text,
+                "score": item.score,
+                "blocked": item.blocked,
+                "safety_reasons": list(item.safety_reasons),
+            }
+            for item in items
+        ]
+
+    def _build_run_metadata(
+        self,
+        *,
+        cache_hit: bool,
+        safe_evidence: Sequence[RetrievedEvidence],
+        blocked_evidence: Sequence[RetrievedEvidence],
+        route: Any,
+        retrieval_top_k: int,
+    ) -> dict[str, Any]:
+        return {
+            "cache_hit": cache_hit,
+            "safe_evidence": self._evidence_metadata(safe_evidence),
+            "blocked_evidence": self._evidence_metadata(blocked_evidence),
+            "query_mode": route.mode,
+            "routing_rationale": route.rationale,
+            "routing_scores": dict(route.scores),
+            "routing_signals": list(route.signals),
+            "requested_route": self._route_mode_override or "",
+            "retrieval_top_k": retrieval_top_k,
+            "persona_mode": "live"
+            if self._runner.enabled() and self._enable_live_personas
+            else "deterministic",
+            "responder_mode": "live"
+            if self._runner.enabled() and self._enable_responder_llm
+            else "deterministic",
+        }
+
+    def _remember_result(
+        self,
+        cache_key: str,
+        result: tuple[FusionResponse, dict[str, Any]],
+        *,
+        safe_evidence: Sequence[RetrievedEvidence],
+        blocked_evidence: Sequence[RetrievedEvidence],
+        route: Any,
+        retrieval_top_k: int,
+    ) -> None:
+        _CACHE.put(cache_key, result)
+        self.last_run_metadata = self._build_run_metadata(
+            cache_hit=False,
+            safe_evidence=safe_evidence,
+            blocked_evidence=blocked_evidence,
+            route=route,
+            retrieval_top_k=retrieval_top_k,
         )
-        input_report = analyze_safety(clean_query, client=safety_client, stage="input")
+        _TRACE_CACHE.put(cache_key, self.last_run_metadata)
+
+    def _retrieve_with_safety(
+        self,
+        clean_query: str,
+        retrieval_top_k: int,
+        safety_client: Any,
+    ) -> tuple[Any, list[RetrievedEvidence], list[RetrievedEvidence]]:
+        input_report = analyze_safety(
+            clean_query,
+            client=safety_client,
+            stage="input",
+        )
         safe_evidence, blocked_evidence = _safe_retrieve(
             self.retriever,
             clean_query,
             top_k=retrieval_top_k,
             safety_client=safety_client,
         )
-        if is_blocked(input_report):
-            fused = FusionResponse(
-                verdict="reject" if _is_harmful(clean_query) else "revise",
-                justification="The request was blocked by the safety gate before reasoning.",
-                confidence=1.0,
-                final_answer="I can’t assist with that request."
-                if _is_harmful(clean_query)
-                else "The request needs to be rephrased safely.",
-                next_steps=[
-                    "Remove unsafe instructions or sensitive data and try again."
-                ],
-                consensus_points=["Input safety checks run before answer generation."],
-                disagreements=[],
-                residual_risk="high" if _is_harmful(clean_query) else "medium",
-                risks=["Unsafe or policy-sensitive input was detected."],
-                mitigations=["Reject or revise the request before proceeding."],
-                text="I can’t assist with that request."
-                if _is_harmful(clean_query)
-                else "The request needs to be rephrased safely.",
-            )
-            personas: dict[str, Any] = {
-                "melchior": _heuristic_melchior(clean_query, safe_evidence),
-                "balthasar": _heuristic_balthasar(
-                    clean_query, clean_constraints, safe_evidence
-                ),
-                "casper": _heuristic_casper(
-                    clean_query, safe_evidence, blocked_evidence
-                ),
-            }
-            result = (fused, personas)
-            _CACHE.put(cache_key, result)
-            self.last_run_metadata = build_run_metadata(
-                cache_hit=False,
-                safe_evidence=safe_evidence,
-                blocked_evidence=blocked_evidence,
-                route=route,
-                retrieval_top_k=retrieval_top_k,
-            )
-            _TRACE_CACHE.put(cache_key, self.last_run_metadata)
-            return result
+        return input_report, safe_evidence, blocked_evidence
 
+    def _blocked_input_result(
+        self,
+        clean_query: str,
+        clean_constraints: str,
+        safe_evidence: Sequence[RetrievedEvidence],
+        blocked_evidence: Sequence[RetrievedEvidence],
+    ) -> tuple[FusionResponse, dict[str, Any]]:
+        harmful = _is_harmful(clean_query)
+        final_answer = (
+            "I can’t assist with that request."
+            if harmful
+            else "The request needs to be rephrased safely."
+        )
+        fused = FusionResponse(
+            verdict="reject" if harmful else "revise",
+            justification="The request was blocked by the safety gate before reasoning.",
+            confidence=1.0,
+            final_answer=final_answer,
+            next_steps=["Remove unsafe instructions or sensitive data and try again."],
+            consensus_points=["Input safety checks run before answer generation."],
+            disagreements=[],
+            residual_risk="high" if harmful else "medium",
+            risks=["Unsafe or policy-sensitive input was detected."],
+            mitigations=["Reject or revise the request before proceeding."],
+            text=final_answer,
+        )
+        personas: dict[str, Any] = {
+            "melchior": _heuristic_melchior(clean_query, safe_evidence),
+            "balthasar": _heuristic_balthasar(
+                clean_query,
+                clean_constraints,
+                safe_evidence,
+            ),
+            "casper": _heuristic_casper(
+                clean_query,
+                safe_evidence,
+                blocked_evidence,
+            ),
+        }
+        return fused, personas
+
+    def _run_personas(
+        self,
+        clean_query: str,
+        clean_constraints: str,
+        safe_evidence: Sequence[RetrievedEvidence],
+        blocked_evidence: Sequence[RetrievedEvidence],
+        route: Any,
+    ) -> tuple[MelchiorResponse, BalthasarResponse, CasperResponse]:
         if self._runner.enabled() and not self._enable_live_personas:
-            melchior = _heuristic_melchior(clean_query, safe_evidence)
-            balthasar = _heuristic_balthasar(
-                clean_query,
-                clean_constraints,
-                safe_evidence,
+            return (
+                _heuristic_melchior(clean_query, safe_evidence),
+                _heuristic_balthasar(
+                    clean_query,
+                    clean_constraints,
+                    safe_evidence,
+                ),
+                _heuristic_casper(
+                    clean_query,
+                    safe_evidence,
+                    blocked_evidence,
+                ),
             )
-            casper = _heuristic_casper(
-                clean_query,
-                safe_evidence,
-                blocked_evidence,
-            )
-        else:
-            melchior, balthasar, casper = self._run_initial_personas(
-                clean_query,
-                clean_constraints,
-                safe_evidence,
-                blocked_evidence,
-                route,
-            )
+        return self._run_initial_personas(
+            clean_query,
+            clean_constraints,
+            safe_evidence,
+            blocked_evidence,
+            route,
+        )
+
+    def _run_answer_synthesis(
+        self,
+        clean_query: str,
+        safe_evidence: Sequence[RetrievedEvidence],
+        blocked_evidence: Sequence[RetrievedEvidence],
+        route: Any,
+        melchior: MelchiorResponse,
+        balthasar: BalthasarResponse,
+        casper: CasperResponse,
+    ) -> FusionResponse:
         fusion = self._run_fusion(
             clean_query,
             melchior,
@@ -2362,7 +2517,7 @@ class MagiProgram:
             )
         else:
             responder = _heuristic_responder(clean_query, fusion, safe_evidence)
-        fused = fusion.model_copy(
+        return fusion.model_copy(
             update={
                 "final_answer": responder.final_answer or fusion.final_answer,
                 "justification": responder.justification or fusion.justification,
@@ -2373,36 +2528,98 @@ class MagiProgram:
             }
         )
 
+    @staticmethod
+    def _apply_output_safety(
+        fused: FusionResponse,
+        safety_client: Any,
+    ) -> FusionResponse:
         output_report = analyze_safety(
             fused.final_answer or fused.justification,
             client=safety_client,
             stage="output",
         )
-        if is_blocked(output_report):
-            fused = fused.model_copy(
-                update={
-                    "verdict": "revise",
-                    "final_answer": "The generated answer was withheld by the output safety gate.",
-                    "justification": "Output safety checks detected unsafe content in the draft response.",
-                    "next_steps": [
-                        "Review the query and supporting evidence manually."
-                    ],
-                    "residual_risk": "high",
-                    "text": "The generated answer was withheld by the output safety gate.",
-                }
-            )
+        if not is_blocked(output_report):
+            return fused
+        return fused.model_copy(
+            update={
+                "verdict": "revise",
+                "final_answer": "The generated answer was withheld by the output safety gate.",
+                "justification": "Output safety checks detected unsafe content in the draft response.",
+                "next_steps": ["Review the query and supporting evidence manually."],
+                "residual_risk": "high",
+                "text": "The generated answer was withheld by the output safety gate.",
+            }
+        )
 
-        personas = {"melchior": melchior, "balthasar": balthasar, "casper": casper}
-        result = (fused, personas)
-        _CACHE.put(cache_key, result)
-        self.last_run_metadata = build_run_metadata(
-            cache_hit=False,
+    def forward(
+        self, query: str, constraints: str = ""
+    ) -> tuple[FusionResponse, dict[str, Any]]:
+        clean_query = sanitize_input(query, max_length=2000)
+        clean_constraints = sanitize_input(constraints, max_length=500)
+        route = self._route_decision(clean_query, clean_constraints)
+        retrieval_top_k = self._retrieval_top_k(route)
+        cache_key = self._runtime_cache_key(
+            clean_query,
+            clean_constraints,
+            route,
+            retrieval_top_k,
+        )
+        cached = self._cached_result(cache_key)
+        if cached is not None:
+            return cached
+
+        safety_client = self._safety_client() if self._runner.enabled() else False
+        input_report, safe_evidence, blocked_evidence = self._retrieve_with_safety(
+            clean_query,
+            retrieval_top_k,
+            safety_client,
+        )
+        if is_blocked(input_report):
+            result = self._blocked_input_result(
+                clean_query,
+                clean_constraints,
+                safe_evidence,
+                blocked_evidence,
+            )
+            self._remember_result(
+                cache_key,
+                result,
+                safe_evidence=safe_evidence,
+                blocked_evidence=blocked_evidence,
+                route=route,
+                retrieval_top_k=retrieval_top_k,
+            )
+            return result
+
+        melchior, balthasar, casper = self._run_personas(
+            clean_query,
+            clean_constraints,
+            safe_evidence,
+            blocked_evidence,
+            route,
+        )
+        fused = self._run_answer_synthesis(
+            clean_query,
+            safe_evidence,
+            blocked_evidence,
+            route,
+            melchior,
+            balthasar,
+            casper,
+        )
+        fused = self._apply_output_safety(fused, safety_client)
+        result = (
+            fused,
+            {"melchior": melchior, "balthasar": balthasar, "casper": casper},
+        )
+        self._remember_result(
+            cache_key,
+            result,
             safe_evidence=safe_evidence,
             blocked_evidence=blocked_evidence,
             route=route,
             retrieval_top_k=retrieval_top_k,
         )
-        _TRACE_CACHE.put(cache_key, self.last_run_metadata)
         return result
 
 
