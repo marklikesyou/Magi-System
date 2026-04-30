@@ -674,6 +674,72 @@ def test_guarded_decision_uses_control_evidence_and_skips_distractor():
     assert "[1]" in fused.final_answer and "[3]" in fused.final_answer
 
 
+def test_unsupported_detail_question_revises_instead_of_approving_related_evidence():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="pilot_brief",
+                    text=(
+                        "The pilot proposal scopes MAGI to internal policy triage for four weeks. "
+                        "Every decision keeps a human reviewer in the loop. Weekly evidence refreshes, "
+                        "rollback criteria, and audit logs are required guardrails before launch."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="rollout_status",
+                    text=(
+                        "The rollout status is green. The release is approved and monitored by ops. "
+                        "No production incidents were recorded during the latest review window."
+                    ),
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, personas = program("What is MAGI's Q4 procurement budget?", constraints="")
+
+    assert fused.verdict == "revise"
+    assert {persona.stance for persona in personas.values()} == {"revise"}
+    assert "not sufficient" in fused.final_answer.lower()
+    assert "pilot proposal scopes" not in fused.final_answer.lower()
+
+
+def test_yes_no_evidence_question_gets_fact_check_answer_not_decision_approval():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="pilot_brief",
+                    text=(
+                        "The pilot proposal scopes MAGI to internal policy triage for four weeks. "
+                        "Every decision keeps a human reviewer in the loop."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="rollout_status",
+                    text=(
+                        "The rollout status is green. The release is approved and monitored by ops. "
+                        "No production incidents were recorded during the latest review window."
+                    ),
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, _ = program(
+        "Does the evidence say the rollout status is green?",
+        constraints="",
+    )
+
+    assert fused.verdict == "approve"
+    assert fused.final_answer.startswith("Yes,")
+    assert "bounded internal pilot" not in fused.final_answer.lower()
+    assert "rollout status is green" in fused.final_answer.lower()
+
+
 def test_incomplete_decision_revises_instead_of_cautious_approval():
     program = MagiProgram(
         retriever=ScenarioRetriever(
