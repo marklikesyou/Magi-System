@@ -336,10 +336,7 @@ def _signals_negative_verification(text: str) -> bool:
             "does not authorize",
             "doesn't authorize",
             "being evaluated",
-            "human review",
-            "human sign-off",
-            "human sign off",
-            "no production",
+            "no production sla",
             "no customer-facing",
             "no customer facing",
         )
