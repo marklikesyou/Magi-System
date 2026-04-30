@@ -46,11 +46,6 @@ def load_entries(path: Path) -> List[VectorEntry]:
     return entries
 
 
-def load_store_metadata(path: Path) -> dict[str, object]:
-    metadata, _ = load_store_bundle(path)
-    return metadata
-
-
 def save_json_document(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None
@@ -295,7 +290,6 @@ __all__ = [
     "initialize_store",
     "load_entries",
     "load_store_bundle",
-    "load_store_metadata",
     "persist_store",
     "save_entries",
     "save_json_document",
