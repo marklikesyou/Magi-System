@@ -59,7 +59,7 @@ _FORCE_STUB = os.getenv("MAGI_FORCE_DSPY_STUB", "0") != "0"
 _CACHE = LRUCache(max_size=128)
 _TRACE_CACHE = LRUCache(max_size=128)
 _TOKENS = TokenTracker()
-_RUNTIME_CACHE_VERSION = "magi-runtime-v5"
+_RUNTIME_CACHE_VERSION = "magi-runtime-v6"
 _STANCE_TAGS = {"approve": "APPROVE", "reject": "REJECT", "revise": "REVISE"}
 _INFORMATIONAL_PATTERNS = (
     "explain",
@@ -283,6 +283,18 @@ _NEGATIVE_VERIFICATION_PATTERNS = (
     "not supported",
     "cannot be verified",
 )
+_PRODUCTION_INCIDENT_ABSENCE_PATTERNS = (
+    "no production incident",
+    "no production incidents",
+    "without production incident",
+    "without production incidents",
+    "zero production incident",
+    "zero production incidents",
+    "production incidents did not",
+    "production incidents didn't",
+    "production incidents were not",
+    "production incidents weren't",
+)
 _DECISION_CRITICAL_PATTERNS = (
     "approval",
     "approvals",
@@ -473,6 +485,24 @@ def _pattern_hits(text: str, patterns: Sequence[str]) -> int:
     return sum(1 for pattern in patterns if pattern in lowered)
 
 
+def _query_asserts_absent_production_incidents(query: str) -> bool:
+    return contains_pattern(query, _PRODUCTION_INCIDENT_ABSENCE_PATTERNS)
+
+
+def _text_asserts_absent_production_incidents(text: str) -> bool:
+    return contains_pattern(text, _PRODUCTION_INCIDENT_ABSENCE_PATTERNS)
+
+
+def _evidence_negates_fact_claim(query: str, evidence_text: str) -> bool:
+    lowered_query = query.lower()
+    if (
+        "production incident" in lowered_query
+        and not _query_asserts_absent_production_incidents(query)
+    ):
+        return _text_asserts_absent_production_incidents(evidence_text)
+    return _pattern_hits(evidence_text, _NEGATIVE_VERIFICATION_PATTERNS) > 0
+
+
 def _source_and_text(item: RetrievedEvidence) -> str:
     source = item.source.replace("_", " ").replace("-", " ")
     return f"{source} {item.text}".lower()
@@ -487,7 +517,9 @@ def _source_overlap(query: str, item: RetrievedEvidence) -> int:
     return len(query_terms & (source_terms | text_terms))
 
 
-def _looks_like_distractor(item: RetrievedEvidence) -> bool:
+def _looks_like_distractor(item: RetrievedEvidence, query: str = "") -> bool:
+    if query.strip() and _source_overlap(query, item) >= 2:
+        return False
     source = item.source.lower()
     if any(
         marker in source
@@ -514,14 +546,14 @@ def _select_relevant_evidence(
 ) -> list[RetrievedEvidence]:
     ranked = _rank_supporting_evidence(query, evidence)
     selected: list[RetrievedEvidence] = [
-        item for item in ranked if not _looks_like_distractor(item)
+        item for item in ranked if not _looks_like_distractor(item, query)
     ]
     if len(selected) < limit:
         candidates = sorted(
             (
                 item
                 for item in evidence
-                if not _looks_like_distractor(item)
+                if not _looks_like_distractor(item, query)
                 and (_source_overlap(query, item) > 0 or item.score >= 0.2)
             ),
             key=lambda item: (
@@ -561,7 +593,7 @@ def _select_decision_evidence(
     candidates: list[tuple[tuple[int, int, int, float], int, RetrievedEvidence]] = []
     for index, item in enumerate(evidence):
         combined = _source_and_text(item)
-        if _looks_like_distractor(item):
+        if _looks_like_distractor(item, query):
             continue
         control_hits = _pattern_hits(combined, _DECISION_CONTROL_PATTERNS)
         gap_hits = _pattern_hits(combined, _DECISION_GAP_PATTERNS)
@@ -594,7 +626,7 @@ def _has_decision_blocking_gap(
         return False
     query_lower = query.lower()
     for item in evidence:
-        if _looks_like_distractor(item):
+        if _looks_like_distractor(item, query):
             continue
         combined = _source_and_text(item)
         if _pattern_hits(
@@ -647,7 +679,7 @@ def _select_status_control_evidence(
     for item in evidence:
         source = item.source.lower()
         combined = _source_and_text(item)
-        if _looks_like_distractor(item) or item in selected:
+        if _looks_like_distractor(item, query) or item in selected:
             continue
         if (
             "control" in source
@@ -678,7 +710,7 @@ def _best_extractive_segment(
         return None
     best: tuple[int, float, RetrievedEvidence, str] | None = None
     for item in evidence:
-        if _looks_like_distractor(item):
+        if _looks_like_distractor(item, query):
             continue
         for segment in _split_evidence_sentences(item.text):
             segment_terms = set(_query_support_terms(segment))
@@ -1080,11 +1112,10 @@ def _build_decision_approval_answer(
     if len(selected) >= 2:
         return (
             "Approve a bounded internal pilot or operational trial next month with medium residual risk: "
-            f"{supporting} Keep the cited scope, human review, approved-budget constraint, "
-            "and guardrails in place."
+            f"{supporting} Keep the cited scope, human review, and guardrails in place."
         )
     return (
-        "Approve only as a bounded pilot within the cited limits, approved budget, and human review: "
+        "Approve only as a bounded pilot within the cited limits and human review: "
         f"{supporting}"
     )
 
@@ -1139,7 +1170,7 @@ def _build_fact_check_answer(
         return _build_fact_gap_answer(query, evidence)
     supporting = _join_cited_evidence(selected, limit=1)
     combined = _join_text([item.text for item in selected])
-    if _pattern_hits(combined, _NEGATIVE_VERIFICATION_PATTERNS):
+    if _evidence_negates_fact_claim(query, combined):
         return f"No. The cited evidence does not verify the claim: {supporting}"
     return f"Yes, to the extent stated by the cited evidence: {supporting}"
 
