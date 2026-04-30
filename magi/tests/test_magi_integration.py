@@ -7,6 +7,9 @@ os.environ.setdefault("MAGI_FORCE_DSPY_STUB", "1")
 
 import magi.app.service as service
 from magi.app.service import run_chat_session
+from magi.core.embeddings import HashingEmbedder
+from magi.core.rag import RagRetriever
+from magi.core.vectorstore import InMemoryVectorStore, VectorEntry
 from magi.dspy_programs.personas import MagiProgram
 from magi.decision.aggregator import resolve_verdict
 from magi.decision.schema import PersonaOutput, FinalDecision
@@ -474,6 +477,70 @@ def test_chat_session_approves_direct_positive_fact_check():
     assert result.decision_trace.query_mode == "fact_check"
     assert result.fused.final_answer.startswith("Yes,")
     assert "bounded internal pilot" not in result.fused.final_answer.lower()
+
+
+def test_chat_session_answers_team_social_from_social_evidence():
+    embedder = HashingEmbedder(dimension=384)
+    store = InMemoryVectorStore(dim=384)
+    store.add(
+        [
+            VectorEntry(
+                document_id="magi_overview",
+                embedding=embedder(
+                    "MAGI is a multi persona reasoning engine for assessing user requests against an evidence base."
+                ),
+                text=(
+                    "MAGI is a multi persona reasoning engine for assessing user requests against an evidence base. "
+                    "It retrieves context from a vector store, convenes three specialized personas, and returns a final verdict with cited support."
+                ),
+                metadata={"source": "magi_overview"},
+            ),
+            VectorEntry(
+                document_id="pilot_brief",
+                embedding=embedder(
+                    "The pilot proposal scopes MAGI to internal policy triage for four weeks."
+                ),
+                text=(
+                    "The pilot proposal scopes MAGI to internal policy triage for four weeks. "
+                    "Every decision keeps a human reviewer in the loop. Weekly evidence refreshes, "
+                    "rollback criteria, and audit logs are required guardrails before launch."
+                ),
+                metadata={"source": "pilot_brief"},
+            ),
+            VectorEntry(
+                document_id="rollout_status",
+                embedding=embedder("The rollout status is green."),
+                text=(
+                    "The rollout status is green. The release is approved and monitored by ops. "
+                    "No production incidents were recorded during the latest review window."
+                ),
+                metadata={"source": "rollout_status"},
+            ),
+            VectorEntry(
+                document_id="team_social",
+                embedding=embedder(
+                    "The team social agenda covers lunch, demos, office logistics, and a Friday photo booth."
+                ),
+                text=(
+                    "The team social agenda covers lunch, demos, office logistics, "
+                    "and a Friday photo booth."
+                ),
+                metadata={"source": "team_social"},
+            ),
+        ]
+    )
+
+    result = run_chat_session(
+        "What is on the team social agenda?",
+        "",
+        RagRetriever(embedder, store),
+    )
+
+    assert result.final_decision.verdict == "approve"
+    assert result.decision_trace.cited_sources == ["team_social"]
+    assert "lunch" in result.fused.final_answer.lower()
+    assert "photo booth" in result.fused.final_answer.lower()
+    assert "rollout status" not in result.fused.final_answer.lower()
 
 
 def test_chat_session_abstains_on_fact_check_revision_even_with_cited_context(monkeypatch):
