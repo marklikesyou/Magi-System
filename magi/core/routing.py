@@ -336,14 +336,6 @@ def _answer_style(mode: QueryMode) -> str:
     return "Provide a concise grounded summary with citations and explicit caveats."
 
 
-def should_prefer_abstention(mode: QueryMode) -> bool:
-    return mode in {"extract", "fact_check"}
-
-
-def mode_display_name(mode: QueryMode) -> str:
-    return mode.replace("_", " ")
-
-
 def mode_prompt_brief(route: RoutingDecision) -> str:
     score_text = ", ".join(
         f"{label}={route.scores.get(label, 0)}" for label in _MODE_ORDER
@@ -361,8 +353,6 @@ def mode_prompt_brief(route: RoutingDecision) -> str:
 __all__ = [
     "QueryMode",
     "RoutingDecision",
-    "mode_display_name",
     "mode_prompt_brief",
     "route_query",
-    "should_prefer_abstention",
 ]
