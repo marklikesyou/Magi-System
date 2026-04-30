@@ -143,6 +143,16 @@ _EXTRACTIVE_QUERY_PATTERNS = (
     "which ",
     "what are the launch",
 )
+_SPECIFIC_DETAIL_QUERY_STARTERS = (
+    "what is",
+    "what are",
+    "which ",
+    "who ",
+    "when ",
+    "where ",
+    "how many",
+    "how much",
+)
 _FIELD_EXTRACTION_HINTS = (
     "budget cap",
     "data categories",
@@ -165,6 +175,7 @@ _FACT_CHECK_QUERY_PATTERNS = (
     "guarantee",
     "guaranteed",
     "does the evidence show",
+    "does the evidence say",
     "does the source say",
     "supported by the evidence",
 )
@@ -265,7 +276,7 @@ _NEGATIVE_VERIFICATION_PATTERNS = (
     "doesn't guarantee",
     "does not prove",
     "did not prove",
-    "no production",
+    "no production sla",
     "no formal",
     "not approved",
     "not been approved",
@@ -414,7 +425,7 @@ def _supports_grounded_synthesis(
 
 
 def _is_decision_query(query: str) -> bool:
-    if _is_field_extraction_query(query):
+    if _is_fact_check_query(query) or _is_field_extraction_query(query):
         return False
     return contains_pattern(query, _DECISION_PATTERNS)
 
@@ -426,6 +437,13 @@ def _is_fact_check_query(query: str) -> bool:
 def _is_extractive_query(query: str) -> bool:
     lowered = query.lower().strip()
     return any(lowered.startswith(pattern) for pattern in _EXTRACTIVE_QUERY_PATTERNS)
+
+
+def _is_specific_detail_query(query: str) -> bool:
+    lowered = query.lower().strip()
+    return any(
+        lowered.startswith(pattern) for pattern in _SPECIFIC_DETAIL_QUERY_STARTERS
+    )
 
 
 def _is_field_extraction_query(query: str) -> bool:
@@ -528,6 +546,8 @@ def _has_informational_support(
         return False
     if _is_fact_check_query(query):
         return False
+    if _is_specific_detail_query(query):
+        return _evidence_directly_addresses_query(query, evidence)
     return bool(_select_relevant_evidence(query, evidence, limit=1))
 
 
@@ -1114,10 +1134,10 @@ def _build_fact_check_answer(
     query: str,
     evidence: Sequence[RetrievedEvidence],
 ) -> str:
-    selected = _select_relevant_evidence(query, evidence, limit=2)
+    selected = _select_relevant_evidence(query, evidence, limit=1)
     if not selected:
         return _build_fact_gap_answer(query, evidence)
-    supporting = _join_cited_evidence(selected, limit=2)
+    supporting = _join_cited_evidence(selected, limit=1)
     combined = _join_text([item.text for item in selected])
     if _pattern_hits(combined, _NEGATIVE_VERIFICATION_PATTERNS):
         return f"No. The cited evidence does not verify the claim: {supporting}"
