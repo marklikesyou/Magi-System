@@ -39,9 +39,8 @@ magi
 Manual repository setup is still available for local development:
 
 1. Sync the pinned environment with uv: `uv sync --extra dev --extra openai --extra google`
-2. Optional calibrator training: `uv sync --extra torch`
-3. Configure a provider key: `uv run magi setup`
-4. Activate the environment: `source .venv/bin/activate` (or `.\.venv\Scripts\activate` on Windows)
+2. Configure a provider key: `uv run magi setup`
+3. Activate the environment: `source .venv/bin/activate` (or `.\.venv\Scripts\activate` on Windows)
 
 `magi setup` stores keys in the user-level config file at `~/.config/magi-system/.env`, or under `$XDG_CONFIG_HOME/magi-system/.env` when `XDG_CONFIG_HOME` is set. Project-local `.env` and `.env.local` files still work and override the user config for repository development.
 
@@ -175,7 +174,7 @@ python magi/eval/run_scenarios.py \
 - `run_magi.py` entry point for one shot runs.
 - `magi/app/cli.py` reusable CLI with ingest, chat, profiles, artifact, batch, and eval commands.
 - `magi/dspy_programs/` persona definitions, consensus logic, and DSPy wiring.
-- `magi/decision/` verdict aggregation logic and optional learned calibrators.
+- `magi/decision/` verdict aggregation logic and learned decision-model weights.
 - `magi/core/` embeddings, storage, retrieval, and utilities.
 - `magi/eval/` reusable benchmark and scenario harness tooling.
 
