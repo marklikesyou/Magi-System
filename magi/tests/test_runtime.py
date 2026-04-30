@@ -740,6 +740,59 @@ def test_yes_no_evidence_question_gets_fact_check_answer_not_decision_approval()
     assert "rollout status is green" in fused.final_answer.lower()
 
 
+def test_negative_fact_check_preserves_claim_polarity():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="rollout_status",
+                    text=(
+                        "The rollout status is green. The release is approved and monitored by ops. "
+                        "No production incidents were recorded during the latest review window."
+                    ),
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, _ = program(
+        "Does the evidence say production incidents happened?",
+        constraints="",
+    )
+
+    assert fused.verdict == "approve"
+    assert fused.final_answer.startswith("No.")
+    assert "no production incidents" in fused.final_answer.lower()
+
+
+def test_decision_approval_does_not_invent_budget_support():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="pilot_brief",
+                    text=(
+                        "The pilot proposal scopes MAGI to internal policy triage for four weeks. "
+                        "Every decision keeps a human reviewer in the loop. Weekly evidence refreshes, "
+                        "rollback criteria, and audit logs are required guardrails before launch."
+                    ),
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, _ = program(
+        "Should we proceed with the internal policy triage pilot next month?",
+        constraints="keep human review and rollback guardrails",
+    )
+
+    assert fused.verdict == "approve"
+    assert "budget" not in fused.final_answer.lower()
+    assert "human reviewer" in fused.final_answer.lower()
+
+
 def test_incomplete_decision_revises_instead_of_cautious_approval():
     program = MagiProgram(
         retriever=ScenarioRetriever(
