@@ -24,6 +24,13 @@ def test_route_query_selects_fact_check_for_verification_request() -> None:
     assert any(signal.startswith("fact_check:") for signal in route.signals)
 
 
+def test_route_query_keeps_evidence_yes_no_above_rollout_decision_marker() -> None:
+    route = route_query("Does the evidence say the rollout status is green?")
+
+    assert route.mode == "fact_check"
+    assert route.scores["fact_check"] > route.scores["decision"]
+
+
 def test_route_query_selects_recommend_for_tradeoff_request() -> None:
     route = route_query("Compare the options and recommend the best rollout plan.")
 
