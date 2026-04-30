@@ -50,6 +50,7 @@ _FACT_CHECK_PATTERNS = (
     "guarantee",
     "guaranteed",
     "does the evidence show",
+    "does the evidence say",
     "does the source say",
     "supported by the evidence",
 )
