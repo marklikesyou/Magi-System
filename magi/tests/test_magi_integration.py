@@ -446,6 +446,36 @@ def test_chat_session_abstains_on_fact_check_without_direct_support():
     assert "did not directly support" in result.final_decision.justification.lower()
 
 
+def test_chat_session_approves_direct_positive_fact_check():
+    retriever = ScenarioRetriever(
+        [
+            ScenarioEvidence(
+                source="pilot_brief",
+                text="The pilot proposal keeps a human reviewer on every internal policy triage decision.",
+            ),
+            ScenarioEvidence(
+                source="rollout_status",
+                text=(
+                    "The rollout status is green. The release is approved and monitored by ops. "
+                    "No production incidents were recorded during the latest review window."
+                ),
+            ),
+        ]
+    )
+
+    result = run_chat_session(
+        "Does the evidence say the rollout status is green?",
+        "",
+        retriever,
+    )
+
+    assert result.final_decision.verdict == "approve"
+    assert result.final_decision.abstained is False
+    assert result.decision_trace.query_mode == "fact_check"
+    assert result.fused.final_answer.startswith("Yes,")
+    assert "bounded internal pilot" not in result.fused.final_answer.lower()
+
+
 def test_chat_session_abstains_on_fact_check_revision_even_with_cited_context(monkeypatch):
     class FakeProgram:
         def __init__(self, *args, **kwargs):
