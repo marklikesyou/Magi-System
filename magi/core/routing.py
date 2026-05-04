@@ -24,6 +24,23 @@ _SUMMARIZE_PATTERNS = (
     "briefly",
     "tl;dr",
 )
+_INFORMATION_QUESTION_STARTERS = (
+    "what ",
+    "what's ",
+    "who ",
+    "when ",
+    "where ",
+    "why ",
+    "how ",
+)
+_INFORMATION_IMPERATIVE_STARTERS = (
+    "explain",
+    "describe",
+    "summarize",
+    "give me",
+    "tell me",
+)
+_RECOMMENDATION_QUESTION_STARTERS = ("what should", "how should")
 _EXTRACT_PATTERNS = (
     "extract",
     "list ",
@@ -116,6 +133,24 @@ def _pattern_matches(text: str, patterns: tuple[str, ...]) -> list[str]:
     return [pattern for pattern in patterns if pattern in lowered]
 
 
+def _starts_with_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(text.startswith(pattern) for pattern in patterns)
+
+
+def _is_information_request(text: str) -> bool:
+    lowered = text.strip().lower()
+    if _starts_with_any(lowered, _RECOMMENDATION_QUESTION_STARTERS):
+        return False
+    if _starts_with_any(lowered, _DECISION_STARTERS):
+        return False
+    if lowered.endswith("?") and _starts_with_any(
+        lowered,
+        _INFORMATION_QUESTION_STARTERS,
+    ):
+        return True
+    return _starts_with_any(lowered, _INFORMATION_IMPERATIVE_STARTERS)
+
+
 def _add_score(
     scores: dict[QueryMode, int],
     signals: list[str],
@@ -156,6 +191,15 @@ def route_query(
             "summarize",
             2 + len(summarize_matches),
             f"summary markers {', '.join(summarize_matches[:3])}",
+        )
+
+    if _is_information_request(lowered):
+        _add_score(
+            scores,
+            signals,
+            "summarize",
+            5,
+            "question asks for information rather than a go/no-go decision",
         )
 
     extract_matches = _pattern_matches(lowered, _EXTRACT_PATTERNS)
