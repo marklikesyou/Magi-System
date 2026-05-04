@@ -8,115 +8,48 @@ from typing import Mapping, Sequence
 from .schemas import RetrievedEvidence
 
 _QUERY_TOKEN_RE = re.compile(r"[a-z0-9]+")
-_GROUNDING_STOPWORDS = {
-    "additional",
-    "about",
-    "against",
-    "also",
-    "and",
-    "answer",
-    "answers",
-    "are",
-    "been",
-    "citation",
-    "citations",
-    "current",
-    "detail",
-    "details",
-    "evidence",
-    "from",
-    "fully",
-    "have",
-    "include",
-    "information",
-    "into",
-    "missing",
-    "more",
-    "need",
-    "needed",
-    "query",
-    "response",
-    "retrieved",
-    "reliable",
-    "review",
-    "source",
-    "sources",
-    "specific",
-    "than",
-    "that",
-    "their",
-    "them",
-    "they",
-    "this",
-    "trustworthy",
-    "what",
-    "with",
-}
-_QUERY_SUPPORT_STOPWORDS = _GROUNDING_STOPWORDS | {
+_LOW_SIGNAL_TOKENS = {
     "a",
-    "analyze",
-    "analysis",
+    "an",
     "and",
     "are",
     "as",
     "at",
     "be",
-    "brief",
-    "briefly",
     "by",
     "can",
-    "clarify",
-    "compare",
-    "concise",
-    "current",
-    "describe",
-    "detail",
-    "details",
     "do",
     "does",
-    "explain",
+    "evidence",
     "for",
-    "forward",
-    "give",
-    "high",
+    "from",
     "how",
     "i",
     "in",
     "is",
     "it",
-    "latest",
-    "level",
-    "month",
-    "move",
     "my",
-    "next",
-    "note",
-    "notes",
     "of",
     "on",
-    "one",
-    "outline",
-    "overview",
     "our",
     "please",
-    "point",
-    "points",
-    "provide",
-    "quick",
-    "review",
-    "sentence",
-    "sentences",
+    "say",
     "show",
     "should",
-    "status",
-    "summarize",
-    "summary",
-    "tell",
+    "source",
+    "sources",
+    "that",
+    "this",
     "the",
     "to",
-    "two",
     "we",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
     "why",
+    "with",
     "you",
     "your",
 }
@@ -130,12 +63,16 @@ def _normalize_query_token(token: str) -> str:
     return token
 
 
+def _is_low_signal_token(token: str) -> bool:
+    return len(token) <= 2 or token in _LOW_SIGNAL_TOKENS
+
+
 def query_support_terms(text: str) -> list[str]:
     normalized = re.sub(r"\s+", " ", text.replace("’", "'")).strip().lower()
     return [
         _normalize_query_token(token)
         for token in _QUERY_TOKEN_RE.findall(normalized)
-        if len(token) > 1 and token not in _QUERY_SUPPORT_STOPWORDS
+        if not _is_low_signal_token(token)
     ]
 
 
@@ -317,7 +254,7 @@ def _grounding_tokens(text: str) -> set[str]:
     return {
         token
         for token in re.findall(r"[a-z0-9]{4,}", text.lower())
-        if token not in _GROUNDING_STOPWORDS
+        if not _is_low_signal_token(token)
     }
 
 
