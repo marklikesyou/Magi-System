@@ -22,6 +22,42 @@ def stub_retriever(query: str, persona: str | None = None, top_k: int = 5) -> st
     return f"{persona_tag}: summary for {query}"
 
 
+def retrieval_corpus_retriever() -> RagRetriever:
+    embedder = HashingEmbedder(dimension=384)
+    store = InMemoryVectorStore(dim=384)
+    corpus = {
+        "magi_overview": (
+            "MAGI is a multi persona reasoning engine for assessing user requests against an evidence base. "
+            "It retrieves context from a vector store, convenes three specialized personas, and returns a final verdict with cited support."
+        ),
+        "pilot_brief": (
+            "The pilot proposal scopes MAGI to internal policy triage for four weeks. "
+            "Every decision keeps a human reviewer in the loop. Weekly evidence refreshes, "
+            "rollback criteria, and audit logs are required guardrails before launch."
+        ),
+        "rollout_status": (
+            "The rollout status is green. The release is approved and monitored by ops. "
+            "No production incidents were recorded during the latest review window."
+        ),
+        "team_social": (
+            "The team social agenda covers lunch, demos, office logistics, and a Friday photo booth. "
+            "This document is unrelated to engineering systems, release approvals, or policy review programs."
+        ),
+    }
+    store.add(
+        [
+            VectorEntry(
+                document_id=name,
+                embedding=embedder(text),
+                text=text,
+                metadata={"source": f"magi/eval/retrieval_corpus/{name}.txt"},
+            )
+            for name, text in corpus.items()
+        ]
+    )
+    return RagRetriever(embedder, store)
+
+
 def test_magi_program_generates_decision():
     program = MagiProgram(retriever=stub_retriever)
     fused, personas = program(query="Evaluate new rollout", constraints="Budget <= 10k")
@@ -541,6 +577,57 @@ def test_chat_session_answers_team_social_from_social_evidence():
     assert "lunch" in result.fused.final_answer.lower()
     assert "photo booth" in result.fused.final_answer.lower()
     assert "rollout status" not in result.fused.final_answer.lower()
+
+
+def test_chat_session_answers_natural_rollout_status_without_pilot_decision_wording():
+    result = run_chat_session(
+        "What is the MAGI rollout status right now?",
+        "",
+        retrieval_corpus_retriever(),
+    )
+
+    assert result.final_decision.verdict == "approve"
+    assert result.decision_trace.persona_stances == {
+        "melchior": "approve",
+        "balthasar": "approve",
+        "casper": "approve",
+    }
+    assert result.decision_trace.cited_sources == [
+        "magi/eval/retrieval_corpus/rollout_status.txt"
+    ]
+    assert "status is green" in result.fused.final_answer.lower()
+    assert "bounded internal pilot" not in result.fused.final_answer.lower()
+    assert "pilot proposal" not in result.fused.final_answer.lower()
+
+
+def test_chat_session_excludes_social_distractor_from_pilot_decision():
+    result = run_chat_session(
+        "Should we pilot MAGI for internal policy triage next month?",
+        "Budget <= 10k. Keep a human reviewer in the loop.",
+        retrieval_corpus_retriever(),
+    )
+
+    assert result.final_decision.verdict == "approve"
+    assert "magi/eval/retrieval_corpus/pilot_brief.txt" in result.decision_trace.cited_sources
+    assert "magi/eval/retrieval_corpus/team_social.txt" not in result.decision_trace.cited_sources
+    assert "team social agenda" not in result.fused.final_answer.lower()
+    assert "photo booth" not in result.fused.final_answer.lower()
+
+
+def test_chat_session_answers_negative_production_incident_question_directly():
+    result = run_chat_session(
+        "Did production incidents happen during the latest review window?",
+        "",
+        retrieval_corpus_retriever(),
+    )
+
+    assert result.final_decision.verdict == "approve"
+    assert result.decision_trace.query_mode == "fact_check"
+    assert result.decision_trace.cited_sources == [
+        "magi/eval/retrieval_corpus/rollout_status.txt"
+    ]
+    assert result.fused.final_answer.lower().startswith("no.")
+    assert "no production incidents were recorded" in result.fused.final_answer.lower()
 
 
 def test_chat_session_abstains_on_fact_check_revision_even_with_cited_context(monkeypatch):
