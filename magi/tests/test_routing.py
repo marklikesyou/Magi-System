@@ -31,6 +31,20 @@ def test_route_query_keeps_evidence_yes_no_above_rollout_decision_marker() -> No
     assert route.scores["fact_check"] > route.scores["decision"]
 
 
+def test_route_query_treats_rollout_status_question_as_information() -> None:
+    route = route_query("What is the MAGI rollout status right now?")
+
+    assert route.mode == "summarize"
+    assert route.scores["summarize"] > route.scores["decision"]
+
+
+def test_route_query_treats_paraphrased_rollout_question_as_information() -> None:
+    route = route_query("How is the MAGI rollout going right now?")
+
+    assert route.mode == "summarize"
+    assert route.scores["summarize"] > route.scores["decision"]
+
+
 def test_route_query_selects_recommend_for_tradeoff_request() -> None:
     route = route_query("Compare the options and recommend the best rollout plan.")
 
