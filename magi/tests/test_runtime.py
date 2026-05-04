@@ -636,6 +636,32 @@ def test_human_like_summary_uses_relevant_evidence_not_distractor():
     assert "birthday" not in fused.final_answer.lower()
 
 
+def test_informational_answer_allows_relevant_calendar_source():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="calendar",
+                    text=(
+                        "The release calendar says the launch readiness review is scheduled "
+                        "for Thursday with operations and support owners."
+                    ),
+                )
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, personas = program(
+        "What does the release calendar say about the readiness review?",
+        constraints="",
+    )
+
+    assert fused.verdict == "approve"
+    assert {persona.stance for persona in personas.values()} == {"approve"}
+    assert "readiness review is scheduled" in fused.final_answer.lower()
+
+
 def test_guarded_decision_uses_control_evidence_and_skips_distractor():
     program = MagiProgram(
         retriever=ScenarioRetriever(
@@ -672,6 +698,34 @@ def test_guarded_decision_uses_control_evidence_and_skips_distractor():
     assert {persona.stance for persona in personas.values()} == {"approve"}
     assert "travel policy" not in fused.final_answer.lower()
     assert "[1]" in fused.final_answer and "[3]" in fused.final_answer
+
+
+def test_non_pilot_decision_approval_uses_generic_wording():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="renewal_brief",
+                    text=(
+                        "The renewal proposal limits access to read-only data, assigns an owner, "
+                        "keeps audit logging enabled, and includes rollback criteria."
+                    ),
+                )
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, _ = program(
+        "Should we renew the vendor contract next month?",
+        constraints="Keep audit logging enabled.",
+    )
+
+    assert fused.verdict == "approve"
+    assert "renewal proposal" in fused.final_answer.lower()
+    assert "bounded internal pilot" not in fused.final_answer.lower()
+    assert "operational trial" not in fused.final_answer.lower()
+    assert "pilot" not in fused.final_answer.lower()
 
 
 def test_unsupported_detail_question_revises_instead_of_approving_related_evidence():
@@ -740,6 +794,38 @@ def test_yes_no_evidence_question_gets_fact_check_answer_not_decision_approval()
     assert "rollout status is green" in fused.final_answer.lower()
 
 
+def test_paraphrased_rollout_information_question_avoids_decision_approval():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="rollout_status",
+                    text=(
+                        "The rollout status is green. The release is approved and monitored by ops. "
+                        "No production incidents were recorded during the latest review window."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="pilot_brief",
+                    text=(
+                        "The pilot proposal scopes MAGI to internal policy triage for four weeks. "
+                        "Every decision keeps a human reviewer in the loop."
+                    ),
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, personas = program("How is the MAGI rollout going right now?", constraints="")
+
+    assert fused.verdict == "approve"
+    assert {persona.stance for persona in personas.values()} == {"approve"}
+    assert "rollout status is green" in fused.final_answer.lower()
+    assert "bounded internal pilot" not in fused.final_answer.lower()
+    assert "pilot proposal" not in fused.final_answer.lower()
+
+
 def test_negative_fact_check_preserves_claim_polarity():
     program = MagiProgram(
         retriever=ScenarioRetriever(
@@ -764,6 +850,32 @@ def test_negative_fact_check_preserves_claim_polarity():
     assert fused.verdict == "approve"
     assert fused.final_answer.startswith("No.")
     assert "no production incidents" in fused.final_answer.lower()
+
+
+def test_negative_fact_check_preserves_generic_negated_claim_polarity():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="support_review",
+                    text=(
+                        "No customer escalations were logged during the latest support review window. "
+                        "The support trial remained monitored by QA."
+                    ),
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, _ = program(
+        "Did customer escalations happen during the latest support review window?",
+        constraints="",
+    )
+
+    assert fused.verdict == "approve"
+    assert fused.final_answer.startswith("No.")
+    assert "no customer escalations were logged" in fused.final_answer.lower()
 
 
 def test_decision_approval_does_not_invent_budget_support():
@@ -791,6 +903,48 @@ def test_decision_approval_does_not_invent_budget_support():
     assert fused.verdict == "approve"
     assert "budget" not in fused.final_answer.lower()
     assert "human reviewer" in fused.final_answer.lower()
+
+
+def test_guarded_decision_skips_unnamed_low_control_distractor():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="pilot_brief",
+                    text=(
+                        "The pilot proposal scopes MAGI to internal policy triage for four weeks. "
+                        "Every decision keeps a human reviewer in the loop."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="event_agenda",
+                    text=(
+                        "The internal policy triage celebration next month includes lunch, demos, "
+                        "office logistics, and a photo booth."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="control_plan",
+                    text=(
+                        "Weekly evidence refreshes, rollback criteria, and audit logs are required "
+                        "guardrails before launch."
+                    ),
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, _ = program(
+        "Should we pilot MAGI for internal policy triage next month?",
+        constraints="Keep human review in the loop.",
+    )
+
+    assert fused.verdict == "approve"
+    assert "human reviewer" in fused.final_answer.lower()
+    assert "rollback criteria" in fused.final_answer.lower()
+    assert "event agenda" not in fused.final_answer.lower()
+    assert "photo booth" not in fused.final_answer.lower()
 
 
 def test_incomplete_decision_revises_instead_of_cautious_approval():
