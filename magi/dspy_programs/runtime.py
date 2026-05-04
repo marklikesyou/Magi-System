@@ -12,11 +12,6 @@ from magi.core.clients import LLMClient, LLMClientError, build_default_client
 from magi.core.config import get_settings
 from magi.core.routing import mode_prompt_brief, route_query
 from magi.core.safety import analyze_safety, is_blocked
-from magi.core.text_signals import (
-    INSUFFICIENT_INFORMATION_PATTERNS as _BASE_INSUFFICIENT_PATTERNS,
-    REFUSAL_PATTERNS as _REFUSAL_PATTERNS,
-    contains_pattern,
-)
 from magi.core.utils import (
     LRUCache,
     TokenTracker,
@@ -34,6 +29,29 @@ from .grounding import (
     rank_supporting_evidence as _rank_supporting_evidence,
     support_strength as _support_strength,
     unsupported_grounding_tokens as _unsupported_grounding_tokens,
+)
+from .heuristic_signals import (
+    decision_control_hits as _decision_control_hits_for_text,
+    decision_critical_hits as _decision_critical_hits,
+    decision_gap_hits as _decision_gap_hits,
+    is_decision_query as _is_decision_query,
+    is_extractive_query as _is_extractive_query,
+    is_fact_check_query as _is_fact_check_query,
+    is_field_extraction_query as _is_field_extraction_query,
+    is_harmful_query as _is_harmful,
+    is_information_request as _is_information_request,
+    is_informational_query as _is_informational,
+    is_specific_detail_query as _is_specific_detail_query,
+    looks_like_decision_directive as _looks_like_decision_directive,
+    query_removes_evidence_requirement as _query_removes_evidence_requirement,
+    recommendation_support_hits as _recommendation_support_hits,
+    sentence_limits_support as _sentence_limits_support,
+    signals_evidence_gap as _signals_evidence_gap,
+    signals_refusal as _signals_refusal,
+    starts_with_revision_cue as _starts_with_revision_cue,
+    supports_synthesis_wording as _supports_synthesis_wording,
+    text_negates_query_claim as _text_negates_query_claim,
+    wants_key_points as _wants_key_points,
 )
 from .schemas import (
     BalthasarResponse,
@@ -61,258 +79,6 @@ _TRACE_CACHE = LRUCache(max_size=128)
 _TOKENS = TokenTracker()
 _RUNTIME_CACHE_VERSION = "magi-runtime-v6"
 _STANCE_TAGS = {"approve": "APPROVE", "reject": "REJECT", "revise": "REVISE"}
-_INFORMATIONAL_PATTERNS = (
-    "explain",
-    "describe",
-    "summarize",
-    "summary",
-    "detail",
-    "outline",
-    "overview",
-    "analysis",
-    "analyze",
-    "clarify",
-    "review",
-    "what is",
-    "what are",
-    "provide",
-    "give",
-    "highlight",
-    "compare",
-)
-_HARMFUL_PATTERNS = (
-    "bypass",
-    "hack",
-    "exploit",
-    "steal",
-    "malware",
-    "phish",
-    "phishing",
-    "weapon",
-    "harm",
-    "kill",
-    "fraud",
-    "credential",
-    "credentials",
-    "login token",
-    "login tokens",
-)
-_INSUFFICIENT_PATTERNS = _BASE_INSUFFICIENT_PATTERNS + (
-    "does not contain",
-    "need additional sources",
-    "unclear from the evidence",
-    "additional credible sources",
-    "further details are needed",
-    "lack of comprehensive information",
-    "partial insights",
-    "untrustworthy nature of the evidence",
-    "verify this information from reliable sources",
-)
-_REVISION_LEAD_PATTERNS = (
-    "revise ",
-    "review ",
-    "determine if ",
-    "verify ",
-    "clarify ",
-)
-_SYNTHESIS_PATTERNS = (
-    "summary",
-    "summarize",
-    "succinct",
-    "concise",
-    "derive",
-    "derived",
-    "extract key features",
-    "based on the information available",
-)
-_DECISION_PATTERNS = (
-    "should ",
-    "should we",
-    "pilot",
-    "rollout",
-    "launch",
-    "adopt",
-    "proceed",
-    "move forward",
-    "go ahead",
-)
-_EXTRACTIVE_QUERY_PATTERNS = (
-    "who owns",
-    "what is the",
-    "what is",
-    "which ",
-    "what are the launch",
-)
-_SPECIFIC_DETAIL_QUERY_STARTERS = (
-    "what is",
-    "what are",
-    "which ",
-    "who ",
-    "when ",
-    "where ",
-    "how many",
-    "how much",
-)
-_FIELD_EXTRACTION_HINTS = (
-    "budget cap",
-    "data categories",
-    "deadline",
-    "duration",
-    "guardrails",
-    "launch guardrails",
-    "next response",
-    "owner",
-    "reviewer",
-    "rollback plan",
-)
-_FACT_CHECK_QUERY_PATTERNS = (
-    "fact check",
-    "fact-check",
-    "verify",
-    "confirm whether",
-    "is it true",
-    "true or false",
-    "guarantee",
-    "guaranteed",
-    "does the evidence show",
-    "does the evidence say",
-    "does the source say",
-    "supported by the evidence",
-)
-_RECOMMENDATION_SUPPORT_PATTERNS = (
-    "proposal",
-    "pilot",
-    "scope",
-    "budget",
-    "timeline",
-    "control",
-    "controls",
-    "human reviewer",
-    "human oversight",
-    "guardrail",
-    "guardrails",
-    "mitigation",
-    "mitigations",
-    "low-risk",
-    "low risk",
-)
-_DISTRACTOR_PATTERNS = (
-    "unrelated",
-    "calendar",
-    "travel policy",
-    "team lunch",
-    "office news",
-    "office_news",
-    "social event",
-    "birthdays",
-    "snacks",
-    "planning meetings",
-)
-_DECISION_CONTROL_PATTERNS = (
-    "proposal",
-    "plan",
-    "pilot",
-    "trial",
-    "scope",
-    "scopes",
-    "limited",
-    "read-only",
-    "read only",
-    "budget",
-    "duration",
-    "owner",
-    "approval",
-    "reviewer",
-    "human review",
-    "human reviewer",
-    "analyst",
-    "legal approval",
-    "control",
-    "controls",
-    "guardrail",
-    "guardrails",
-    "rollback",
-    "audit log",
-    "audit logs",
-    "qa sampling",
-    "escalation",
-    "monitoring",
-    "exit plan",
-    "data access",
-    "questionnaire",
-    "calibration",
-)
-_DECISION_GAP_PATTERNS = (
-    "lacks",
-    "lack ",
-    "missing",
-    "does not include",
-    "doesn't include",
-    "not include",
-    "no rollback",
-    "no owner",
-    "not assigned",
-    "incomplete",
-    "without",
-)
-_HUMAN_REVIEW_CONFLICT_PATTERNS = (
-    "remove human review",
-    "removing human review",
-    "without human review",
-    "bypass human review",
-    "automatic final decisions",
-)
-_HUMAN_REVIEW_REQUIREMENT_PATTERNS = (
-    "human sign-off",
-    "human sign off",
-    "humans must review",
-    "human review",
-    "human reviewer",
-)
-_NEGATIVE_VERIFICATION_PATTERNS = (
-    "does not authorize",
-    "doesn't authorize",
-    "does not guarantee",
-    "doesn't guarantee",
-    "does not prove",
-    "did not prove",
-    "no production sla",
-    "no formal",
-    "not approved",
-    "not been approved",
-    "not supported",
-    "cannot be verified",
-)
-_PRODUCTION_INCIDENT_ABSENCE_PATTERNS = (
-    "no production incident",
-    "no production incidents",
-    "without production incident",
-    "without production incidents",
-    "zero production incident",
-    "zero production incidents",
-    "production incidents did not",
-    "production incidents didn't",
-    "production incidents were not",
-    "production incidents weren't",
-)
-_DECISION_CRITICAL_PATTERNS = (
-    "approval",
-    "approvals",
-    "authority",
-    "budget",
-    "control",
-    "controls",
-    "data mapping",
-    "human sign-off",
-    "legal",
-    "monitoring",
-    "owner",
-    "privacy",
-    "rollback",
-    "risk",
-    "staffing",
-    "testing",
-)
 
 
 class RetrieverProtocol(Protocol):
@@ -361,23 +127,6 @@ def _supports_llm() -> bool:
 USING_STUB = not _supports_llm()
 
 
-def _is_informational(query: str) -> bool:
-    lowered = query.lower()
-    if contains_pattern(lowered, _DECISION_PATTERNS) or contains_pattern(
-        lowered,
-        _FACT_CHECK_QUERY_PATTERNS,
-    ):
-        return False
-    return any(token in lowered for token in _INFORMATIONAL_PATTERNS) and not any(
-        token in lowered for token in _HARMFUL_PATTERNS
-    )
-
-
-def _is_harmful(query: str) -> bool:
-    lowered = query.lower()
-    return any(token in lowered for token in _HARMFUL_PATTERNS)
-
-
 def _join_text(parts: Sequence[object]) -> str:
     values: list[str] = []
     for part in parts:
@@ -412,19 +161,6 @@ def _insufficient_query_support_message(
     )
 
 
-def _signals_evidence_gap(text: str) -> bool:
-    return contains_pattern(text, _INSUFFICIENT_PATTERNS)
-
-
-def _signals_refusal(text: str) -> bool:
-    return contains_pattern(text, _REFUSAL_PATTERNS)
-
-
-def _starts_with_revision_cue(text: str) -> bool:
-    lowered = text.strip().lower()
-    return any(lowered.startswith(pattern) for pattern in _REVISION_LEAD_PATTERNS)
-
-
 def _supports_grounded_synthesis(
     query: str, evidence: Sequence[RetrievedEvidence], text: str
 ) -> bool:
@@ -432,75 +168,15 @@ def _supports_grounded_synthesis(
         _is_informational(query)
         and bool(evidence)
         and _has_informational_support(query, evidence)
-        and contains_pattern(text, _SYNTHESIS_PATTERNS)
+        and _supports_synthesis_wording(text)
     )
-
-
-def _is_decision_query(query: str) -> bool:
-    if _is_fact_check_query(query) or _is_field_extraction_query(query):
-        return False
-    return contains_pattern(query, _DECISION_PATTERNS)
-
-
-def _is_fact_check_query(query: str) -> bool:
-    return contains_pattern(query, _FACT_CHECK_QUERY_PATTERNS)
-
-
-def _is_extractive_query(query: str) -> bool:
-    lowered = query.lower().strip()
-    return any(lowered.startswith(pattern) for pattern in _EXTRACTIVE_QUERY_PATTERNS)
-
-
-def _is_specific_detail_query(query: str) -> bool:
-    lowered = query.lower().strip()
-    return any(
-        lowered.startswith(pattern) for pattern in _SPECIFIC_DETAIL_QUERY_STARTERS
-    )
-
-
-def _is_field_extraction_query(query: str) -> bool:
-    lowered = query.lower()
-    return _is_extractive_query(query) and any(
-        hint in lowered for hint in _FIELD_EXTRACTION_HINTS
-    )
-
-
-def _wants_key_points(query: str) -> bool:
-    lowered = query.lower()
-    return any(
-        pattern in lowered
-        for pattern in (
-            "key points",
-            "main points",
-            "bullets",
-            "bullet",
-            "in a hurry",
-            "quick points",
-        )
-    )
-
-
-def _pattern_hits(text: str, patterns: Sequence[str]) -> int:
-    lowered = text.lower()
-    return sum(1 for pattern in patterns if pattern in lowered)
-
-
-def _query_asserts_absent_production_incidents(query: str) -> bool:
-    return contains_pattern(query, _PRODUCTION_INCIDENT_ABSENCE_PATTERNS)
-
-
-def _text_asserts_absent_production_incidents(text: str) -> bool:
-    return contains_pattern(text, _PRODUCTION_INCIDENT_ABSENCE_PATTERNS)
 
 
 def _evidence_negates_fact_claim(query: str, evidence_text: str) -> bool:
-    lowered_query = query.lower()
-    if (
-        "production incident" in lowered_query
-        and not _query_asserts_absent_production_incidents(query)
-    ):
-        return _text_asserts_absent_production_incidents(evidence_text)
-    return _pattern_hits(evidence_text, _NEGATIVE_VERIFICATION_PATTERNS) > 0
+    for sentence in _split_evidence_sentences(evidence_text):
+        if _text_negates_query_claim(query, sentence):
+            return True
+    return False
 
 
 def _source_and_text(item: RetrievedEvidence) -> str:
@@ -508,34 +184,50 @@ def _source_and_text(item: RetrievedEvidence) -> str:
     return f"{source} {item.text}".lower()
 
 
+def _source_label(source: str) -> str:
+    leaf = source.rsplit("/", 1)[-1]
+    return leaf.rsplit(".", 1)[0]
+
+
 def _source_overlap(query: str, item: RetrievedEvidence) -> int:
     query_terms = set(_query_support_terms(query))
     if not query_terms:
         return 0
-    source_terms = set(_query_support_terms(item.source.replace("_", " ")))
+    source_terms = set(_query_support_terms(_source_label(item.source).replace("_", " ")))
     text_terms = set(_query_support_terms(item.text))
     return len(query_terms & (source_terms | text_terms))
 
 
+def _supportive_evidence_text(item: RetrievedEvidence) -> str:
+    supporting_sentences = [
+        sentence
+        for sentence in _split_evidence_sentences(item.text)
+        if not _sentence_limits_support(sentence)
+    ]
+    if not supporting_sentences:
+        return ""
+    source = item.source.replace("_", " ").replace("-", " ")
+    return f"{source} {' '.join(supporting_sentences)}".lower()
+
+
+def _decision_control_hits(item: RetrievedEvidence) -> int:
+    return _decision_control_hits_for_text(_supportive_evidence_text(item))
+
+
+def _has_control_signal(item: RetrievedEvidence) -> bool:
+    return _decision_control_hits(item) >= 2
+
+
 def _looks_like_distractor(item: RetrievedEvidence, query: str = "") -> bool:
-    if query.strip() and _source_overlap(query, item) >= 2:
+    if not query.strip():
         return False
-    source = item.source.lower()
-    if any(
-        marker in source
-        for marker in (
-            "unrelated",
-            "calendar",
-            "travel_policy",
-            "office_news",
-            "team_social",
-        )
-    ):
-        return True
-    combined = _source_and_text(item)
-    if _pattern_hits(combined, _DISTRACTOR_PATTERNS) == 0:
+    if _evidence_directly_addresses_query(query, [item]):
         return False
-    return _pattern_hits(combined, _DECISION_CONTROL_PATTERNS) == 0
+    if _is_decision_query(query) and _has_control_signal(item):
+        return False
+    if _source_overlap(query, item) > 0:
+        return False
+    return item.score < 0.2
 
 
 def _select_relevant_evidence(
@@ -558,7 +250,7 @@ def _select_relevant_evidence(
             ),
             key=lambda item: (
                 _source_overlap(query, item),
-                _pattern_hits(_source_and_text(item), _DECISION_CONTROL_PATTERNS),
+                _decision_control_hits_for_text(_source_and_text(item)),
                 item.score,
             ),
             reverse=True,
@@ -595,10 +287,10 @@ def _select_decision_evidence(
         combined = _source_and_text(item)
         if _looks_like_distractor(item, query):
             continue
-        control_hits = _pattern_hits(combined, _DECISION_CONTROL_PATTERNS)
-        gap_hits = _pattern_hits(combined, _DECISION_GAP_PATTERNS)
+        control_hits = _decision_control_hits(item)
+        gap_hits = _decision_gap_hits(combined)
         overlap = _source_overlap(query, item)
-        if control_hits == 0 and overlap == 0 and gap_hits == 0:
+        if control_hits == 0 and gap_hits == 0:
             continue
         if gap_hits and not include_gaps:
             continue
@@ -629,15 +321,9 @@ def _has_decision_blocking_gap(
         if _looks_like_distractor(item, query):
             continue
         combined = _source_and_text(item)
-        if _pattern_hits(
-            query_lower + " " + combined,
-            _HUMAN_REVIEW_CONFLICT_PATTERNS,
-        ) and _pattern_hits(combined, _HUMAN_REVIEW_REQUIREMENT_PATTERNS):
+        if _query_removes_evidence_requirement(query_lower, combined):
             return True
-        if _pattern_hits(combined, _DECISION_GAP_PATTERNS) and _pattern_hits(
-            combined,
-            _DECISION_CRITICAL_PATTERNS,
-        ):
+        if _decision_gap_hits(combined) and _decision_critical_hits(combined):
             return True
     return False
 
@@ -654,7 +340,7 @@ def _has_guarded_decision_support(
     if not selected:
         return False
     combined = _join_text([_source_and_text(item) for item in selected])
-    return _pattern_hits(combined, _DECISION_CONTROL_PATTERNS) >= 2
+    return _decision_control_hits_for_text(combined) >= 2
 
 
 def _has_semantic_support(query: str, evidence: Sequence[RetrievedEvidence]) -> bool:
@@ -677,15 +363,9 @@ def _select_status_control_evidence(
 ) -> list[RetrievedEvidence]:
     selected = _select_relevant_evidence(query, evidence, limit=limit)
     for item in evidence:
-        source = item.source.lower()
-        combined = _source_and_text(item)
         if _looks_like_distractor(item, query) or item in selected:
             continue
-        if (
-            "control" in source
-            or "safe_control" in source
-            or _pattern_hits(combined, _DECISION_CONTROL_PATTERNS) >= 2
-        ):
+        if _has_control_signal(item):
             selected.append(item)
         if len(selected) >= limit:
             break
@@ -741,19 +421,12 @@ def _needs_status_control_answer(
     evidence: Sequence[RetrievedEvidence],
     text: str,
 ) -> bool:
-    has_safe_status_bundle = any(
-        item.source.lower().startswith("safe_") for item in evidence
-    )
-    if not blocked and not has_safe_status_bundle:
+    if not blocked:
         return False
     control_items = [
         item
         for item in evidence
-        if (
-            "control" in item.source.lower()
-            or "safe_control" in item.source.lower()
-            or _pattern_hits(_source_and_text(item), _DECISION_CONTROL_PATTERNS) >= 2
-        )
+        if _has_control_signal(item)
     ]
     if not control_items:
         return False
@@ -770,7 +443,7 @@ def _supports_grounded_recommendation(
         and bool(evidence)
         and not _has_decision_blocking_gap(query, evidence)
         and _has_semantic_support(query, evidence)
-        and _pattern_hits(combined, _RECOMMENDATION_SUPPORT_PATTERNS) >= 3
+        and _recommendation_support_hits(combined) >= 3
     )
 
 
@@ -1083,7 +756,7 @@ def _build_status_answer(
     if len(selected) >= 2:
         return (
             "Status: "
-            f"{supporting} Keep the cited human review, sign-off, escalation, audit, or rollback controls in place."
+            f"{supporting} Keep the cited controls in place."
         )
     return f"Status: {supporting}"
 
@@ -1111,11 +784,11 @@ def _build_decision_approval_answer(
     supporting = _join_cited_evidence(selected, limit=3)
     if len(selected) >= 2:
         return (
-            "Approve a bounded internal pilot or operational trial next month with medium residual risk: "
-            f"{supporting} Keep the cited scope, human review, and guardrails in place."
+            "Approve within the cited limits and controls: "
+            f"{supporting} Keep the cited safeguards in place."
         )
     return (
-        "Approve only as a bounded pilot within the cited limits and human review: "
+        "Approve only within the cited limits and controls: "
         f"{supporting}"
     )
 
@@ -1435,9 +1108,7 @@ def _heuristic_answer(
             justification += " Unsafe retrieved instructions were ignored."
         return answer, justification
     if (
-        (blocked or any(item.source.lower().startswith("safe_") for item in evidence))
-        and (_is_informational(query) or _is_extractive_query(query))
-        and "status" in query.lower()
+        blocked and (_is_informational(query) or _is_extractive_query(query))
     ):
         answer = _build_status_answer(query, evidence)
     elif _is_field_extraction_query(query):
@@ -1806,6 +1477,19 @@ def _approved_answer_policy_update(
 ) -> dict[str, Any]:
     if verdict != "approve":
         return {}
+    if (
+        _is_information_request(query)
+        and _has_informational_support(query, evidence)
+        and _looks_like_decision_directive(final_answer or justification)
+    ):
+        if blocked:
+            final_answer = _build_status_answer(query, evidence)
+        else:
+            final_answer = _build_summary_answer(query, evidence)
+        return {
+            "final_answer": final_answer,
+            "justification": "The answer summarizes the relevant cited evidence.",
+        }
     if _needs_status_control_answer(
         blocked=blocked,
         evidence=evidence,
