@@ -25,7 +25,7 @@ from magi.app.artifacts import (
 )
 from magi.app.presentation import format_chat_report, response_format_guidance
 from magi.app.service import ChatSessionResult, run_chat_session
-from magi.core.config import Settings, get_settings, user_env_file
+from magi.core.config import Settings, get_settings, user_data_dir, user_env_file
 from magi.core.embeddings import build_embedder
 from magi.core.profiles import Profile, list_profiles, load_profile
 from magi.core.rag import RagRetriever
@@ -34,6 +34,7 @@ from magi.core.storage import (
     initialize_store,
     load_store_bundle,
     persist_store,
+    reset_store,
     save_json_document,
     store_metadata,
 )
@@ -57,7 +58,11 @@ from magi.eval.scenario_harness import (
     write_scenario_report,
 )
 
-DEFAULT_STORE = Path(__file__).resolve().parents[1] / "storage" / "vector_store.json"
+def default_store_path(settings: object | None = None) -> Path:
+    return user_data_dir(settings) / "storage" / "vector_store.json"
+
+
+DEFAULT_STORE = default_store_path()
 MAGI_ASCII_LOGO = r"""
  __  __    _    ____ ___
 |  \/  |  / \  / ___|_ _|
@@ -317,7 +322,7 @@ def command_status(args: argparse.Namespace) -> int:
     try:
         settings = get_settings()
         issue = _provider_setup_issue(settings)
-        store_path = Path(getattr(args, "store", DEFAULT_STORE))
+        store_path = _resolved_store_path(args, settings)
         entry_count = _status_entry_count(settings, store_path)
         profile_dir = str(getattr(settings, "profile_dir", "") or "").strip()
         trace_dir = str(getattr(settings, "decision_trace_dir", "") or "").strip()
@@ -360,7 +365,7 @@ def _shell_status_summary(args: argparse.Namespace) -> str:
     try:
         settings = get_settings()
         provider = "ready" if not _provider_setup_issue(settings) else "needs setup"
-        store_path = Path(getattr(args, "store", DEFAULT_STORE))
+        store_path = _resolved_store_path(args, settings)
         entries = _status_entry_count(settings, store_path)
         return f"provider: {provider}; store entries: {entries}; type `help` for commands"
     except Exception:
@@ -381,6 +386,16 @@ def _vector_entries(payload: Iterable[Dict[str, object]]) -> List[VectorEntry]:
             )
         )
     return entries
+
+
+def _resolved_store_path(args: argparse.Namespace, settings: object | None = None) -> Path:
+    raw = getattr(args, "store", None)
+    if raw is None:
+        return default_store_path(settings)
+    path = Path(raw)
+    if path == DEFAULT_STORE:
+        return default_store_path(settings)
+    return path
 
 
 def _decision_record_path(
@@ -592,6 +607,7 @@ def _run_single_query(
     profile: Profile | None,
 ) -> tuple[ChatSessionResult, Path, Path | None]:
     profile_name = profile.name if profile is not None else ""
+    store_path = _resolved_store_path(args, settings)
     result = run_chat_session(
         query,
         constraints,
@@ -614,7 +630,7 @@ def _run_single_query(
         result=result,
         query=query,
         constraints=constraints,
-        store_path=args.store,
+        store_path=store_path,
         store_metadata=store_metadata(store),
         profile_name=profile_name,
         requested_route=_route_override(args, profile) or "",
@@ -625,10 +641,15 @@ def _run_single_query(
 def command_ingest(args: argparse.Namespace) -> int:
     try:
         settings = get_settings()
-        if getattr(args, "reset_store", False) and Path(args.store).exists():
-            Path(args.store).unlink()
+        store_path = _resolved_store_path(args, settings)
+        reset_requested = bool(getattr(args, "reset_store", False))
+        using_database = bool(_configured_vector_db_url(settings))
+        if reset_requested and not using_database and store_path.exists():
+            store_path.unlink()
         embedder = build_embedder(settings)
-        store = initialize_store(args.store, embedder)
+        store = initialize_store(store_path, embedder)
+        if reset_requested and using_database:
+            reset_store(store_path, store)
 
         doc_paths = [Path(p) for p in args.paths]
         documents, skipped_existing = _filter_new_documents(
@@ -650,7 +671,7 @@ def command_ingest(args: argparse.Namespace) -> int:
         entries = _vector_entries(embedded)
         store.add(entries)
         persist_store(
-            args.store,
+            store_path,
             store,
             embedder=embedder,
             chunk_size=args.chunk_size,
@@ -663,7 +684,7 @@ def command_ingest(args: argparse.Namespace) -> int:
             print(f"Duplicates skipped: {skipped_existing}")
         else:
             print("Duplicates skipped: 0")
-        print(describe_store_destination(args.store, store))
+        print(describe_store_destination(store_path, store))
         print('Next: ask a question with `magi ask "what should i know?"`')
         return 0
     except FileNotFoundError as e:
@@ -685,7 +706,8 @@ def command_chat(args: argparse.Namespace) -> int:
     try:
         settings = get_settings()
         profile = _load_profile_from_args(settings, args)
-        embedder, store, retriever = _build_retriever(settings, args.store, profile)
+        store_path = _resolved_store_path(args, settings)
+        embedder, store, retriever = _build_retriever(settings, store_path, profile)
         constraints = _effective_constraints(args, profile, getattr(args, "constraints", ""))
         entries = getattr(store, "entries", None)
         if isinstance(entries, list) and len(entries) == 0:
@@ -694,7 +716,7 @@ def command_chat(args: argparse.Namespace) -> int:
                     "error": "empty_store",
                     "message": "No documents are available in the MAGI store.",
                     "next": "Run `magi ingest path/to/file.pdf` before asking questions.",
-                    "store": str(args.store),
+                    "store": str(store_path),
                 }
                 print(json.dumps(payload, ensure_ascii=True, indent=2))
             else:
@@ -702,7 +724,7 @@ def command_chat(args: argparse.Namespace) -> int:
                 _print_error(
                     "Run `magi ingest path/to/file.pdf` before asking questions."
                 )
-                _print_error(f"Store: {args.store}")
+                _print_error(f"Store: {store_path}")
             return 1
 
         result, artifact_path, decision_record_path = _run_single_query(
@@ -789,7 +811,8 @@ def command_batch(args: argparse.Namespace) -> int:
     try:
         settings = get_settings()
         profile = _load_profile_from_args(settings, args)
-        embedder, store, retriever = _build_retriever(settings, args.store, profile)
+        store_path = _resolved_store_path(args, settings)
+        embedder, store, retriever = _build_retriever(settings, store_path, profile)
         records = _load_batch_records(args.input)
         completed = (
             _completed_batch_ids(args.out) if getattr(args, "resume", False) and args.out else set()
@@ -866,7 +889,8 @@ def command_compare(args: argparse.Namespace) -> int:
     try:
         settings = get_settings()
         embedder = build_embedder(settings)
-        store = initialize_store(args.store, embedder)
+        store_path = _resolved_store_path(args, settings)
+        store = initialize_store(store_path, embedder)
         targets = _comparison_targets(settings, args)
         comparisons: list[
             tuple[str, Profile | None, str, ChatSessionResult, Path]
@@ -913,7 +937,7 @@ def command_compare(args: argparse.Namespace) -> int:
         print("PROFILE COMPARISON")
         print("=" * 60)
         print(f"Query: {args.query}")
-        print(f"Store: {args.store}")
+        print(f"Store: {store_path}")
         print(
             _render_text_table(
                 [
@@ -1032,16 +1056,18 @@ def command_replay(args: argparse.Namespace) -> int:
         if not isinstance(input_payload, dict):
             raise ValueError("artifact input payload is invalid")
         artifact_store = artifact.get("store", {})
-        store_path = getattr(args, "store", None)
-        if store_path is None:
+        raw_store_path = getattr(args, "store", None)
+        if raw_store_path is None or Path(raw_store_path) == DEFAULT_STORE:
             store_path = Path(
                 str(
                     ((artifact_store or {}) if isinstance(artifact_store, dict) else {}).get(
                         "path",
-                        DEFAULT_STORE,
+                        default_store_path(settings),
                     )
                 )
             )
+        else:
+            store_path = Path(raw_store_path)
         replay_args = argparse.Namespace(
             query=str(input_payload.get("query", "")),
             constraints=str(input_payload.get("constraints", "")),
@@ -1428,7 +1454,7 @@ def _add_ingest_options(target: argparse.ArgumentParser) -> None:
         "--reset-store",
         action="store_true",
         default=False,
-        help="Delete the existing local store file before ingesting.",
+        help="Delete the local store file or reset the PostgreSQL namespace before ingesting.",
     )
 
 
@@ -1819,7 +1845,9 @@ def main(argv: List[str] | None = None) -> int:
         return 1
     store_path = getattr(args, "store", None)
     if isinstance(store_path, Path):
-        store_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_store_path = _resolved_store_path(args)
+        setattr(args, "store", resolved_store_path)
+        resolved_store_path.parent.mkdir(parents=True, exist_ok=True)
     return args.handler(args)
 
 
