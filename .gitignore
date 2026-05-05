@@ -12,6 +12,8 @@ __pycache__/
 .coverage
 .tmp/
 pytest-cache-files-*/
+build/
+dist/
 .venv/
 .claude/
 .env
@@ -25,4 +27,3 @@ datasets/
 !magi/eval/cases.template.yaml
 docs/*
 !docs/.gitkeep
-issues/issue-*.md
