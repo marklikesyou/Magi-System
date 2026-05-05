@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   api:
     build:
@@ -9,7 +7,10 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - MAGI_DATA_DIR=/app/data
       - DATABASE_URL=postgresql://${POSTGRES_USER:-pg}:${POSTGRES_PASSWORD:-pg}@db:5432/magi
+    volumes:
+      - magidata:/app/data
     depends_on:
       db:
         condition: service_healthy
@@ -66,3 +67,4 @@ services:
 
 volumes:
   pgdata:
+  magidata:
