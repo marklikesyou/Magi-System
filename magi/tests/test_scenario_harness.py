@@ -290,6 +290,42 @@ def test_run_scenario_suite_tracks_retrieved_sources_and_hits() -> None:
     assert report.summary.total_estimated_cost_usd == 0.0
 
 
+def test_run_scenario_suite_counts_cited_abstention_as_supported_generically() -> None:
+    dataset = ScenarioDataset.model_validate(
+        {
+            "cases": [
+                {
+                    "id": "paraphrased_missing_service_level",
+                    "query": "Can MAGI guarantee a ninety fifth percentile response-time service level for customers?",
+                    "expected_verdict": "abstain",
+                    "expected_residual_risk": "medium",
+                    "evidence": [
+                        {
+                            "source": "operations_summary",
+                            "text": "MAGI tracks latency during internal pilots and reports observed response times to operators.",
+                        },
+                        {
+                            "source": "release_note",
+                            "text": "The current release is an internal alpha with no customer-facing service commitment.",
+                        },
+                    ],
+                    "checks": {
+                        "min_citations": 1,
+                        "min_citation_hit_rate": 1.0,
+                    },
+                }
+            ]
+        }
+    )
+
+    report = run_scenario_suite(dataset, force_stub=True, requested_mode="stub")
+
+    assert report.cases[0].predicted_verdict == "abstain"
+    assert report.cases[0].citation_hit_rate == 1.0
+    assert report.cases[0].answer_supported is True
+    assert report.summary.supported_answer_rate == 1.0
+
+
 def test_run_scenario_suite_fails_when_required_source_is_not_retrieved() -> None:
     dataset = ScenarioDataset.model_validate(
         {
