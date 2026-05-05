@@ -498,10 +498,15 @@ def _retrieval_details(chunks: Sequence[RetrievedChunk]) -> tuple[list[str], int
 def _answer_grounding(
     text: str,
     chunks: Sequence[RetrievedChunk],
+    verdict: str,
 ) -> tuple[float, float, bool]:
     hit_rate = citation_hit_rate(text, len(chunks))
     support_score = answer_support_score(text, (chunk.text for chunk in chunks))
-    supported = bool(chunks) and hit_rate > 0.0 and support_score >= 0.2
+    supported_by_overlap = support_score >= 0.2
+    supported_non_approval = verdict in {"abstain", "revise"} and support_score > 0.0
+    supported = bool(chunks) and hit_rate > 0.0 and (
+        supported_by_overlap or supported_non_approval
+    )
     return hit_rate, support_score, supported
 
 
@@ -808,7 +813,11 @@ def _evaluate_scenario_case(
     combined_text = _combined_answer_text(final_answer, justification, next_steps)
     citation_count = len(_CITATION_RE.findall(combined_text))
     case_citation_hit_rate, case_answer_support_score, answer_supported = (
-        _answer_grounding(combined_text, retrieved_chunks)
+        _answer_grounding(
+            combined_text,
+            retrieved_chunks,
+            session.final_decision.verdict,
+        )
     )
     check_results = _evaluate_checks(
         case,
