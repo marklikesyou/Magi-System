@@ -382,16 +382,9 @@ def _answer_style(mode: QueryMode) -> str:
 
 
 def mode_prompt_brief(route: RoutingDecision) -> str:
-    score_text = ", ".join(
-        f"{label}={route.scores.get(label, 0)}" for label in _MODE_ORDER
-    )
-    signal_text = "; ".join(route.signals) if route.signals else "none"
     return (
         f"Route mode: {route.mode}. "
-        f"Reason: {route.rationale} "
         f"Expected answer style: {route.answer_style} "
-        f"Routing signals: {signal_text}. "
-        f"Route scores: {score_text}."
     ).strip()
 
 
