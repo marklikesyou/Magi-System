@@ -10,6 +10,7 @@ from magi.core.pgvectorstore import PgVectorStore
 class _FakeCursor:
     def __init__(self) -> None:
         self.statements: list[tuple[str, tuple[object, ...]]] = []
+        self.fetchone_row: tuple[object, ...] | None = (1,)
 
     def __enter__(self):
         return self
@@ -29,6 +30,9 @@ class _FakeCursor:
                 0.75,
             )
         ]
+
+    def fetchone(self):
+        return self.fetchone_row
 
 
 class _FakeConnection:
@@ -77,3 +81,16 @@ def test_pgvector_keyword_search_uses_full_text_index_path() -> None:
     assert "LOWER(text) LIKE" not in sql
     assert params[-1] == 5
     assert results[0].document_id == "doc-1"
+
+
+def test_pgvector_reset_deletes_namespace_and_bumps_revision() -> None:
+    cursor = _FakeCursor()
+    store = _store_with_cursor(cursor)
+
+    store.reset()
+
+    statements = [sql for sql, _params in cursor.statements]
+    assert any("DELETE FROM magi_vector_entries_32" in sql for sql in statements)
+    assert any("UPDATE magi_vector_store_state" in sql for sql in statements)
+    assert cursor.statements[0][1] == ("/tmp/logical-store.json",)
+    assert store.revision == 1
