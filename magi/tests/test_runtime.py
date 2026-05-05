@@ -71,10 +71,12 @@ class _SequenceClient(LLMClient):
 
     def __init__(self, payloads: list[dict[str, object]]) -> None:
         self._payloads = list(payloads)
+        self.messages: list[list[dict[str, object]]] = []
 
     def complete(self, messages, *, tools=None, response_format=None):  # type: ignore[override]
         assert messages
         assert response_format is not None
+        self.messages.append(list(messages))
         if not self._payloads:
             raise AssertionError("unexpected extra client call")
         payload = self._payloads.pop(0)
@@ -139,6 +141,85 @@ def test_magi_program_passes_no_openai_default_to_google_only_client(monkeypatch
     assert captured["model"] is None
     assert program.model_name == "gemini-default"
     assert program.effective_mode == "live"
+
+
+def test_live_prompts_omit_routing_debug_signals():
+    client = _SequenceClient(
+        [
+            {
+                "analysis": "The evidence supports a guarded pilot.",
+                "answer_outline": ["Lead with [1]."],
+                "confidence": 0.8,
+                "evidence_quotes": ['[1] "The pilot proposal keeps human review."'],
+                "stance": "approve",
+                "actions": ["Cite [1]."],
+            },
+            {
+                "plan": "Answer with the cited controlled plan.",
+                "communication_plan": ["Cite [1]."],
+                "cost_estimate": "low",
+                "confidence": 0.8,
+                "stance": "approve",
+                "actions": ["Keep human review."],
+            },
+            {
+                "risks": ["Risk is limited when human review stays in place."],
+                "mitigations": ["Keep human review."],
+                "residual_risk": "medium",
+                "confidence": 0.8,
+                "stance": "approve",
+                "actions": ["Monitor the pilot."],
+                "outstanding_questions": [],
+            },
+            {
+                "verdict": "approve",
+                "justification": "The answer is grounded in [1].",
+                "confidence": 0.8,
+                "final_answer": (
+                    "Approve within the cited limits and controls: [1] The pilot "
+                    "proposal scopes MAGI to internal triage and keeps human review."
+                ),
+                "next_steps": ["Keep human review."],
+                "consensus_points": ["Cited evidence supports the answer."],
+                "disagreements": [],
+                "residual_risk": "medium",
+                "risks": ["Over-claiming."],
+                "mitigations": ["Stay within [1]."],
+            },
+        ]
+    )
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="pilot_brief",
+                    text=(
+                        "The pilot proposal scopes MAGI to internal triage and keeps "
+                        "human review on every decision."
+                    ),
+                )
+            ]
+        ),
+        force_stub=False,
+        client=client,
+        enable_live_personas=True,
+    )
+
+    program(
+        "Should we pilot MAGI next month?",
+        constraints="Keep human review in the loop.",
+    )
+
+    prompt_text = "\n".join(
+        str(message.get("content", ""))
+        for call_messages in client.messages
+        for message in call_messages
+    ).lower()
+    assert "routing signals" not in prompt_text
+    assert "route scores" not in prompt_text
+    assert "scores:" not in prompt_text
+    assert "decision markers" not in prompt_text
+    assert "explicit constraints were supplied" not in prompt_text
 
 
 def test_supports_llm_when_google_key_is_configured(monkeypatch):
@@ -660,6 +741,54 @@ def test_informational_answer_allows_relevant_calendar_source():
     assert fused.verdict == "approve"
     assert {persona.stance for persona in personas.values()} == {"approve"}
     assert "readiness review is scheduled" in fused.final_answer.lower()
+
+
+def test_source_qualified_key_points_prefer_matching_source_label():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="rollout_status",
+                    text=(
+                        "The rollout status is green. The release is approved and monitored by ops. "
+                        "No production incidents were recorded during the latest review window."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="pilot_brief",
+                    text=(
+                        "The pilot proposal scopes MAGI to internal policy triage for four weeks. "
+                        "Every decision keeps a human reviewer in the loop. Weekly evidence refreshes, "
+                        "rollback criteria, and audit logs are required guardrails before launch."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="team_social",
+                    text=(
+                        "The team social agenda covers lunch, demos, office logistics, and a Friday photo booth."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="magi_overview",
+                    text=(
+                        "MAGI is a multi persona reasoning engine for assessing user requests against an "
+                        "evidence base. It retrieves context from a vector store, convenes three specialized "
+                        "personas, and returns a fused verdict with citations."
+                    ),
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, _ = program(
+        "Give me the key points from the MAGI overview.",
+        constraints="",
+    )
+
+    assert fused.verdict == "approve"
+    assert "multi persona reasoning engine" in fused.final_answer.lower()
+    assert "pilot proposal" not in fused.final_answer.lower()
 
 
 def test_guarded_decision_uses_control_evidence_and_skips_distractor():
