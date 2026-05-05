@@ -9,10 +9,11 @@ FROM python:3.13-slim
 WORKDIR /app
 COPY --from=builder /app .
 ENV PATH="/app/.venv/bin:$PATH" \
+    MAGI_DATA_DIR=/app/data \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 RUN useradd --create-home --uid 10001 magi \
-    && mkdir -p /app/magi/storage \
+    && mkdir -p /app/data \
     && chown -R magi:magi /app
 USER magi
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD python -m magi --help >/dev/null || exit 1
