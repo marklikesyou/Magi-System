@@ -64,11 +64,11 @@ def _sample_result() -> ChatSessionResult:
     )
 
 
-def test_standard_report_includes_personas_and_routing() -> None:
+def test_standard_report_includes_personas_without_routing_debug() -> None:
     report = format_chat_report(_sample_result(), Path("/tmp/artifact.json"), None)
 
     assert "Verdict: APPROVE" in report
-    assert "Routing Rationale:" in report
+    assert "Routing Rationale:" not in report
     assert "Persona Perspectives:" in report
 
 
@@ -83,6 +83,7 @@ def test_exec_brief_report_uses_executive_layout() -> None:
     assert profile is not None
     assert "EXECUTIVE BRIEF" in report
     assert "Executive Takeaway:" in report
+    assert "Why This Route:" not in report
     assert "Persona Perspectives:" not in report
     assert "Follow-up:" in report
 
