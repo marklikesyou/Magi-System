@@ -193,9 +193,6 @@ def _render_standard(
     lines = _header(result)
     lines.append(decision.justification)
     lines.append("")
-    if policy.show_routing_rationale and trace.routing_rationale:
-        lines.append(f"Routing Rationale: {trace.routing_rationale}")
-        lines.append("")
     if decision.requires_human_review and decision.review_reason:
         lines.append(f"Review Reason: {decision.review_reason}")
         lines.append("")
@@ -239,8 +236,6 @@ def _render_executive_brief(
         "Executive Takeaway:",
         result.fused.final_answer or decision.justification,
     ]
-    if policy.show_routing_rationale and trace.routing_rationale:
-        lines.extend(["", f"Why This Route: {trace.routing_rationale}"])
     evidence = _evidence_block(trace, policy)
     if evidence:
         lines.extend([""] + evidence[:-1])
