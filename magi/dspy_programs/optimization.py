@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from .compile import bootstrap_program, compile_program
+from .compile import bootstrap_program, compile_program, gepa_program
 from .evaluation import (
     comprehensive_judge_metric,
     create_magi_evaluator,
@@ -74,6 +74,21 @@ class MAGIOptimizer:
         _require_dspy()
         return compile_program(
             self.base_program, self.trainset, metric or self.metric, heavy=heavy
+        )
+
+    def optimize_with_gepa(
+        self,
+        *,
+        metric: Optional[Callable[[Any, Any, Optional[Any]], Any]] = None,
+        **kwargs: Any,
+    ) -> MagiProgram:
+        _require_dspy()
+        return gepa_program(
+            self.base_program,
+            self.trainset,
+            metric or self.metric,
+            valset=self.valset or None,
+            **kwargs,
         )
 
     def evaluate_optimization(
@@ -147,6 +162,8 @@ def create_optimization_pipeline(
         return optimizer.optimize_with_random_search(**kwargs)
     if method in {"signature", "signatures"}:
         return optimizer.optimize_signatures(**kwargs)
+    if method in {"gepa", "dspy-gepa", "dspy_gepa"}:
+        return optimizer.optimize_with_gepa(**kwargs)
     return optimizer.optimize_with_mipro(**kwargs)
 
 
