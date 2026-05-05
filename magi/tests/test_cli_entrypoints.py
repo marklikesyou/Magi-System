@@ -538,6 +538,44 @@ def test_command_ingest_skips_existing_content_hashes(
     assert "No new documents to ingest" in captured.out
 
 
+def test_command_ingest_resets_database_store_namespace(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    class FakeStore:
+        def __init__(self) -> None:
+            self.entries: list[object] = []
+            self.reset_called = False
+
+        def reset(self) -> None:
+            self.reset_called = True
+
+    store = FakeStore()
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(vector_db_url="postgresql://db/magi"),
+    )
+    monkeypatch.setattr(cli, "build_embedder", lambda _settings: object())
+    monkeypatch.setattr(cli, "initialize_store", lambda _store, _embedder: store)
+    monkeypatch.setattr(cli, "ingest_paths", lambda _paths: [])
+
+    status = cli.command_ingest(
+        argparse.Namespace(
+            paths=["doc.txt"],
+            chunk_size=128,
+            chunk_overlap=16,
+            store=tmp_path / "store.json",
+            reset_store=True,
+            verbose=False,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert store.reset_called is True
+    assert "No new documents to ingest" in captured.out
+
+
 def test_parser_accepts_batch_and_route_options(tmp_path: Path) -> None:
     args = cli.build_parser().parse_args(
         [
