@@ -238,6 +238,20 @@ def _source_overlap(query: str, item: RetrievedEvidence) -> int:
     return len(query_terms & (source_terms | text_terms))
 
 
+def _rank_by_source_qualification(
+    query: str,
+    evidence: Sequence[RetrievedEvidence],
+) -> list[RetrievedEvidence]:
+    return sorted(
+        evidence,
+        key=lambda item: (
+            _source_overlap(query, item),
+            item.score,
+        ),
+        reverse=True,
+    )
+
+
 def _supportive_evidence_text(item: RetrievedEvidence) -> str:
     supporting_sentences = [
         sentence
@@ -276,7 +290,10 @@ def _select_relevant_evidence(
     *,
     limit: int = 2,
 ) -> list[RetrievedEvidence]:
-    ranked = _rank_supporting_evidence(query, evidence)
+    ranked = _rank_by_source_qualification(
+        query,
+        _rank_supporting_evidence(query, evidence),
+    )
     selected: list[RetrievedEvidence] = [
         item for item in ranked if not _looks_like_distractor(item, query)
     ]
