@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from difflib import SequenceMatcher
 import logging
 import os
 import re
@@ -179,6 +180,45 @@ def _evidence_negates_fact_claim(query: str, evidence_text: str) -> bool:
     return False
 
 
+def _term_similarity(left: str, right: str) -> float:
+    if left == right:
+        return 1.0
+    return SequenceMatcher(None, left, right).ratio()
+
+
+def _sentence_supports_fact_claim(query: str, sentence: str) -> bool:
+    query_terms = _query_support_terms(query)
+    sentence_terms = _query_support_terms(sentence)
+    if not query_terms:
+        return True
+    if not sentence_terms:
+        return False
+    best_scores = [
+        max(_term_similarity(query_term, sentence_term) for sentence_term in sentence_terms)
+        for query_term in query_terms
+    ]
+    coverage = sum(1 for score in best_scores if score >= 0.84) / len(best_scores)
+    average_similarity = sum(best_scores) / len(best_scores)
+    if len(query_terms) <= 2:
+        return coverage >= 1.0 or average_similarity >= 0.88
+    return coverage >= 0.65 or (coverage >= 0.5 and average_similarity >= 0.78)
+
+
+def _has_fact_check_support(
+    query: str,
+    evidence: Sequence[RetrievedEvidence],
+) -> bool:
+    if not (_is_fact_check_query(query) and evidence):
+        return False
+    for item in evidence:
+        if _looks_like_distractor(item, query):
+            continue
+        for sentence in _split_evidence_sentences(item.text):
+            if _sentence_supports_fact_claim(query, sentence):
+                return True
+    return False
+
+
 def _source_and_text(item: RetrievedEvidence) -> str:
     source = item.source.replace("_", " ").replace("-", " ")
     return f"{source} {item.text}".lower()
@@ -348,6 +388,8 @@ def _has_semantic_support(query: str, evidence: Sequence[RetrievedEvidence]) -> 
         return False
     if _has_extractive_support(query, evidence):
         return True
+    if _is_fact_check_query(query):
+        return _has_fact_check_support(query, evidence)
     if _evidence_directly_addresses_query(query, evidence):
         return True
     if _has_informational_support(query, evidence):
@@ -867,10 +909,7 @@ def _heuristic_melchior(
             "controls, ownership, approvals, testing, or rollback support unresolved."
         )
         actions = ["Request the missing decision support before approving."]
-    elif _is_fact_check_query(query) and not _evidence_directly_addresses_query(
-        query,
-        evidence,
-    ):
+    elif _is_fact_check_query(query) and not _has_fact_check_support(query, evidence):
         stance = "revise"
         analysis = _insufficient_query_support_message(query, evidence)
         actions = ["Ask for a source that directly proves or disproves the claim."]
@@ -929,10 +968,7 @@ def _heuristic_balthasar(
         actions = [
             "Request a revised proposal with explicit owner, controls, approvals, tests, and rollback path."
         ]
-    elif _is_fact_check_query(query) and not _evidence_directly_addresses_query(
-        query,
-        evidence,
-    ):
+    elif _is_fact_check_query(query) and not _has_fact_check_support(query, evidence):
         stance = "revise"
         plan = "Treat the claim as unverified until a direct supporting source is available."
         actions = ["Ask for authoritative evidence that proves the requested claim."]
@@ -1016,10 +1052,7 @@ def _heuristic_casper(
         outstanding.append(
             "Need explicit owner, controls, approvals, testing or monitoring, and rollback path."
         )
-    elif _is_fact_check_query(query) and not _evidence_directly_addresses_query(
-        query,
-        evidence,
-    ):
+    elif _is_fact_check_query(query) and not _has_fact_check_support(query, evidence):
         risks.append(
             "The evidence does not directly prove the verification claim."
         )
@@ -1083,10 +1116,7 @@ def _heuristic_answer(
         if blocked:
             justification += " Unsafe retrieved instructions were ignored."
         return answer, justification
-    if _is_fact_check_query(query) and not _evidence_directly_addresses_query(
-        query,
-        evidence,
-    ):
+    if _is_fact_check_query(query) and not _has_fact_check_support(query, evidence):
         answer = _build_fact_gap_answer(query, evidence)
         justification = "The retrieved evidence does not directly prove the claim."
         if blocked:
