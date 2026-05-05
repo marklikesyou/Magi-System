@@ -61,7 +61,7 @@ Friendly aliases are available for the common workflow: `magi ask` is the same a
 
 MAGI requires an OpenAI or Google key before running user-facing ingest/chat workflows. `magi setup` writes the key to `~/.config/magi-system/.env`; project-local `.env` and `.env.local` files still override that user config during repository development. Use `MAGI_ALLOW_OFFLINE=1` with `MAGI_FORCE_DSPY_STUB=1` and `MAGI_FORCE_HASH_EMBEDDER=1` only for local offline development or CI.
 
-The default local vector store persists entries as JSON and builds a NumPy matrix for exact cosine search at runtime. Set `DATABASE_URL` to switch to the PostgreSQL + pgvector backend for larger shared stores.
+The default local vector store persists entries as JSON under the MAGI data directory and builds a NumPy matrix for exact cosine search at runtime. Set `DATABASE_URL` to switch to the PostgreSQL + pgvector backend for larger shared stores.
 
 ### Runtime controls
 
@@ -75,6 +75,7 @@ The most relevant environment variables for production-style runs are:
 - `MAGI_ENABLE_RESPONDER_LLM` to opt into the extra live responder call after fusion. It defaults to `false` so live runs use the faster deterministic responder.
 - `MAGI_DECISION_TRACE_DIR` to persist structured decision records from CLI runs.
 - `MAGI_RUN_ARTIFACT_DIR` to persist replayable run artifacts from CLI runs.
+- `MAGI_DATA_DIR` to set the base directory for default local vector-store and artifact data.
 - `MAGI_PROFILE_DIR` to expose workspace-local profile YAML files to the CLI.
 - `MAGI_APPROVE_MIN_CITATION_HIT_RATE` and `MAGI_APPROVE_MIN_ANSWER_SUPPORT_SCORE` to gate `approve` on cited-evidence quality.
 - `MAGI_REQUIRE_HUMAN_REVIEW_FOR_APPROVALS` to keep grounded approvals flagged for human review.
