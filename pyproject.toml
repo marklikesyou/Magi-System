@@ -8,12 +8,11 @@ version = "0.1.0"
 description = "MAGI multi-agent decision system scaffold with RAG, DSPy personas, and evaluation workflows."
 readme = "magi/README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 authors = [{name = "MAGI Team"}]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "License :: OSI Approved :: MIT License",
   "Intended Audience :: Developers",
   "Topic :: Scientific/Engineering :: Artificial Intelligence"
 ]
@@ -43,9 +42,28 @@ dev = [
 [project.scripts]
 magi = "magi.app.cli:main"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["magi", "magi.*"]
+exclude = ["magi.tests", "magi.tests.*"]
+
+[tool.setuptools.package-data]
+magi = [
+  "README.md",
+  "profiles/*.yaml",
+  "eval/*.yaml",
+  "eval/retrieval_corpus/*",
+  "infra/docker-compose.yml"
+]
+
+[tool.setuptools.exclude-package-data]
+magi = [
+  "tests/*",
+  "tests/**/*"
+]
 
 [tool.pytest.ini_options]
 testpaths = ["magi/tests"]
