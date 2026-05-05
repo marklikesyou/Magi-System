@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from magi.core.routing import route_query
+from magi.core.routing import mode_prompt_brief, route_query
 
 
 def test_route_query_selects_summarize_for_summary_request() -> None:
@@ -67,3 +67,21 @@ def test_route_query_honors_forced_mode() -> None:
 
     assert route.mode == "fact_check"
     assert route.rationale == "Explicit route override was provided."
+
+
+def test_mode_prompt_brief_omits_routing_debug_signals() -> None:
+    route = route_query(
+        "Should we pilot MAGI next month?",
+        constraints="Keep human review in the loop.",
+    )
+
+    brief = mode_prompt_brief(route)
+
+    assert brief == (
+        "Route mode: decision. Expected answer style: Return a clear decision "
+        "with cited support, risks, mitigations, and explicit unknowns."
+    )
+    assert "should we" not in brief.lower()
+    assert "pilot" not in brief.lower()
+    assert "routing signals" not in brief.lower()
+    assert "route scores" not in brief.lower()
