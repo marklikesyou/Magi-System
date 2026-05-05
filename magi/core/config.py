@@ -22,6 +22,18 @@ def user_env_file() -> Path:
     return user_config_dir() / ".env"
 
 
+def user_data_dir(settings: object | None = None) -> Path:
+    """Return the user-level MAGI data directory."""
+    configured = str(getattr(settings, "data_dir", "") or "").strip()
+    explicit = configured or os.getenv("MAGI_DATA_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    xdg_data_home = os.getenv("XDG_DATA_HOME", "").strip()
+    if xdg_data_home:
+        return Path(xdg_data_home).expanduser() / "magi-system"
+    return Path.home() / ".local" / "share" / "magi-system"
+
+
 def settings_env_files() -> tuple[Path | str, ...]:
     return (user_env_file(), ".env", ".env.local")
 
@@ -153,6 +165,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "run_artifact_dir", "MAGI_RUN_ARTIFACT_DIR"
         ),
+    )
+    data_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices("data_dir", "MAGI_DATA_DIR"),
     )
     profile_dir: str = Field(
         default="",
