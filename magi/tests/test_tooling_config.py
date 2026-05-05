@@ -30,3 +30,27 @@ def test_container_and_ci_include_production_guards() -> None:
     assert "magi/eval/production_scenarios.yaml" in ci
     assert "--max-p95-latency-ms" in ci
     assert "--max-total-cost-usd" in ci
+
+
+def test_docker_context_excludes_runtime_data_and_secrets() -> None:
+    dockerignore = _read(".dockerignore")
+
+    for pattern in (
+        ".env",
+        ".env.*",
+        ".venv/",
+        "__pycache__/",
+        "magi/storage/",
+        "magi/artifacts/",
+        "magi/eval/artifacts/",
+        "datasets/",
+        "build/",
+        "dist/",
+    ):
+        assert pattern in dockerignore
+
+
+def test_issue_files_are_trackable() -> None:
+    gitignore = _read(".gitignore")
+
+    assert "issues/issue-*.md" not in gitignore
