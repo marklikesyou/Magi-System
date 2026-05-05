@@ -1,5 +1,9 @@
 # MAGI System
 
+<p align="center">
+  <img src="assets/magi-hero.svg" alt="MAGI terminal hero image with a self-destruct warning" width="720">
+</p>
+
 MAGI is a command line assistant for answering questions from your own documents.
 It retrieves relevant evidence, asks three internal reviewer personas to reason over
 the evidence, and returns a verdict with citations.
