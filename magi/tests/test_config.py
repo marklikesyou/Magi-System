@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from magi.core.config import Settings, get_settings, user_env_file
+from pathlib import Path
+
+from magi.app.artifacts import artifact_dir
+from magi.app.cli import default_store_path
+from magi.core.config import Settings, get_settings, user_data_dir, user_env_file
 
 
 def test_settings_default_runtime_controls() -> None:
@@ -23,6 +27,7 @@ def test_settings_default_runtime_controls() -> None:
     assert settings.enable_live_personas is False
     assert settings.decision_trace_dir == ""
     assert settings.run_artifact_dir == ""
+    assert settings.data_dir == ""
     assert settings.profile_dir == ""
 
 
@@ -41,6 +46,7 @@ def test_settings_read_runtime_controls_from_env(monkeypatch) -> None:
     monkeypatch.setenv("MAGI_ENABLE_LIVE_PERSONAS", "true")
     monkeypatch.setenv("MAGI_DECISION_TRACE_DIR", "/tmp/magi-traces")
     monkeypatch.setenv("MAGI_RUN_ARTIFACT_DIR", "/tmp/magi-artifacts")
+    monkeypatch.setenv("MAGI_DATA_DIR", "/tmp/magi-data")
     monkeypatch.setenv("MAGI_PROFILE_DIR", "/tmp/magi-profiles")
 
     settings = cast(Any, Settings)(_env_file=None)
@@ -59,7 +65,33 @@ def test_settings_read_runtime_controls_from_env(monkeypatch) -> None:
     assert settings.enable_live_personas is True
     assert settings.decision_trace_dir == "/tmp/magi-traces"
     assert settings.run_artifact_dir == "/tmp/magi-artifacts"
+    assert settings.data_dir == "/tmp/magi-data"
     assert settings.profile_dir == "/tmp/magi-profiles"
+
+
+def test_default_runtime_paths_use_magi_data_dir(monkeypatch, tmp_path: Path) -> None:
+    data_dir = tmp_path / "magi-data"
+    monkeypatch.setenv("MAGI_DATA_DIR", str(data_dir))
+
+    settings = cast(Any, Settings)(_env_file=None)
+
+    assert user_data_dir(settings) == data_dir
+    assert default_store_path(settings) == data_dir / "storage" / "vector_store.json"
+    assert artifact_dir(settings) == data_dir / "artifacts"
+
+
+def test_default_runtime_paths_use_xdg_data_home(monkeypatch, tmp_path: Path) -> None:
+    xdg_home = tmp_path / "xdg-data"
+    monkeypatch.delenv("MAGI_DATA_DIR", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg_home))
+
+    settings = cast(Any, Settings)(_env_file=None)
+
+    assert user_data_dir(settings) == xdg_home / "magi-system"
+    assert default_store_path(settings) == (
+        xdg_home / "magi-system" / "storage" / "vector_store.json"
+    )
+    assert artifact_dir(settings) == xdg_home / "magi-system" / "artifacts"
 
 
 def test_get_settings_reads_user_config_file(monkeypatch, tmp_path) -> None:
