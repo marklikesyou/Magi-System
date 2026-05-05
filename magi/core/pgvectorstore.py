@@ -282,6 +282,15 @@ class PgVectorStore:
                     )
                 self._bump_revision(cursor)
 
+    def reset(self) -> None:
+        with self._connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"DELETE FROM {self._entry_table} WHERE store_key = %s",
+                    (self.store_key,),
+                )
+                self._bump_revision(cursor)
+
     @property
     def revision(self) -> int:
         return self._revision
