@@ -7,16 +7,22 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from magi.app.service import ChatSessionResult
+from magi.core.config import user_data_dir
 from magi.core.storage import save_json_document
 
-DEFAULT_ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "artifacts"
+
+def default_artifact_dir(settings: object | None = None) -> Path:
+    return user_data_dir(settings) / "artifacts"
+
+
+DEFAULT_ARTIFACT_DIR = default_artifact_dir()
 
 
 def artifact_dir(settings: object | None = None) -> Path:
     configured = str(getattr(settings, "run_artifact_dir", "") or "").strip()
     if configured:
         return Path(configured)
-    return DEFAULT_ARTIFACT_DIR
+    return default_artifact_dir(settings)
 
 
 def decision_payload(result: ChatSessionResult) -> dict[str, object]:
