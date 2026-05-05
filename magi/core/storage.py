@@ -271,6 +271,25 @@ def persist_store(
         save_entries(path, store.entries, metadata=prepared)
 
 
+def reset_store(path: Path, store: VectorStore) -> None:
+    if isinstance(store, InMemoryVectorStore):
+        if path.exists():
+            path.unlink()
+        store.load([])
+        _set_store_metadata(store, {})
+        return
+
+    reset = getattr(store, "reset", None)
+    if callable(reset):
+        reset()
+        return
+
+    raise RuntimeError(
+        "The configured vector store does not support reset. Clear the store "
+        "manually or use a different logical store path."
+    )
+
+
 def describe_store_destination(path: Path, store: VectorStore) -> str:
     if isinstance(store, PgVectorStore):
         return f"Store persisted to PostgreSQL namespace {Path(path).resolve()}"
@@ -291,6 +310,7 @@ __all__ = [
     "load_entries",
     "load_store_bundle",
     "persist_store",
+    "reset_store",
     "save_entries",
     "save_json_document",
     "store_metadata",
