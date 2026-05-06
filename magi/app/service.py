@@ -91,6 +91,8 @@ class DecisionTrace:
     model_routing_reason: str = ""
     persona_mode: str = ""
     responder_mode: str = ""
+    live_fallback_count: int = 0
+    live_fallback_labels: list[str] = field(default_factory=list)
     query_mode: str = "decision"
     routing_rationale: str = ""
     routing_scores: dict[str, int] = field(default_factory=dict)
@@ -714,6 +716,15 @@ def run_chat_session(
     )
     persona_mode = str(run_metadata.get("persona_mode", ""))
     responder_mode = str(run_metadata.get("responder_mode", ""))
+    live_fallback_count = _detail_count(run_metadata, "live_fallback_count")
+    live_fallback_labels = [
+        str(item).strip()
+        for item in cast(
+            list[object],
+            run_metadata.get("live_fallback_labels", []),
+        )
+        if str(item).strip()
+    ]
     user_answer_text = _combined_answer_text(fused.final_answer)
     grounding_text = user_answer_text or _combined_answer_text(fused.justification)
     (
@@ -782,6 +793,8 @@ def run_chat_session(
         model_routing_reason=model_routing_reason,
         persona_mode=persona_mode,
         responder_mode=responder_mode,
+        live_fallback_count=live_fallback_count,
+        live_fallback_labels=live_fallback_labels,
         query_mode=query_mode,
         routing_rationale=routing_rationale,
         routing_scores=routing_scores,
