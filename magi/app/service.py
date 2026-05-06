@@ -675,7 +675,7 @@ def run_chat_session(
     trace_start = perf_counter()
     (
         retrieved_evidence_ids,
-        used_evidence_ids,
+        available_evidence_ids,
         blocked_evidence_ids,
         retrieved_sources,
         cache_hit,
@@ -735,13 +735,14 @@ def run_chat_session(
     decision, abstained = _apply_abstention(
         decision,
         query_mode=query_mode,
-        used_evidence_count=len(used_evidence_ids),
+        used_evidence_count=len(available_evidence_ids),
         citation_hit_rate=citation_hit_rate,
         support_score=support_score,
         decision_details=decision_details,
         answer_text=_combined_answer_text(fused.final_answer, fused.justification),
     )
     decision, human_review_required = _apply_human_review_requirement(decision)
+    used_evidence_ids = list(cited_evidence_ids)
     decision_trace = DecisionTrace(
         query_hash=hash_query(query, constraints),
         retrieved_evidence_ids=retrieved_evidence_ids,
