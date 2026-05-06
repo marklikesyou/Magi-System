@@ -49,6 +49,7 @@ def test_run_chat_session_live_smoke() -> None:
     )
 
     assert result.effective_mode == "live"
+    assert result.decision_trace.live_fallback_count == 0
     assert result.model
     assert set(result.personas) == {"melchior", "balthasar", "casper"}
     assert result.final_decision.verdict in {"approve", "revise", "reject"}
