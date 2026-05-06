@@ -1113,7 +1113,7 @@ def _heuristic_answer(
     blocked: Sequence[RetrievedEvidence],
 ) -> tuple[str, str]:
     if _is_harmful(query):
-        answer = "I can’t help with that request."
+        answer = "I can't assist with that request."
         justification = (
             "The request indicates harmful intent, so the safe response is to refuse."
         )
@@ -2202,6 +2202,8 @@ class MagiProgram:
             client=safety_client,
             stage="input",
         )
+        if is_blocked(input_report):
+            return input_report, [], []
         safe_evidence, blocked_evidence = _safe_retrieve(
             self.retriever,
             clean_query,
