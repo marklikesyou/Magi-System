@@ -610,6 +610,9 @@ def test_chat_session_excludes_social_distractor_from_pilot_decision():
     assert result.final_decision.verdict == "approve"
     assert "magi/eval/retrieval_corpus/pilot_brief.txt" in result.decision_trace.cited_sources
     assert "magi/eval/retrieval_corpus/team_social.txt" not in result.decision_trace.cited_sources
+    assert len(result.decision_trace.retrieved_evidence_ids) > 1
+    assert result.decision_trace.used_evidence_ids == result.decision_trace.cited_evidence_ids
+    assert result.decision_trace.used_evidence_ids == ["pilot_brief"]
     assert "team social agenda" not in result.fused.final_answer.lower()
     assert "photo booth" not in result.fused.final_answer.lower()
 
