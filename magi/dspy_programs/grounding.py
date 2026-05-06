@@ -240,6 +240,26 @@ def evidence_directly_addresses_query(
     )
 
 
+def evidence_covers_query_terms(
+    query: str,
+    evidence: Sequence[RetrievedEvidence],
+    *,
+    min_coverage: float = 1.0,
+    min_average_similarity: float = 0.84,
+) -> bool:
+    query_terms = query_support_terms(query)
+    if not query_terms:
+        return bool(evidence)
+    fuzzy_coverage, average_similarity, _best_support_score = _query_evidence_coverage(
+        query,
+        evidence,
+    )
+    return (
+        fuzzy_coverage >= min_coverage
+        and average_similarity >= min_average_similarity
+    )
+
+
 def _citation_labels(evidence: Sequence[RetrievedEvidence]) -> set[str]:
     return {item.citation for item in evidence if item.citation}
 
@@ -288,6 +308,7 @@ def support_strength(evidence: Sequence[RetrievedEvidence]) -> float:
 
 __all__ = [
     "contains_evidence_citation",
+    "evidence_covers_query_terms",
     "evidence_directly_addresses_query",
     "grounding_overlap",
     "query_support_terms",
