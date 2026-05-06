@@ -24,6 +24,7 @@ from magi.core.vectorstore import RetrievedChunk
 
 from .grounding import (
     contains_evidence_citation as _contains_evidence_citation,
+    evidence_covers_query_terms as _evidence_covers_query_terms,
     evidence_directly_addresses_query as _evidence_directly_addresses_query,
     grounding_overlap as _grounding_overlap,
     query_support_terms as _query_support_terms,
@@ -328,7 +329,7 @@ def _has_informational_support(
     if _is_fact_check_query(query):
         return False
     if _is_specific_detail_query(query):
-        return _evidence_directly_addresses_query(query, evidence)
+        return _evidence_covers_query_terms(query, evidence)
     return bool(_select_relevant_evidence(query, evidence, limit=1))
 
 
@@ -407,9 +408,9 @@ def _has_semantic_support(query: str, evidence: Sequence[RetrievedEvidence]) -> 
         return True
     if _is_fact_check_query(query):
         return _has_fact_check_support(query, evidence)
+    if _is_informational(query):
+        return _has_informational_support(query, evidence)
     if _evidence_directly_addresses_query(query, evidence):
-        return True
-    if _has_informational_support(query, evidence):
         return True
     return _has_guarded_decision_support(query, evidence)
 
