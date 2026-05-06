@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
-from magi.core.clients import LLMClient
+from magi.core.clients import LLMClient, LLMClientError
+from magi.eval.run_scenarios import _threshold_failures
 from magi.eval.scenario_harness import (
     ScenarioDataset,
     ScenarioEvidence,
@@ -28,6 +30,14 @@ class _SequenceClient(LLMClient):
             raise AssertionError("unexpected extra client call")
         payload = self._payloads.pop(0)
         return {"choices": [{"message": {"content": json.dumps(payload)}}]}
+
+
+class _FailingClient(LLMClient):
+    model = "gpt-4o-mini-2024-07-18"
+
+    def complete(self, messages, *, tools=None, response_format=None):  # type: ignore[override]
+        del messages, tools, response_format
+        raise LLMClientError("provider unavailable")
 
 
 def test_live_scenarios_suite_passes_in_stub_mode() -> None:
@@ -177,6 +187,91 @@ def test_live_scenarios_suite_passes_with_fake_live_client() -> None:
     assert report.summary.verdict_accuracy == 1.0
     assert report.cases[0].citation_count >= 1
     assert report.cases[0].requires_human_review is True
+
+
+def test_live_scenario_gate_fails_when_provider_fallback_occurs() -> None:
+    dataset = ScenarioDataset.model_validate(
+        {
+            "cases": [
+                {
+                    "id": "live_fallback_summary",
+                    "query": "Summarize MAGI in one sentence.",
+                    "expected_verdict": "approve",
+                    "expected_residual_risk": "low",
+                    "evidence": [
+                        {
+                            "source": "README",
+                            "text": "MAGI is a multi persona reasoning engine for assessing user requests against an evidence base.",
+                        }
+                    ],
+                    "checks": {
+                        "required_terms_any": ["magi", "reasoning engine"],
+                        "min_citations": 1,
+                        "min_citation_hit_rate": 1.0,
+                        "require_human_review": True,
+                    },
+                }
+            ]
+        }
+    )
+
+    report = run_scenario_suite(
+        dataset,
+        force_stub=False,
+        client=_FailingClient(),
+        requested_mode="live",
+    )
+
+    assert report.summary.effective_mode == "live"
+    assert report.summary.live_fallback_count == 1
+    assert report.cases[0].live_fallback_count == 1
+    failures = _threshold_failures(
+        report,
+        Namespace(
+            min_overall_score=None,
+            min_verdict_accuracy=None,
+            min_requirement_pass_rate=None,
+            min_retrieval_hit_rate=None,
+            min_retrieval_top_source_accuracy=None,
+            min_retrieval_source_recall=None,
+            min_average_citation_hit_rate=None,
+            min_average_answer_support_score=None,
+            min_supported_answer_rate=None,
+            max_p50_latency_ms=None,
+            max_p95_latency_ms=None,
+            max_max_latency_ms=None,
+            max_average_cost_usd=None,
+            max_total_cost_usd=None,
+            max_live_fallbacks=None,
+            allow_live_fallbacks=False,
+            mode="live",
+        ),
+    )
+    assert ("live_fallback_count", 1.0, 0.0, "maximum") in failures
+
+    allowed_failures = _threshold_failures(
+        report,
+        Namespace(
+            min_overall_score=None,
+            min_verdict_accuracy=None,
+            min_requirement_pass_rate=None,
+            min_retrieval_hit_rate=None,
+            min_retrieval_top_source_accuracy=None,
+            min_retrieval_source_recall=None,
+            min_average_citation_hit_rate=None,
+            min_average_answer_support_score=None,
+            min_supported_answer_rate=None,
+            max_p50_latency_ms=None,
+            max_p95_latency_ms=None,
+            max_max_latency_ms=None,
+            max_average_cost_usd=None,
+            max_total_cost_usd=None,
+            max_live_fallbacks=None,
+            allow_live_fallbacks=True,
+            mode="live",
+        ),
+    )
+    assert not any(failure[0] == "live_fallback_count" for failure in allowed_failures)
 
 
 def test_scenario_retriever_ranks_query_matches_above_distractors() -> None:
