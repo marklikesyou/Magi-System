@@ -18,20 +18,18 @@ _DEFAULT_FORBIDDEN = {
     "disable safety",
 }
 
-_DEFAULT_BANNED = {
-    "api_key",
-    "password",
-    "ssn",
-    "credit card",
-    "confidential",
-}
-
 _INJECTION_PATTERN = re.compile(
     r"(?:ignore|bypass|forget)\s+(?:all\s+)?(?:previous|prior)\s+(?:directions|instructions)",
     re.IGNORECASE,
 )
 _CREDENTIAL_PATTERN = re.compile(
-    r"(?:api[-_]?key|secret|token|password)\s*[:=]", re.IGNORECASE
+    r"(?:api[-_ ]?key|secret|token|password|confidential)\s*[:=]\s*\S+",
+    re.IGNORECASE,
+)
+_SSN_PATTERN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+_CREDIT_CARD_PATTERN = re.compile(
+    r"(?:credit\s+card(?:\s+number)?\s*[:=]\s*)?\b(?:\d[ -]*?){13,19}\b",
+    re.IGNORECASE,
 )
 _HTML_PATTERN = re.compile(r"<\s*(?:script|iframe|object)", re.IGNORECASE)
 
@@ -84,11 +82,16 @@ def detect_prompt_injection(
 def detect_sensitive_leak(
     text: str, banned_keywords: Iterable[str] | None = None
 ) -> bool:
-    markers = set(banned_keywords or _DEFAULT_BANNED)
-    lowered = text.lower()
-    if any(marker in lowered for marker in markers):
-        return True
+    if banned_keywords is not None:
+        markers = {marker.lower() for marker in banned_keywords}
+        lowered = text.lower()
+        if any(marker in lowered for marker in markers):
+            return True
     if _CREDENTIAL_PATTERN.search(text):
+        return True
+    if _SSN_PATTERN.search(text):
+        return True
+    if _CREDIT_CARD_PATTERN.search(text):
         return True
     return False
 
