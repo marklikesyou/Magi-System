@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import re
 
 from magi.core.routing import route_query
 from magi.core.text_signals import (
@@ -185,6 +186,8 @@ DECISION_CRITICAL_PATTERNS = (
     "staffing",
     "testing",
 )
+_RAW_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_FIELD_QUESTION_AUXILIARIES = {"is", "are", "was", "were", "do", "does", "did"}
 
 
 def pattern_hits(text: str, patterns: Sequence[str]) -> int:
@@ -226,8 +229,15 @@ def is_specific_detail_query(query: str) -> bool:
         return True
     terms = query_support_terms(query)
     has_possessive = "'s" in query or "’s" in query
-    has_identifier = any(any(character.isdigit() for character in term) for term in terms)
-    return has_possessive or has_identifier
+    raw_tokens = _RAW_TOKEN_RE.findall(query)
+    has_identifier = any(any(character.isdigit() for character in token) for token in raw_tokens)
+    is_compact_field_question = (
+        len(terms) <= 3
+        and len(raw_tokens) >= 2
+        and raw_tokens[0].lower() == "what"
+        and raw_tokens[1].lower() in _FIELD_QUESTION_AUXILIARIES
+    )
+    return has_possessive or has_identifier or is_compact_field_question
 
 
 def is_field_extraction_query(query: str) -> bool:
