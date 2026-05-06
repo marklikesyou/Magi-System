@@ -18,6 +18,11 @@ def test_detect_sensitive_leak_with_keyword():
     assert detect_sensitive_leak("The API_KEY=abcd should remain secret") is True
 
 
+def test_detect_sensitive_leak_allows_sensitive_policy_topics():
+    assert detect_sensitive_leak("What does the password policy require?") is False
+    assert detect_sensitive_leak("Summarize the confidential data handling policy.") is False
+
+
 def test_detect_sensitive_leak_without_keyword():
     assert detect_sensitive_leak("Public release notes for version 1.2") is False
 
