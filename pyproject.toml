@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "magi-system"
 version = "0.1.0"
 description = "MAGI multi-agent decision system scaffold with RAG, DSPy personas, and evaluation workflows."
-readme = "magi/README.md"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{name = "MAGI Team"}]
@@ -52,7 +52,6 @@ exclude = ["magi.tests", "magi.tests.*"]
 
 [tool.setuptools.package-data]
 magi = [
-  "README.md",
   "profiles/*.yaml",
   "eval/*.yaml",
   "eval/retrieval_corpus/*",
