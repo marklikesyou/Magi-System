@@ -1704,6 +1704,7 @@ class MagiProgram:
             if enable_live_personas is None
             else bool(enable_live_personas)
         )
+        self._live_fallbacks: list[dict[str, str]] = []
 
     def __call__(
         self, query: str, constraints: str = ""
@@ -1719,6 +1720,13 @@ class MagiProgram:
             return func()
         except (LLMClientError, ValidationError, RuntimeError, ValueError) as exc:
             logger.warning("%s failed, using deterministic fallback: %s", label, exc)
+            self._live_fallbacks.append(
+                {
+                    "label": label,
+                    "error_type": exc.__class__.__name__,
+                    "error": str(exc),
+                }
+            )
             return fallback()
 
     def _route_decision(self, query: str, constraints: str) -> Any:
@@ -2156,6 +2164,11 @@ class MagiProgram:
             "responder_mode": "live"
             if self._runner.enabled() and self._enable_responder_llm
             else "deterministic",
+            "live_fallback_count": len(self._live_fallbacks),
+            "live_fallback_labels": [
+                item["label"] for item in self._live_fallbacks if item.get("label")
+            ],
+            "live_fallbacks": list(self._live_fallbacks),
         }
 
     def _remember_result(
@@ -2349,6 +2362,7 @@ class MagiProgram:
         cached = self._cached_result(cache_key)
         if cached is not None:
             return cached
+        self._live_fallbacks = []
 
         safety_client = self._safety_client() if self._runner.enabled() else False
         input_report, safe_evidence, blocked_evidence = self._retrieve_with_safety(
