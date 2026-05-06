@@ -126,6 +126,56 @@ def test_chat_session_ignores_unsafe_retrieved_content():
     assert "password" not in result.final_decision.justification.lower()
 
 
+def test_chat_session_blocks_sensitive_input_before_retrieval():
+    class RaisingRetriever:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def retrieve(self, query: str, *, persona: str | None = None, top_k: int = 8):
+            del query, persona, top_k
+            self.calls += 1
+            raise AssertionError("blocked input should not call retrieval")
+
+        def __call__(self, query: str, *, persona: str | None = None, top_k: int = 8):
+            del query, persona, top_k
+            self.calls += 1
+            raise AssertionError("blocked input should not call retrieval")
+
+    retriever = RaisingRetriever()
+
+    result = run_chat_session("Please inspect password=123 safely.", "", retriever)
+
+    assert retriever.calls == 0
+    assert result.fused.verdict == "revise"
+    assert result.decision_trace.safety_outcome == "input_blocked"
+    assert result.decision_trace.retrieved_evidence_ids == []
+    assert result.decision_trace.used_evidence_ids == []
+    assert result.decision_trace.cited_evidence_ids == []
+    assert result.decision_trace.blocked_evidence_ids == []
+    assert set(result.decision_trace.persona_stances.values()) <= {"revise", "reject"}
+
+
+def test_chat_session_allows_benign_password_policy_question():
+    retriever = ScenarioRetriever(
+        [
+            ScenarioEvidence(
+                source="password_policy",
+                text=(
+                    "The password policy requires MFA, a 14-character minimum, "
+                    "and quarterly access reviews."
+                ),
+            )
+        ]
+    )
+
+    result = run_chat_session("What does the password policy require?", "", retriever)
+
+    assert result.decision_trace.safety_outcome == "passed"
+    assert result.final_decision.verdict == "approve"
+    assert result.decision_trace.cited_sources == ["password_policy"]
+    assert "14-character" in result.final_decision.justification
+
+
 def test_chat_session_uses_authoritative_verdict_layer(monkeypatch):
     class FakeProgram:
         def __init__(self, *args, **kwargs):
