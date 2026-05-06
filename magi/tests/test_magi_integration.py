@@ -7,6 +7,7 @@ os.environ.setdefault("MAGI_FORCE_DSPY_STUB", "1")
 
 import magi.app.service as service
 from magi.app.service import run_chat_session
+from magi.core.clients import LLMClientError
 from magi.core.embeddings import HashingEmbedder
 from magi.core.rag import RagRetriever
 from magi.core.vectorstore import InMemoryVectorStore, VectorEntry
@@ -182,6 +183,36 @@ def test_chat_session_uses_authoritative_verdict_layer(monkeypatch):
     assert result.decision_trace.cited_evidence[0].citation == "[2]"
     assert result.decision_trace.cited_evidence[0].source == "pilot_brief"
     assert result.decision_trace.unsupported_citations == []
+
+
+def test_live_chat_session_reports_provider_fallback():
+    class FailingClient:
+        model = "test-live-model"
+
+        def complete(self, messages, *, tools=None, response_format=None):
+            del messages, tools, response_format
+            raise LLMClientError("provider unavailable")
+
+    retriever = ScenarioRetriever(
+        [
+            ScenarioEvidence(
+                source="README",
+                text="MAGI is a multi persona reasoning engine for assessing user requests against an evidence base.",
+            )
+        ]
+    )
+
+    result = run_chat_session(
+        "Summarize MAGI in one sentence.",
+        "",
+        retriever,
+        force_stub=False,
+        client=FailingClient(),
+    )
+
+    assert result.effective_mode == "live"
+    assert result.decision_trace.live_fallback_count == 1
+    assert result.decision_trace.live_fallback_labels == ["fusion"]
 
 
 def test_chat_session_selects_stronger_model_for_high_stakes_decision(monkeypatch):
