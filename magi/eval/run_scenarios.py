@@ -26,10 +26,24 @@ def _bounded_rate(value: str) -> float:
     return rate
 
 
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("thresholds must be nonnegative")
+    return parsed
+
+
 def _threshold_failures(
     report, args: argparse.Namespace
 ) -> list[tuple[str, float, float, str]]:
     summary = report.summary
+    max_live_fallbacks = args.max_live_fallbacks
+    if (
+        max_live_fallbacks is None
+        and not args.allow_live_fallbacks
+        and summary.effective_mode == "live"
+    ):
+        max_live_fallbacks = 0
     min_thresholds = {
         "overall_score": args.min_overall_score,
         "verdict_accuracy": args.min_verdict_accuracy,
@@ -47,6 +61,7 @@ def _threshold_failures(
         "latency_max_ms": args.max_max_latency_ms,
         "average_estimated_cost_usd": args.max_average_cost_usd,
         "total_estimated_cost_usd": args.max_total_cost_usd,
+        "live_fallback_count": max_live_fallbacks,
     }
     failures: list[tuple[str, float, float, str]] = []
     for field, minimum in min_thresholds.items():
@@ -160,6 +175,16 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         "--max-total-cost-usd",
         type=float,
         help="Fail if total_estimated_cost_usd exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--max-live-fallbacks",
+        type=_nonnegative_int,
+        help="Fail if live_fallback_count exceeds this threshold. Live mode defaults to 0.",
+    )
+    parser.add_argument(
+        "--allow-live-fallbacks",
+        action="store_true",
+        help="Allow provider fallback in live mode for diagnostic runs.",
     )
     return parser.parse_args(argv)
 
