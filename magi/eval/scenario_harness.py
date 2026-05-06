@@ -239,6 +239,7 @@ class ScenarioCaseResult(BaseModel):
     answer_supported: bool = False
     latency_ms: float = 0.0
     program_run_ms: float = 0.0
+    live_fallback_count: int = 0
     requires_human_review: bool = False
     review_reason: str = ""
     safe_evidence_count: int
@@ -281,6 +282,7 @@ class ScenarioSummary(BaseModel):
     latency_p50_ms: float = 0.0
     latency_p95_ms: float = 0.0
     latency_max_ms: float = 0.0
+    live_fallback_count: int = 0
     total_estimated_cost_usd: float = 0.0
     average_estimated_cost_usd: float = 0.0
     token_stats: Dict[str, Any] = Field(default_factory=dict)
@@ -308,6 +310,7 @@ class _ScenarioExecution:
     answer_support_score: float = 0.0
     answer_supported: bool = False
     latency_ms: float = 0.0
+    live_fallback_count: int = 0
 
 
 @dataclass
@@ -322,6 +325,7 @@ class _ScenarioCounters:
     citation_hit_rate_total: float = 0.0
     answer_support_score_total: float = 0.0
     supported_answers: int = 0
+    live_fallback_count: int = 0
 
     def record(self, execution: _ScenarioExecution) -> None:
         if execution.retrieval_evaluable:
@@ -340,6 +344,7 @@ class _ScenarioCounters:
             self.answer_support_score_total += execution.answer_support_score
             if execution.answer_supported:
                 self.supported_answers += 1
+        self.live_fallback_count += execution.live_fallback_count
 
 
 class ScenarioRetriever:
@@ -855,6 +860,7 @@ def _evaluate_scenario_case(
             answer_supported=answer_supported,
             latency_ms=latency_ms,
             program_run_ms=session.decision_trace.program_run_ms,
+            live_fallback_count=session.decision_trace.live_fallback_count,
             requires_human_review=session.final_decision.requires_human_review,
             review_reason=session.final_decision.review_reason,
             safe_evidence_count=safe_evidence_count,
@@ -888,6 +894,7 @@ def _evaluate_scenario_case(
         answer_support_score=case_answer_support_score,
         answer_supported=answer_supported,
         latency_ms=latency_ms,
+        live_fallback_count=session.decision_trace.live_fallback_count,
     )
 
 
@@ -955,6 +962,7 @@ def _build_scenario_summary(
         latency_p50_ms=round(_percentile(latency_values, 0.5), 3),
         latency_p95_ms=round(_percentile(latency_values, 0.95), 3),
         latency_max_ms=round(max(latency_values, default=0.0), 3),
+        live_fallback_count=counters.live_fallback_count,
         total_estimated_cost_usd=round(total_cost, 6),
         average_estimated_cost_usd=round(_safe_ratio(total_cost, len(case_results)), 6),
         token_stats=token_stats,
@@ -1004,7 +1012,7 @@ def run_scenario_suite(
 
 def render_scenario_report(report: ScenarioReport) -> str:
     lines = [
-        "case_id\texpected\tpredicted\tpassed\tcitations\tcitation_hit_rate\tanswer_support\tsupported\tlatency_ms\tblocked\tretrieved\tretrieval_hits\tfirst_expected_rank\tsource_recall"
+        "case_id\texpected\tpredicted\tpassed\tcitations\tcitation_hit_rate\tanswer_support\tsupported\tlatency_ms\tlive_fallbacks\tblocked\tretrieved\tretrieval_hits\tfirst_expected_rank\tsource_recall"
     ]
     for item in report.cases:
         lines.append(
@@ -1019,6 +1027,7 @@ def render_scenario_report(report: ScenarioReport) -> str:
                     f"{item.answer_support_score:.2f}",
                     "yes" if item.answer_supported else "no",
                     f"{item.latency_ms:.3f}",
+                    str(item.live_fallback_count),
                     str(item.blocked_evidence_count),
                     str(item.retrieved_chunk_count),
                     str(item.retrieved_relevant_chunk_count),
@@ -1054,6 +1063,7 @@ def render_scenario_report(report: ScenarioReport) -> str:
             f"latency_p50_ms\t{report.summary.latency_p50_ms:.3f}",
             f"latency_p95_ms\t{report.summary.latency_p95_ms:.3f}",
             f"latency_max_ms\t{report.summary.latency_max_ms:.3f}",
+            f"live_fallback_count\t{report.summary.live_fallback_count}",
             f"total_estimated_cost_usd\t{report.summary.total_estimated_cost_usd:.6f}",
             "average_estimated_cost_usd\t"
             f"{report.summary.average_estimated_cost_usd:.6f}",
