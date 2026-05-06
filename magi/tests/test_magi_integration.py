@@ -176,6 +176,20 @@ def test_chat_session_allows_benign_password_policy_question():
     assert "14-character" in result.final_decision.justification
 
 
+def test_chat_session_abstains_when_policy_topic_lacks_supporting_policy_evidence():
+    result = run_chat_session(
+        "What does the password policy require?",
+        "",
+        retrieval_corpus_retriever(),
+    )
+
+    assert result.decision_trace.safety_outcome == "passed"
+    assert result.final_decision.verdict == "abstain"
+    assert result.decision_trace.cited_sources == []
+    assert "team social agenda" not in result.fused.final_answer.lower()
+    assert "not sufficient" in result.fused.final_answer.lower()
+
+
 def test_chat_session_uses_authoritative_verdict_layer(monkeypatch):
     class FakeProgram:
         def __init__(self, *args, **kwargs):
