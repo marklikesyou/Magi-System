@@ -889,6 +889,37 @@ def test_unsupported_detail_question_revises_instead_of_approving_related_eviden
     assert "pilot proposal scopes" not in fused.final_answer.lower()
 
 
+def test_short_identifier_detail_question_revises_without_possessive_punctuation():
+    program = MagiProgram(
+        retriever=ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="overview",
+                    text=(
+                        "MAGI retrieves evidence from local documents and produces a verdict "
+                        "with citations."
+                    ),
+                ),
+                ScenarioEvidence(
+                    source="operations_note",
+                    text=(
+                        "The team tracks latency during pilots, but no production SLA has "
+                        "been published."
+                    ),
+                ),
+            ]
+        ),
+        force_stub=True,
+    )
+
+    fused, personas = program("What is MAGI Q4 procurement budget?", constraints="")
+
+    assert fused.verdict == "revise"
+    assert {persona.stance for persona in personas.values()} == {"revise"}
+    assert "not sufficient" in fused.final_answer.lower()
+    assert "retrieves evidence" not in fused.final_answer.lower()
+
+
 def test_yes_no_evidence_question_gets_fact_check_answer_not_decision_approval():
     program = MagiProgram(
         retriever=ScenarioRetriever(
