@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Literal
+
+from magi.core.semantic import semantic_similarity
 
 QueryMode = Literal["summarize", "extract", "fact_check", "recommend", "decision"]
 _MODE_ORDER: tuple[QueryMode, ...] = (
@@ -12,110 +15,33 @@ _MODE_ORDER: tuple[QueryMode, ...] = (
     "summarize",
 )
 
-_SUMMARIZE_PATTERNS = (
-    "summarize",
-    "summary",
-    "overview",
-    "explain",
-    "describe",
-    "clarify",
-    "one sentence",
-    "two sentences",
-    "briefly",
-    "tl;dr",
+_ROUTE_PROFILES: dict[QueryMode, tuple[str, ...]] = {
+    "summarize": (
+        "summarize summary concise informational explanation of retrieved source material",
+        "brief overview of what the document says with caveats",
+    ),
+    "extract": (
+        "direct extraction of exact source wording location field clause page or line",
+    ),
+    "fact_check": (
+        "verify whether a factual claim is true false supported or contradicted by evidence",
+    ),
+    "recommend": (
+        "compare options and suggest a bounded approach with tradeoffs",
+    ),
+    "decision": (
+        "approval decision about taking an action under constraints and risk",
+    ),
+}
+_WH_INFORMATION_RE = re.compile(r"^(?:what(?:'s)?|who|when|where|why|how)\b")
+_COLLECTIVE_DECISION_RE = re.compile(
+    r"^(?:(?:should|could|can|do|would)\s+we\b|is\s+it\b.+\bto\b)"
 )
-_INFORMATION_QUESTION_STARTERS = (
-    "what ",
-    "what's ",
-    "who ",
-    "when ",
-    "where ",
-    "why ",
-    "how ",
+_YES_NO_RE = re.compile(
+    r"^(?:is|are|do|does|did|was|were|has|have|can|could|would|will)\b.+\?$"
 )
-_INFORMATION_IMPERATIVE_STARTERS = (
-    "explain",
-    "describe",
-    "summarize",
-    "give me",
-    "tell me",
-)
-_RECOMMENDATION_QUESTION_STARTERS = ("what should", "how should")
-_EXTRACT_PATTERNS = (
-    "extract",
-    "list ",
-    "quote",
-    "exact wording",
-    "exact text",
-    "find the",
-    "which ",
-    "what page",
-    "what section",
-    "what clause",
-    "pull out",
-    "show the line",
-    "locate",
-)
-_FACT_CHECK_PATTERNS = (
-    "fact check",
-    "fact-check",
-    "verify",
-    "confirm whether",
-    "is it true",
-    "true or false",
-    "accurate",
-    "guarantee",
-    "guaranteed",
-    "does the evidence show",
-    "does the evidence say",
-    "does the source say",
-    "supported by the evidence",
-)
-_RECOMMEND_PATTERNS = (
-    "recommend",
-    "recommendation",
-    "best approach",
-    "best option",
-    "how should",
-    "what should",
-    "proposal",
-    "plan",
-    "roadmap",
-    "tradeoff",
-    "trade-off",
-    "compare",
-    "options",
-    "suggest",
-)
-_DECISION_PATTERNS = (
-    "should we",
-    "approve",
-    "reject",
-    "revise",
-    "go/no-go",
-    "go no go",
-    "proceed",
-    "launch",
-    "rollout",
-    "deploy",
-    "adopt",
-    "move forward",
-    "greenlight",
-    "pilot",
-    "ship",
-)
-_RISK_PATTERNS = (
-    "risk",
-    "risks",
-    "mitigation",
-    "mitigations",
-    "guardrail",
-    "guardrails",
-    "blast radius",
-    "impact",
-)
-_YES_NO_STARTERS = ("is ", "are ", "do ", "does ", "did ", "was ", "were ", "can ")
-_DECISION_STARTERS = ("should ", "can we ", "do we ", "is it safe to ")
+_ASSISTANT_REQUEST_RE = re.compile(r"^(?:can|could|would)\s+you\b")
+_SOURCE_LOCATION_RE = re.compile(r"\b(?:page|section|clause|line)\b")
 
 
 @dataclass(frozen=True)
@@ -128,27 +54,15 @@ class RoutingDecision:
     signals: list[str] = field(default_factory=list)
 
 
-def _pattern_matches(text: str, patterns: tuple[str, ...]) -> list[str]:
-    lowered = text.lower()
-    return [pattern for pattern in patterns if pattern in lowered]
-
-
-def _starts_with_any(text: str, patterns: tuple[str, ...]) -> bool:
-    return any(text.startswith(pattern) for pattern in patterns)
-
-
 def _is_information_request(text: str) -> bool:
     lowered = text.strip().lower()
-    if _starts_with_any(lowered, _RECOMMENDATION_QUESTION_STARTERS):
+    if _COLLECTIVE_DECISION_RE.search(lowered):
         return False
-    if _starts_with_any(lowered, _DECISION_STARTERS):
+    if _SOURCE_LOCATION_RE.search(lowered):
         return False
-    if lowered.endswith("?") and _starts_with_any(
-        lowered,
-        _INFORMATION_QUESTION_STARTERS,
-    ):
+    if lowered.endswith("?") and _WH_INFORMATION_RE.search(lowered):
         return True
-    return _starts_with_any(lowered, _INFORMATION_IMPERATIVE_STARTERS)
+    return _ASSISTANT_REQUEST_RE.search(lowered) is not None
 
 
 def _add_score(
@@ -183,15 +97,17 @@ def route_query(
     scores: dict[QueryMode, int] = {mode: 0 for mode in _MODE_ORDER}
     signals: list[str] = []
 
-    summarize_matches = _pattern_matches(lowered, _SUMMARIZE_PATTERNS)
-    if summarize_matches:
-        _add_score(
-            scores,
-            signals,
-            "summarize",
-            2 + len(summarize_matches),
-            f"summary markers {', '.join(summarize_matches[:3])}",
-        )
+    for mode, profiles in _ROUTE_PROFILES.items():
+        similarity = semantic_similarity(lowered, profiles)
+        semantic_points = int(round(similarity * 12))
+        if semantic_points > 0:
+            _add_score(
+                scores,
+                signals,
+                mode,
+                semantic_points,
+                "semantic route profile",
+            )
 
     if _is_information_request(lowered):
         _add_score(
@@ -202,61 +118,13 @@ def route_query(
             "question asks for information rather than a go/no-go decision",
         )
 
-    extract_matches = _pattern_matches(lowered, _EXTRACT_PATTERNS)
-    if extract_matches:
+    if _SOURCE_LOCATION_RE.search(lowered):
         _add_score(
             scores,
             signals,
             "extract",
-            2 + len(extract_matches),
-            f"extraction markers {', '.join(extract_matches[:3])}",
-        )
-
-    fact_matches = _pattern_matches(lowered, _FACT_CHECK_PATTERNS)
-    if fact_matches:
-        _add_score(
-            scores,
-            signals,
-            "fact_check",
-            3 + len(fact_matches),
-            f"verification markers {', '.join(fact_matches[:3])}",
-        )
-
-    recommend_matches = _pattern_matches(lowered, _RECOMMEND_PATTERNS)
-    if recommend_matches:
-        _add_score(
-            scores,
-            signals,
-            "recommend",
-            2 + len(recommend_matches),
-            f"recommendation markers {', '.join(recommend_matches[:3])}",
-        )
-
-    decision_matches = _pattern_matches(lowered, _DECISION_PATTERNS)
-    if decision_matches:
-        _add_score(
-            scores,
-            signals,
-            "decision",
-            3 + len(decision_matches),
-            f"decision markers {', '.join(decision_matches[:3])}",
-        )
-
-    risk_matches = _pattern_matches(lowered, _RISK_PATTERNS)
-    if risk_matches:
-        _add_score(
-            scores,
-            signals,
-            "decision",
-            2,
-            f"risk markers {', '.join(risk_matches[:3])}",
-        )
-        _add_score(
-            scores,
-            signals,
-            "recommend",
-            1,
-            "risk framing can imply a recommendation task",
+            4,
+            "source-location structure",
         )
 
     if constrained:
@@ -268,7 +136,7 @@ def route_query(
             "explicit constraints were supplied",
         )
 
-    if lowered.startswith(_YES_NO_STARTERS) and lowered.endswith("?"):
+    if _YES_NO_RE.search(lowered) and not _ASSISTANT_REQUEST_RE.search(lowered):
         _add_score(
             scores,
             signals,
@@ -277,40 +145,13 @@ def route_query(
             "yes/no phrasing suggests verification",
         )
 
-    if lowered.startswith(_DECISION_STARTERS):
+    if _COLLECTIVE_DECISION_RE.search(lowered):
         _add_score(
             scores,
             signals,
             "decision",
             2,
             "leading phrasing suggests a decision task",
-        )
-
-    if "page " in lowered or "section " in lowered or "clause " in lowered:
-        _add_score(
-            scores,
-            signals,
-            "extract",
-            2,
-            "source-location references imply extraction",
-        )
-
-    if "compare" in lowered and "option" in lowered:
-        _add_score(
-            scores,
-            signals,
-            "recommend",
-            2,
-            "compare/options phrasing implies recommendation synthesis",
-        )
-
-    if "one sentence" in lowered or "two sentences" in lowered:
-        _add_score(
-            scores,
-            signals,
-            "summarize",
-            2,
-            "brevity request implies summarization",
         )
 
     if max(scores.values()) <= 0:
