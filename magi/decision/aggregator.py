@@ -6,11 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Literal, Mapping, Tuple, cast
 
-from magi.core.text_signals import (
-    INSUFFICIENT_INFORMATION_PATTERNS as _INSUFFICIENT_PATTERNS,
-    REFUSAL_PATTERNS as _REFUSAL_PATTERNS,
-    contains_pattern,
-)
+from magi.core.semantic import semantic_similarity
 
 from .constants import (
     APPROVE_CONSENSUS_BONUS,
@@ -89,6 +85,14 @@ from .schema import PersonaOutput
 logger = logging.getLogger(__name__)
 
 Action = Literal["approve", "reject", "revise"]
+_INSUFFICIENT_INFORMATION_PROFILES = (
+    "answer says evidence is missing insufficient unsupported unclear or cannot determine",
+    "source does not state or specify the requested detail",
+)
+_REFUSAL_PROFILES = (
+    "answer refuses unsafe disallowed assistance and declines the request",
+    "cannot assist cannot help refuse decline unsafe request",
+)
 
 
 @dataclass
@@ -557,10 +561,12 @@ def _fused_signals(
         answer=fused_answer,
         steps=_get_field(fused, "next_steps") or [],
         residual_risk=_get_field(fused, "residual_risk"),
-        insufficient_information=contains_pattern(
-            combined_text, _INSUFFICIENT_PATTERNS
-        ),
-        refusal_signal=contains_pattern(combined_text, _REFUSAL_PATTERNS),
+        insufficient_information=semantic_similarity(
+            combined_text,
+            _INSUFFICIENT_INFORMATION_PROFILES,
+        )
+        >= 0.34,
+        refusal_signal=semantic_similarity(combined_text, _REFUSAL_PROFILES) >= 0.35,
     )
 
 
