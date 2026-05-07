@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Literal, Tuple
 
 from .config import get_settings
+from .semantic import semantic_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,10 @@ _CREDIT_CARD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _HTML_PATTERN = re.compile(r"<\s*(?:script|iframe|object)", re.IGNORECASE)
+_SENSITIVE_EXFILTRATION_PROFILES = (
+    "bypass administrative controls and extract private credentials access tokens private passwords secrets",
+    "steal leak exfiltrate private credentials secrets tokens passwords",
+)
 
 
 @dataclass
@@ -96,6 +101,10 @@ def detect_sensitive_leak(
     return False
 
 
+def detect_sensitive_exfiltration_intent(text: str) -> bool:
+    return semantic_similarity(text, _SENSITIVE_EXFILTRATION_PROFILES) >= 0.42
+
+
 def detect_malicious_markup(text: str) -> bool:
     return bool(_HTML_PATTERN.search(text))
 
@@ -139,6 +148,8 @@ def analyze_safety(
         reasons.append("prompt_injection")
     if detect_sensitive_leak(text):
         reasons.append("sensitive_leak")
+    if detect_sensitive_exfiltration_intent(text):
+        reasons.append("sensitive_exfiltration_intent")
     if detect_malicious_markup(text):
         reasons.append("malicious_markup")
     if flagged_moderation:
@@ -148,12 +159,24 @@ def analyze_safety(
     blocked = False
     if stage == "retrieval":
         blocked = any(
-            reason in {"prompt_injection", "malicious_markup", "sensitive_leak"}
+            reason
+            in {
+                "prompt_injection",
+                "malicious_markup",
+                "sensitive_leak",
+                "sensitive_exfiltration_intent",
+            }
             for reason in reasons
         )
     elif stage == "input":
         blocked = any(
-            reason in {"provider_moderation", "malicious_markup", "sensitive_leak"}
+            reason
+            in {
+                "provider_moderation",
+                "malicious_markup",
+                "sensitive_leak",
+                "sensitive_exfiltration_intent",
+            }
             for reason in reasons
         )
         if "prompt_injection" in reasons and not text.strip().lower().startswith(
@@ -162,7 +185,13 @@ def analyze_safety(
             blocked = True
     else:
         blocked = any(
-            reason in {"provider_moderation", "malicious_markup", "sensitive_leak"}
+            reason
+            in {
+                "provider_moderation",
+                "malicious_markup",
+                "sensitive_leak",
+                "sensitive_exfiltration_intent",
+            }
             for reason in reasons
         )
     return SafetyReport(
@@ -179,6 +208,7 @@ __all__ = [
     "moderate_text",
     "detect_prompt_injection",
     "detect_sensitive_leak",
+    "detect_sensitive_exfiltration_intent",
     "detect_malicious_markup",
     "analyze_safety",
     "is_blocked",
