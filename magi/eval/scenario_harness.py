@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from magi.app.service import run_chat_session
 from magi.core.rag import default_formatter
 from magi.core.safety import analyze_safety, is_blocked
+from magi.core.semantic import semantic_similarity
 from magi.core.vectorstore import RetrievedChunk
 from magi.dspy_programs.personas import (
     clear_cache,
@@ -26,62 +27,10 @@ VALID_VERDICTS = {"approve", "reject", "revise", "abstain"}
 VALID_RISK_LEVELS = {"low", "medium", "high"}
 VALID_PERSONAS = {"melchior", "balthasar", "casper"}
 _CITATION_RE = re.compile(r"\[\d+\]")
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
-_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "do",
-    "does",
-    "for",
-    "from",
-    "how",
-    "i",
-    "in",
-    "is",
-    "it",
-    "my",
-    "of",
-    "on",
-    "one",
-    "or",
-    "our",
-    "sentence",
-    "sentences",
-    "should",
-    "the",
-    "to",
-    "two",
-    "what",
-    "with",
-    "your",
-}
 
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.replace("’", "'")).strip().lower()
-
-
-def _query_terms(text: str) -> list[str]:
-    normalized = _normalize_text(text)
-    return [
-        token
-        for token in _TOKEN_RE.findall(normalized)
-        if len(token) > 1 and token not in _STOPWORDS
-    ]
-
-
-def _query_phrases(tokens: list[str]) -> set[str]:
-    return {
-        " ".join(tokens[index : index + 2])
-        for index in range(len(tokens) - 1)
-        if tokens[index] != tokens[index + 1]
-    }
 
 
 class ScenarioEvidence(BaseModel):
@@ -368,18 +317,13 @@ class ScenarioRetriever:
 
     @staticmethod
     def _score_evidence(query: str, item: ScenarioEvidence) -> tuple[float, int, float]:
-        query_tokens = _query_terms(query)
-        if not query_tokens:
-            return (0.0, 0, item.score)
-        evidence_tokens = set(_query_terms(item.text))
-        token_overlap = len(evidence_tokens.intersection(query_tokens))
-        coverage = token_overlap / max(1, len(set(query_tokens)))
-        normalized_text = _normalize_text(item.text)
-        phrase_hits = sum(
-            1 for phrase in _query_phrases(query_tokens) if phrase in normalized_text
+        source_context = _normalize_text(item.source.replace("_", " "))
+        semantic_score = max(
+            semantic_similarity(query, (item.text,)),
+            0.8 * semantic_similarity(query, (source_context,)),
         )
-        lexical_score = coverage + (0.2 * phrase_hits)
-        return (lexical_score, token_overlap, item.score)
+        relevance_signal = 1 if semantic_score >= 0.08 else 0
+        return (semantic_score, relevance_signal, item.score)
 
     def retrieve(
         self,
