@@ -1,68 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 import re
+from typing import Iterator
 
-from magi.core.routing import route_query
-from magi.core.text_signals import (
-    INSUFFICIENT_INFORMATION_PATTERNS,
-    REFUSAL_PATTERNS,
-    contains_pattern,
-)
+from magi.core.routing import QueryMode, route_query
+from magi.core.semantic import semantic_similarity
 
 from .grounding import query_support_terms
 
-HARMFUL_PATTERNS = (
-    "bypass",
-    "hack",
-    "exploit",
-    "steal",
-    "malware",
-    "phish",
-    "phishing",
-    "weapon",
-    "harm",
-    "kill",
-    "fraud",
-    "credential",
-    "credentials",
-    "login token",
-    "login tokens",
-)
-INSUFFICIENT_PATTERNS = INSUFFICIENT_INFORMATION_PATTERNS + (
-    "does not contain",
-    "need additional sources",
-    "unclear from the evidence",
-    "additional credible sources",
-    "further details are needed",
-    "lack of comprehensive information",
-    "partial insights",
-    "untrustworthy nature of the evidence",
-    "verify this information from reliable sources",
-)
-REVISION_LEAD_PATTERNS = (
-    "revise ",
-    "review ",
-    "determine if ",
-    "verify ",
-    "clarify ",
-)
-DECISION_DIRECTIVE_STARTERS = (
-    "approve ",
-    "approve:",
-    "do not approve",
-    "reject ",
-    "reject:",
-    "revise ",
-    "revise:",
-    "proceed ",
-    "greenlight ",
-    "go/no-go",
-)
-SYNTHESIS_TERMS = {"concise", "derived", "summary", "summarize"}
 NEGATION_WORDS = {"no", "not", "never", "none", "without", "zero"}
 NEGATION_PHRASES = ("n't", "no ", "not ", "never ", "without ", "zero ")
-IRRELEVANCE_TERMS = {"inapplicable", "irrelevant", "unrelated", "unsupported"}
+_FIELD_QUESTION_AUXILIARIES = {"is", "are", "was", "were", "do", "does", "did"}
 FACT_EVENT_WORDS = {
     "detect",
     "detected",
@@ -77,125 +28,92 @@ FACT_EVENT_WORDS = {
     "report",
     "reported",
 }
-CONTROL_REMOVAL_TERMS = {
-    "automatic",
-    "automated",
-    "bypass",
-    "disable",
-    "drop",
-    "omit",
-    "remove",
-    "removing",
-    "skip",
-    "without",
-}
-CONTROL_REQUIREMENT_TERMS = {
-    "approval",
-    "approver",
-    "audit",
-    "budget",
-    "control",
-    "escalation",
-    "guardrail",
-    "legal",
-    "monitoring",
-    "owner",
-    "privacy",
-    "review",
-    "reviewer",
-    "risk",
-    "rollback",
-    "signoff",
-    "testing",
-}
-RECOMMENDATION_SUPPORT_PATTERNS = (
-    "proposal",
-    "pilot",
-    "scope",
-    "budget",
-    "timeline",
-    "control",
-    "controls",
-    "oversight",
-    "reviewer",
-    "guardrail",
-    "guardrails",
-    "mitigation",
-    "mitigations",
-    "low-risk",
-    "low risk",
+CLAIM_EVENT_WINDOW = 4
+HARMFUL_INTENT_PROFILES = (
+    "unsafe request to evade controls steal credentials abuse systems or create harm",
+    "bypass administrative controls and extract private passwords or access tokens",
 )
-DECISION_CONTROL_PATTERNS = (
-    "proposal",
-    "plan",
-    "pilot",
-    "trial",
-    "scope",
-    "scopes",
-    "limited",
-    "read",
-    "budget",
-    "duration",
-    "owner",
-    "approval",
-    "reviewer",
-    "analyst",
-    "legal",
-    "control",
-    "controls",
-    "guardrail",
-    "guardrails",
-    "rollback",
-    "audit",
-    "qa sampling",
-    "escalation",
-    "monitoring",
-    "exit plan",
-    "data access",
-    "questionnaire",
-    "calibration",
+EVIDENCE_GAP_PROFILES = (
+    "answer says evidence is missing insufficient unsupported unclear or cannot determine",
+    "source does not state or specify the requested detail",
 )
-DECISION_GAP_PATTERNS = (
-    "lacks",
-    "lack ",
-    "missing",
-    "does not include",
-    "doesn't include",
-    "not include",
-    "no rollback",
-    "no owner",
-    "not assigned",
-    "incomplete",
-    "without",
+REFUSAL_PROFILES = (
+    "answer refuses unsafe disallowed assistance and declines the request",
 )
-DECISION_CRITICAL_PATTERNS = (
-    "approval",
-    "approvals",
-    "authority",
-    "budget",
-    "control",
-    "controls",
-    "data mapping",
-    "human sign-off",
-    "legal",
-    "monitoring",
-    "owner",
-    "privacy",
-    "rollback",
-    "risk",
-    "staffing",
-    "testing",
+REVISION_CUE_PROFILES = (
+    "request revision clarification verification or more evidence before proceeding",
+)
+DECISION_DIRECTIVE_PROFILES = (
+    "instruction to approve reject revise proceed or make a go no go decision",
+)
+SYNTHESIS_PROFILES = (
+    "concise summary derived from available evidence",
+)
+KEY_POINT_PROFILES = (
+    "brief key points bullets main takeaways from source material",
+)
+LIMITING_PROFILES = (
+    "sentence says material is irrelevant unrelated inapplicable or unsupported",
+)
+CONTROL_REMOVAL_PROFILES = (
+    "request removes disables bypasses omits or weakens required safeguards",
+)
+DECISION_SUPPORT_PROFILES = (
+    "bounded action with defined scope responsible reviewer safeguards oversight monitoring rollback audit testing constraints",
+)
+DECISION_GAP_PROFILES = (
+    "decision support is missing absent incomplete unresolved or not assigned",
+)
+DECISION_CRITICAL_PROFILES = (
+    "decision requires authority ownership approval safeguards monitoring rollback testing risk privacy and resourcing",
+)
+RECOMMENDATION_SUPPORT_PROFILES = (
+    "bounded recommendation with assumptions tradeoffs mitigations oversight and constraints",
 )
 _RAW_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
-_FIELD_QUESTION_AUXILIARIES = {"is", "are", "was", "were", "do", "does", "did"}
+_ACTIVE_ROUTE_MODE: ContextVar[QueryMode | None] = ContextVar(
+    "magi_active_route_mode",
+    default=None,
+)
 
 
-def pattern_hits(text: str, patterns: Sequence[str]) -> int:
-    lowered = text.lower()
-    return sum(1 for pattern in patterns if pattern in lowered)
+@contextmanager
+def route_mode_context(mode: str | None) -> Iterator[None]:
+    normalized = str(mode or "").strip().lower()
+    active_mode = (
+        normalized
+        if normalized
+        in {"summarize", "extract", "fact_check", "recommend", "decision"}
+        else None
+    )
+    token = _ACTIVE_ROUTE_MODE.set(active_mode)  # type: ignore[arg-type]
+    try:
+        yield
+    finally:
+        _ACTIVE_ROUTE_MODE.reset(token)
+
+
+def _profile_score(text: str, profiles: Sequence[str]) -> float:
+    return semantic_similarity(text, profiles)
+
+
+def _profile_hits(
+    text: str,
+    profiles: Sequence[str],
+    *,
+    threshold: float = 0.18,
+    scale: int = 12,
+) -> int:
+    score = _profile_score(text, profiles)
+    if score < threshold:
+        return 0
+    return max(1, round(score * scale))
 
 
 def _route_mode(query: str) -> str:
+    active_mode = _ACTIVE_ROUTE_MODE.get()
+    if active_mode is not None:
+        return active_mode
     return route_query(query).mode
 
 
@@ -208,8 +126,7 @@ def is_informational_query(query: str) -> bool:
 
 
 def is_harmful_query(query: str) -> bool:
-    lowered = query.lower()
-    return any(token in lowered for token in HARMFUL_PATTERNS)
+    return _profile_score(query, HARMFUL_INTENT_PROFILES) >= 0.3
 
 
 def is_decision_query(query: str) -> bool:
@@ -245,18 +162,7 @@ def is_field_extraction_query(query: str) -> bool:
 
 
 def wants_key_points(query: str) -> bool:
-    lowered = query.lower()
-    return any(
-        pattern in lowered
-        for pattern in (
-            "key points",
-            "main points",
-            "bullets",
-            "bullet",
-            "in a hurry",
-            "quick points",
-        )
-    )
+    return _profile_score(query, KEY_POINT_PROFILES) >= 0.18
 
 
 def contains_negation(text: str) -> bool:
@@ -274,11 +180,23 @@ def claim_content_terms(text: str) -> set[str]:
     }
 
 
-def text_negates_query_claim(query: str, text: str) -> bool:
-    if contains_negation(query) or not contains_negation(text):
-        return False
-    query_terms = claim_content_terms(query)
-    text_terms = claim_content_terms(text)
+def _event_scoped_claim_terms(text: str) -> tuple[set[str], bool]:
+    terms = [
+        term
+        for term in query_support_terms(text)
+        if term not in NEGATION_WORDS
+    ]
+    for index, term in enumerate(terms):
+        if term not in FACT_EVENT_WORDS:
+            continue
+        start = max(0, index - CLAIM_EVENT_WINDOW)
+        window = terms[start:index]
+        if window:
+            return set(window), True
+    return claim_content_terms(text), False
+
+
+def _claim_terms_match(query_terms: set[str], text_terms: set[str]) -> bool:
     if not query_terms or not text_terms:
         return False
     overlap = query_terms & text_terms
@@ -287,54 +205,62 @@ def text_negates_query_claim(query: str, text: str) -> bool:
     return len(overlap) / len(query_terms) >= 0.6
 
 
+def text_negates_query_claim(query: str, text: str) -> bool:
+    if contains_negation(query) or not contains_negation(text):
+        return False
+    query_core_terms, query_scoped_to_event = _event_scoped_claim_terms(query)
+    text_core_terms, text_scoped_to_event = _event_scoped_claim_terms(text)
+    if query_scoped_to_event or text_scoped_to_event:
+        return _claim_terms_match(query_core_terms, text_core_terms)
+    query_terms = claim_content_terms(query)
+    text_terms = claim_content_terms(text)
+    return _claim_terms_match(query_terms, text_terms)
+
+
 def sentence_limits_support(sentence: str) -> bool:
-    terms = set(query_support_terms(sentence))
-    return bool(terms & IRRELEVANCE_TERMS)
+    return _profile_score(sentence, LIMITING_PROFILES) >= 0.2
 
 
 def query_removes_evidence_requirement(query: str, evidence_text: str) -> bool:
-    query_terms = set(query_support_terms(query))
-    evidence_terms = set(query_support_terms(evidence_text))
-    if not (query_terms & CONTROL_REMOVAL_TERMS):
-        return False
-    shared_requirements = query_terms & evidence_terms & CONTROL_REQUIREMENT_TERMS
-    return bool(shared_requirements)
+    return (
+        _profile_score(query, CONTROL_REMOVAL_PROFILES) >= 0.16
+        and decision_critical_hits(evidence_text) > 0
+    )
 
 
 def decision_control_hits(text: str) -> int:
-    return pattern_hits(text, DECISION_CONTROL_PATTERNS)
+    return _profile_hits(text, DECISION_SUPPORT_PROFILES, threshold=0.12, scale=16)
 
 
 def decision_gap_hits(text: str) -> int:
-    return pattern_hits(text, DECISION_GAP_PATTERNS)
+    return _profile_hits(text, DECISION_GAP_PROFILES, threshold=0.18)
 
 
 def decision_critical_hits(text: str) -> int:
-    return pattern_hits(text, DECISION_CRITICAL_PATTERNS)
+    return _profile_hits(text, DECISION_CRITICAL_PROFILES, threshold=0.15)
 
 
 def recommendation_support_hits(text: str) -> int:
-    return pattern_hits(text, RECOMMENDATION_SUPPORT_PATTERNS)
+    return _profile_hits(text, RECOMMENDATION_SUPPORT_PROFILES, threshold=0.16, scale=16)
 
 
 def signals_evidence_gap(text: str) -> bool:
-    return contains_pattern(text, INSUFFICIENT_PATTERNS)
+    return _profile_score(text, EVIDENCE_GAP_PROFILES) >= 0.26
 
 
 def signals_refusal(text: str) -> bool:
-    return contains_pattern(text, REFUSAL_PATTERNS)
+    return _profile_score(text, REFUSAL_PROFILES) >= 0.27
 
 
 def starts_with_revision_cue(text: str) -> bool:
-    lowered = text.strip().lower()
-    return any(lowered.startswith(pattern) for pattern in REVISION_LEAD_PATTERNS)
+    lead = " ".join(query_support_terms(text)[:6])
+    return _profile_score(lead, REVISION_CUE_PROFILES) >= 0.16
 
 
 def supports_synthesis_wording(text: str) -> bool:
-    terms = set(query_support_terms(text))
-    return bool(terms & SYNTHESIS_TERMS)
+    return _profile_score(text, SYNTHESIS_PROFILES) >= 0.16
 
 
 def looks_like_decision_directive(text: str) -> bool:
-    lowered = text.strip().lower()
-    return lowered.startswith(DECISION_DIRECTIVE_STARTERS)
+    lead = " ".join(query_support_terms(text)[:8])
+    return _profile_score(lead, DECISION_DIRECTIVE_PROFILES) >= 0.16
