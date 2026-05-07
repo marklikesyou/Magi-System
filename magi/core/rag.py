@@ -4,11 +4,11 @@ import json
 import re
 from typing import Callable, Iterable, Mapping, Sequence
 
+from .semantic import semantic_similarity
 from .vectorstore import RetrievedChunk, VectorStore, metadata_matches_filters
 
 Formatter = Callable[[Iterable[RetrievedChunk]], str]
 Embedder = Callable[[str], Sequence[float]]
-_TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 
 
 def default_formatter(chunks: Iterable[RetrievedChunk]) -> str:
@@ -17,10 +17,6 @@ def default_formatter(chunks: Iterable[RetrievedChunk]) -> str:
         source = chunk.metadata.get("source", "unknown")
         lines.append(f"[{idx}] ({source}) {chunk.text}")
     return "\n".join(lines)
-
-
-def _tokens(text: str) -> set[str]:
-    return {token for token in _TOKEN_RE.findall(text.lower()) if len(token) > 2}
 
 
 class RagRetriever:
@@ -76,15 +72,7 @@ class RagRetriever:
         return combined
 
     def _lexical_score(self, query: str, chunk: RetrievedChunk) -> float:
-        query_tokens = _tokens(query)
-        if not query_tokens:
-            return 0.0
-        chunk_tokens = _tokens(chunk.text)
-        if not chunk_tokens:
-            return 0.0
-        overlap = len(query_tokens.intersection(chunk_tokens))
-        coverage = overlap / max(1, len(query_tokens))
-        return min(1.0, coverage)
+        return semantic_similarity(query, (chunk.text,))
 
     def _source_weight(self, chunk: RetrievedChunk) -> float:
         source = str(chunk.metadata.get("source", "")).strip()
@@ -103,8 +91,7 @@ class RagRetriever:
         title = str(chunk.metadata.get("section_title", "")).strip().lower()
         if not title:
             return 0.0
-        lowered_query = query.lower()
-        return 0.15 if title and title in lowered_query else 0.0
+        return min(0.15, semantic_similarity(query, (title,)) * 0.2)
 
     def _hybrid_candidates(
         self,
