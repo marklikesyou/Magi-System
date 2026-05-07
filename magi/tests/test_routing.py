@@ -45,6 +45,13 @@ def test_route_query_treats_paraphrased_rollout_question_as_information() -> Non
     assert route.scores["summarize"] > route.scores["decision"]
 
 
+def test_route_query_prioritizes_explicit_summary_intent_over_domain_word() -> None:
+    route = route_query("Can you summarize the rollout status for me?")
+
+    assert route.mode == "summarize"
+    assert route.scores["summarize"] > route.scores["decision"]
+
+
 def test_route_query_selects_recommend_for_tradeoff_request() -> None:
     route = route_query("Compare the options and recommend the best rollout plan.")
 
