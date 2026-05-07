@@ -12,6 +12,8 @@ import math
 import re
 from typing import Dict, Iterable, List, Optional, Tuple, cast
 
+from magi.core.semantic import semantic_similarity
+
 DEFAULT_LABELS: List[str] = ["approve", "reject", "revise", "abstain"]
 
 
@@ -21,34 +23,6 @@ _Z_VALUES: Dict[float, float] = {
     0.99: 2.576,
 }
 _CITATION_RE = re.compile(r"\[(\d+)\]")
-_GROUNDING_STOPWORDS = {
-    "about",
-    "after",
-    "also",
-    "and",
-    "are",
-    "been",
-    "being",
-    "but",
-    "from",
-    "have",
-    "into",
-    "just",
-    "more",
-    "only",
-    "that",
-    "than",
-    "their",
-    "them",
-    "they",
-    "this",
-    "those",
-    "through",
-    "were",
-    "when",
-    "with",
-    "would",
-}
 
 
 def _resolve_labels(
@@ -97,25 +71,13 @@ def citation_hit_rate(text: str, retrieved_chunk_count: int) -> float:
 
 
 def answer_support_score(answer_text: str, evidence_texts: Iterable[str]) -> float:
-    """Lexical overlap between answer tokens and retrieved evidence tokens."""
+    """Semantic support score between an answer and retrieved evidence."""
 
-    def tokens(text: str) -> set[str]:
-        return {
-            token
-            for token in re.findall(r"[a-z0-9]{4,}", text.lower())
-            if token not in _GROUNDING_STOPWORDS
-        }
-
-    answer_tokens = tokens(answer_text)
-    if not answer_tokens:
+    evidence = [text for text in evidence_texts if str(text).strip()]
+    if not answer_text.strip() or not evidence:
         return 0.0
-    evidence_tokens: set[str] = set()
-    for item in evidence_texts:
-        evidence_tokens.update(tokens(item))
-    if not evidence_tokens:
-        return 0.0
-    overlap = answer_tokens & evidence_tokens
-    return len(overlap) / len(answer_tokens)
+    score = semantic_similarity(answer_text, evidence)
+    return 0.0 if score < 0.08 else score
 
 
 def precision_recall_f1(
