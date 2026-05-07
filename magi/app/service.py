@@ -9,6 +9,7 @@ from typing import Any, Literal, Mapping, cast
 
 from magi.core.config import get_settings
 from magi.core.routing import route_query
+from magi.core.semantic import semantic_similarity
 from magi.core.utils import hash_query, sanitize_input
 from magi.decision.aggregator import resolve_verdict_with_details
 from magi.decision.schema import EvidenceItem, FinalDecision, PersonaOutput
@@ -19,22 +20,9 @@ from magi.eval.metrics import answer_support_score
 logger = logging.getLogger(__name__)
 _CITATION_LABEL_RE = re.compile(r"\[\d+\]")
 _SUPPORTED_ANSWER_SCORE_THRESHOLD = 0.2
-_HIGH_STAKES_MODEL_PATTERNS = (
-    "security",
-    "breach",
-    "incident",
-    "production",
-    "deploy",
-    "launch",
-    "rollout",
-    "legal",
-    "compliance",
-    "financial",
-    "customer data",
-    "password",
-    "admin",
-    "policy",
-    "vendor",
+_HIGH_STAKES_MODEL_PROFILES = (
+    "high stakes security incident breach production deployment legal compliance financial customer data administrative access policy decision",
+    "regulated operational change that could affect users data finances legal obligations or service availability",
 )
 
 
@@ -294,8 +282,8 @@ def _select_model_for_session(
         sanitize_input(constraints, max_length=500),
         forced_mode=forced_mode,
     )
-    combined = f"{query}\n{constraints}".lower()
-    high_stakes = any(pattern in combined for pattern in _HIGH_STAKES_MODEL_PATTERNS)
+    combined = f"{query}\n{constraints}"
+    high_stakes = semantic_similarity(combined, _HIGH_STAKES_MODEL_PROFILES) >= 0.24
     if high_stakes and route.mode in {"decision", "recommend", "fact_check"}:
         model_name = settings.openai_high_stakes_model or settings.openai_strong_model
         return model_name, f"high-stakes {route.mode} route"
@@ -554,10 +542,14 @@ def _apply_abstention(
     elif (
         query_mode not in {"decision", "recommend"}
         and bool(decision_details.get("insufficient_information"))
-        and support_score < 0.2
+        and (
+            decision.verdict == "revise"
+            or support_score < 0.2
+            or citation_hit_rate == 0.0
+        )
     ):
         should_abstain = True
-        reason = "The decision layer marked the available evidence as insufficient."
+        reason = "The evidence did not prove or directly support the requested detail."
 
     if not should_abstain:
         return decision, False
