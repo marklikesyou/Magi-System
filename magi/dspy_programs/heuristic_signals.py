@@ -63,6 +63,7 @@ DECISION_SUPPORT_PROFILES = (
 )
 DECISION_GAP_PROFILES = (
     "decision support is missing absent incomplete unresolved or not assigned",
+    "required approval rollback ownership or control evidence is still open missing or unresolved",
 )
 DECISION_CRITICAL_PROFILES = (
     "decision requires authority ownership approval safeguards monitoring rollback testing risk privacy and resourcing",
@@ -71,6 +72,21 @@ RECOMMENDATION_SUPPORT_PROFILES = (
     "bounded recommendation with assumptions tradeoffs mitigations oversight and constraints",
 )
 _RAW_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_DECISION_GAP_RE = re.compile(
+    r"\b(?:missing|absent|incomplete|unresolved|open)\b|"
+    r"\bnot\s+(?:assigned|documented|approved)\b|"
+    r"\bdoes\s+not\s+include\b",
+    re.IGNORECASE,
+)
+_EVIDENCE_GAP_RE = re.compile(
+    r"\b(?:insufficient|unsupported|unverified|missing|absent|incomplete|unclear)\b|"
+    r"\b(?:cannot|can't|unable)\s+(?:verify|determine|answer|support)\b|"
+    r"\bnot\s+sufficient\b|"
+    r"\bdoes\s+not\s+(?:state|specify|support|verify|prove|include)\b|"
+    r"\bno\s+(?:source|evidence|support)\b|"
+    r"\b(?:more|additional|direct)\s+(?:source|evidence|support)\b",
+    re.IGNORECASE,
+)
 _ACTIVE_ROUTE_MODE: ContextVar[QueryMode | None] = ContextVar(
     "magi_active_route_mode",
     default=None,
@@ -139,6 +155,10 @@ def is_fact_check_query(query: str) -> bool:
 
 def is_extractive_query(query: str) -> bool:
     return _route_mode(query) == "extract"
+
+
+def is_recommendation_query(query: str) -> bool:
+    return _route_mode(query) == "recommend"
 
 
 def is_specific_detail_query(query: str) -> bool:
@@ -233,7 +253,10 @@ def decision_control_hits(text: str) -> int:
 
 
 def decision_gap_hits(text: str) -> int:
-    return _profile_hits(text, DECISION_GAP_PROFILES, threshold=0.18)
+    if _DECISION_GAP_RE.search(text):
+        profile_hits = _profile_hits(text, DECISION_GAP_PROFILES, threshold=0.18)
+        return max(1, profile_hits)
+    return 0
 
 
 def decision_critical_hits(text: str) -> int:
@@ -245,7 +268,9 @@ def recommendation_support_hits(text: str) -> int:
 
 
 def signals_evidence_gap(text: str) -> bool:
-    return _profile_score(text, EVIDENCE_GAP_PROFILES) >= 0.26
+    return bool(_EVIDENCE_GAP_RE.search(text)) and (
+        _profile_score(text, EVIDENCE_GAP_PROFILES) >= 0.20
+    )
 
 
 def signals_refusal(text: str) -> bool:
