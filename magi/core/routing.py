@@ -19,15 +19,19 @@ _ROUTE_PROFILES: dict[QueryMode, tuple[str, ...]] = {
     "summarize": (
         "summarize summary concise informational explanation of retrieved source material",
         "brief overview of what the document says with caveats",
+        "operator briefing status summary current state source material evidence says",
     ),
     "extract": (
         "direct extraction of exact source wording location field clause page or line",
+        "extract stated owner accountable team assigned field value from source",
     ),
     "fact_check": (
         "verify whether a factual claim is true false supported or contradicted by evidence",
+        "check if the source supports the claim or proves the assertion",
     ),
     "recommend": (
         "compare options and suggest a bounded approach with tradeoffs",
+        "recommend next evidence backed step action operators should take",
     ),
     "decision": (
         "approval decision about taking an action under constraints and risk",
@@ -42,6 +46,21 @@ _YES_NO_RE = re.compile(
 )
 _ASSISTANT_REQUEST_RE = re.compile(r"^(?:can|could|would)\s+you\b")
 _SOURCE_LOCATION_RE = re.compile(r"\b(?:page|section|clause|line)\b")
+_SUMMARY_DIRECTIVE_RE = re.compile(
+    r"\b(?:summarize|summary|brief|overview|condense|explain|describe)\b"
+)
+_EXTRACTION_DIRECTIVE_RE = re.compile(
+    r"\b(?:extract|return|identify|which|who|owner|owning|accountable)\b"
+)
+_CLAIM_SUPPORT_RE = re.compile(
+    r"\b(?:claim|verify|contradict|prove)\b|\b(?:source|evidence)\s+support\b"
+)
+_RECOMMENDATION_RE = re.compile(
+    r"\b(?:recommend|recommendation|next\s+step|what\s+should\b|how\s+should\b|action\s+follows)\b"
+)
+_DECISION_DIRECTIVE_RE = re.compile(
+    r"\b(?:approve|approval|authorize|decision|threshold|move\s+forward|proceed)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -118,6 +137,55 @@ def route_query(
             "question asks for information rather than a go/no-go decision",
         )
 
+    if _SUMMARY_DIRECTIVE_RE.search(lowered):
+        _add_score(
+            scores,
+            signals,
+            "summarize",
+            5,
+            "summary directive",
+        )
+
+    if _EXTRACTION_DIRECTIVE_RE.search(lowered) and not _SUMMARY_DIRECTIVE_RE.search(
+        lowered
+    ):
+        _add_score(
+            scores,
+            signals,
+            "extract",
+            8,
+            "field extraction directive",
+        )
+
+    if _CLAIM_SUPPORT_RE.search(lowered):
+        _add_score(
+            scores,
+            signals,
+            "fact_check",
+            5,
+            "claim verification directive",
+        )
+
+    if _RECOMMENDATION_RE.search(lowered):
+        _add_score(
+            scores,
+            signals,
+            "recommend",
+            9,
+            "recommendation directive",
+        )
+
+    if _DECISION_DIRECTIVE_RE.search(lowered) and not _SUMMARY_DIRECTIVE_RE.search(
+        lowered
+    ):
+        _add_score(
+            scores,
+            signals,
+            "decision",
+            6,
+            "approval decision directive",
+        )
+
     if _SOURCE_LOCATION_RE.search(lowered):
         _add_score(
             scores,
@@ -127,7 +195,7 @@ def route_query(
             "source-location structure",
         )
 
-    if constrained:
+    if constrained and _COLLECTIVE_DECISION_RE.search(lowered):
         _add_score(
             scores,
             signals,
