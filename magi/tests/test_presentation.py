@@ -100,3 +100,19 @@ def test_policy_triage_report_uses_policy_sections() -> None:
     assert "POLICY TRIAGE" in report
     assert "Answer:" in report
     assert "Interpretation And Guardrails:" in report
+    assert "Why This Route:" in report
+
+
+def test_security_review_report_shows_profile_routing_rationale() -> None:
+    profile = load_profile("security-review")
+    report = format_chat_report(
+        _sample_result(),
+        Path("/tmp/artifact.json"),
+        profile,
+    )
+
+    assert profile is not None
+    assert "SECURITY REVIEW" in report
+    assert "Why This Route:" in report
+    assert "Mode: decision" in report
+    assert "Selected decision because decision markers were strongest." in report
