@@ -186,7 +186,11 @@ class ScenarioCaseResult(BaseModel):
     citation_hit_rate: float = 0.0
     answer_support_score: float = 0.0
     answer_supported: bool = False
+    final_answer_empty: bool = False
+    uncited_approval: bool = False
     latency_ms: float = 0.0
+    cached_latency_ms: float = 0.0
+    cached_cache_hit: bool = False
     program_run_ms: float = 0.0
     live_fallback_count: int = 0
     requires_human_review: bool = False
@@ -231,7 +235,13 @@ class ScenarioSummary(BaseModel):
     latency_p50_ms: float = 0.0
     latency_p95_ms: float = 0.0
     latency_max_ms: float = 0.0
+    cached_latency_p50_ms: float = 0.0
+    cached_latency_p95_ms: float = 0.0
+    cached_latency_max_ms: float = 0.0
+    cached_replay_hit_rate: float = 0.0
     live_fallback_count: int = 0
+    empty_final_answer_count: int = 0
+    uncited_approval_count: int = 0
     total_estimated_cost_usd: float = 0.0
     average_estimated_cost_usd: float = 0.0
     token_stats: Dict[str, Any] = Field(default_factory=dict)
@@ -259,7 +269,11 @@ class _ScenarioExecution:
     answer_support_score: float = 0.0
     answer_supported: bool = False
     latency_ms: float = 0.0
+    cached_latency_ms: float = 0.0
+    cached_cache_hit: bool = False
     live_fallback_count: int = 0
+    final_answer_empty: bool = False
+    uncited_approval: bool = False
 
 
 @dataclass
@@ -274,7 +288,11 @@ class _ScenarioCounters:
     citation_hit_rate_total: float = 0.0
     answer_support_score_total: float = 0.0
     supported_answers: int = 0
+    cached_replay_cases: int = 0
+    cached_replay_hits: int = 0
     live_fallback_count: int = 0
+    empty_final_answer_count: int = 0
+    uncited_approval_count: int = 0
 
     def record(self, execution: _ScenarioExecution) -> None:
         if execution.retrieval_evaluable:
@@ -293,7 +311,14 @@ class _ScenarioCounters:
             self.answer_support_score_total += execution.answer_support_score
             if execution.answer_supported:
                 self.supported_answers += 1
+        self.cached_replay_cases += 1
+        if execution.cached_cache_hit:
+            self.cached_replay_hits += 1
         self.live_fallback_count += execution.live_fallback_count
+        if execution.final_answer_empty:
+            self.empty_final_answer_count += 1
+        if execution.uncited_approval:
+            self.uncited_approval_count += 1
 
 
 class ScenarioRetriever:
@@ -753,20 +778,43 @@ def _evaluate_scenario_case(
     )
     measured_latency_ms = round((perf_counter() - started) * 1000.0, 3)
     latency_ms = session.decision_trace.end_to_end_ms or measured_latency_ms
+    cached_started = perf_counter()
+    cached_session = run_chat_session(
+        case.query,
+        case.constraints,
+        retriever,
+        force_stub=force_stub,
+        model=model,
+        client=client,
+    )
+    measured_cached_latency_ms = round((perf_counter() - cached_started) * 1000.0, 3)
+    cached_latency_ms = (
+        cached_session.decision_trace.end_to_end_ms or measured_cached_latency_ms
+    )
+    cached_cache_hit = cached_session.decision_trace.cache_hit
 
     final_answer = session.fused.final_answer
     justification = session.fused.justification
     next_steps = [
         str(item).strip() for item in session.fused.next_steps if str(item).strip()
     ]
+    final_answer_empty = not final_answer.strip()
     combined_text = _combined_answer_text(final_answer, justification, next_steps)
     citation_count = len(_CITATION_RE.findall(combined_text))
+    final_answer_citation_count = len(_CITATION_RE.findall(final_answer))
+    final_answer_citation_hit_rate = citation_hit_rate(
+        final_answer,
+        len(retrieved_chunks),
+    )
     case_citation_hit_rate, case_answer_support_score, answer_supported = (
         _answer_grounding(
             combined_text,
             retrieved_chunks,
             session.final_decision.verdict,
         )
+    )
+    uncited_approval = session.final_decision.verdict == "approve" and (
+        final_answer_citation_count == 0 or final_answer_citation_hit_rate < 1.0
     )
     check_results = _evaluate_checks(
         case,
@@ -802,7 +850,11 @@ def _evaluate_scenario_case(
             citation_hit_rate=case_citation_hit_rate,
             answer_support_score=case_answer_support_score,
             answer_supported=answer_supported,
+            final_answer_empty=final_answer_empty,
+            uncited_approval=uncited_approval,
             latency_ms=latency_ms,
+            cached_latency_ms=cached_latency_ms,
+            cached_cache_hit=cached_cache_hit,
             program_run_ms=session.decision_trace.program_run_ms,
             live_fallback_count=session.decision_trace.live_fallback_count,
             requires_human_review=session.final_decision.requires_human_review,
@@ -838,7 +890,11 @@ def _evaluate_scenario_case(
         answer_support_score=case_answer_support_score,
         answer_supported=answer_supported,
         latency_ms=latency_ms,
+        cached_latency_ms=cached_latency_ms,
+        cached_cache_hit=cached_cache_hit,
         live_fallback_count=session.decision_trace.live_fallback_count,
+        final_answer_empty=final_answer_empty,
+        uncited_approval=uncited_approval,
     )
 
 
@@ -858,6 +914,7 @@ def _build_scenario_summary(
     )
     passed_cases = sum(1 for item in case_results if item.passed)
     latency_values = [item.latency_ms for item in case_results]
+    cached_latency_values = [item.cached_latency_ms for item in case_results]
     token_stats = get_token_stats()
     total_cost = _token_cost(token_stats)
     requirement_pass_rate = (
@@ -906,7 +963,16 @@ def _build_scenario_summary(
         latency_p50_ms=round(_percentile(latency_values, 0.5), 3),
         latency_p95_ms=round(_percentile(latency_values, 0.95), 3),
         latency_max_ms=round(max(latency_values, default=0.0), 3),
+        cached_latency_p50_ms=round(_percentile(cached_latency_values, 0.5), 3),
+        cached_latency_p95_ms=round(_percentile(cached_latency_values, 0.95), 3),
+        cached_latency_max_ms=round(max(cached_latency_values, default=0.0), 3),
+        cached_replay_hit_rate=_safe_ratio(
+            counters.cached_replay_hits,
+            counters.cached_replay_cases,
+        ),
         live_fallback_count=counters.live_fallback_count,
+        empty_final_answer_count=counters.empty_final_answer_count,
+        uncited_approval_count=counters.uncited_approval_count,
         total_estimated_cost_usd=round(total_cost, 6),
         average_estimated_cost_usd=round(_safe_ratio(total_cost, len(case_results)), 6),
         token_stats=token_stats,
@@ -956,7 +1022,7 @@ def run_scenario_suite(
 
 def render_scenario_report(report: ScenarioReport) -> str:
     lines = [
-        "case_id\texpected\tpredicted\tpassed\tcitations\tcitation_hit_rate\tanswer_support\tsupported\tlatency_ms\tlive_fallbacks\tblocked\tretrieved\tretrieval_hits\tfirst_expected_rank\tsource_recall"
+        "case_id\texpected\tpredicted\tpassed\tcitations\tcitation_hit_rate\tanswer_support\tsupported\tlatency_ms\tcached_latency_ms\tcache_hit\tlive_fallbacks\tblocked\tretrieved\tretrieval_hits\tfirst_expected_rank\tsource_recall"
     ]
     for item in report.cases:
         lines.append(
@@ -971,6 +1037,8 @@ def render_scenario_report(report: ScenarioReport) -> str:
                     f"{item.answer_support_score:.2f}",
                     "yes" if item.answer_supported else "no",
                     f"{item.latency_ms:.3f}",
+                    f"{item.cached_latency_ms:.3f}",
+                    "yes" if item.cached_cache_hit else "no",
                     str(item.live_fallback_count),
                     str(item.blocked_evidence_count),
                     str(item.retrieved_chunk_count),
@@ -1007,7 +1075,13 @@ def render_scenario_report(report: ScenarioReport) -> str:
             f"latency_p50_ms\t{report.summary.latency_p50_ms:.3f}",
             f"latency_p95_ms\t{report.summary.latency_p95_ms:.3f}",
             f"latency_max_ms\t{report.summary.latency_max_ms:.3f}",
+            f"cached_latency_p50_ms\t{report.summary.cached_latency_p50_ms:.3f}",
+            f"cached_latency_p95_ms\t{report.summary.cached_latency_p95_ms:.3f}",
+            f"cached_latency_max_ms\t{report.summary.cached_latency_max_ms:.3f}",
+            f"cached_replay_hit_rate\t{report.summary.cached_replay_hit_rate:.2%}",
             f"live_fallback_count\t{report.summary.live_fallback_count}",
+            f"empty_final_answer_count\t{report.summary.empty_final_answer_count}",
+            f"uncited_approval_count\t{report.summary.uncited_approval_count}",
             f"total_estimated_cost_usd\t{report.summary.total_estimated_cost_usd:.6f}",
             "average_estimated_cost_usd\t"
             f"{report.summary.average_estimated_cost_usd:.6f}",
