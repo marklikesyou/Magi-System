@@ -106,6 +106,72 @@ def test_magi_program_offline_answer_is_grounded():
     assert "summary for" in fused.final_answer.lower()
 
 
+def test_chat_session_records_trace_id_and_spans():
+    result = run_chat_session(
+        "Summarize MAGI in one sentence.",
+        "",
+        ScenarioRetriever(
+            [
+                ScenarioEvidence(
+                    source="README",
+                    text=(
+                        "MAGI is a multi persona reasoning engine for assessing "
+                        "user requests against an evidence base."
+                    ),
+                )
+            ]
+        ),
+    )
+
+    assert result.decision_trace.trace_id.startswith("trace-")
+    span_names = [span.name for span in result.decision_trace.spans]
+    assert span_names == [
+        "program.run",
+        "decision.resolve",
+        "trace.capture",
+        "grounding.verify",
+        "decision.guardrails",
+    ]
+    assert all(span.duration_ms >= 0.0 for span in result.decision_trace.spans)
+
+
+def test_chat_session_repairs_empty_fusion_answer(monkeypatch):
+    class FakeProgram:
+        def __init__(self, *args, **kwargs):
+            self.effective_mode = "live"
+            self.model_name = "test-model"
+            self.last_run_metadata = {"safe_evidence": []}
+
+        def __call__(self, query: str, constraints: str = ""):
+            del query, constraints
+            fused = FusionResponse(
+                verdict="revise",
+                justification="",
+                confidence=0.2,
+                final_answer="",
+                next_steps=[],
+                consensus_points=[],
+                disagreements=[],
+                residual_risk="medium",
+                risks=[],
+                mitigations=[],
+            )
+            personas = {
+                "melchior": SimpleNamespace(text="[REVISE] [MELCHIOR] Need evidence.", confidence=0.5),
+                "balthasar": SimpleNamespace(text="[REVISE] [BALTHASAR] Need evidence.", confidence=0.5),
+                "casper": SimpleNamespace(text="[REVISE] [CASPER] Need evidence.", confidence=0.5),
+            }
+            return fused, personas
+
+    monkeypatch.setattr(service, "MagiProgram", FakeProgram)
+
+    result = service.run_chat_session("What should we do?", "", retriever=object())
+
+    assert result.fused.final_answer
+    assert result.fused.text == result.fused.final_answer
+    assert result.decision_trace.final_verdict in {"abstain", "revise"}
+
+
 def test_magi_program_revises_without_evidence():
     program = MagiProgram(retriever=lambda *_args, **_kwargs: "")
     fused, _ = program(query="Explain the rollout status", constraints="")
@@ -275,8 +341,13 @@ def test_live_chat_session_reports_provider_fallback():
     )
 
     assert result.effective_mode == "live"
-    assert result.decision_trace.live_fallback_count == 1
-    assert result.decision_trace.live_fallback_labels == ["fusion"]
+    assert result.decision_trace.live_fallback_count == 4
+    assert result.decision_trace.live_fallback_labels == [
+        "melchior",
+        "balthasar",
+        "casper",
+        "fusion",
+    ]
 
 
 def test_chat_session_selects_stronger_model_for_high_stakes_decision(monkeypatch):
@@ -608,6 +679,76 @@ def test_chat_session_approves_direct_positive_fact_check():
     assert result.decision_trace.query_mode == "fact_check"
     assert result.fused.final_answer.startswith("Yes,")
     assert "bounded internal pilot" not in result.fused.final_answer.lower()
+
+
+def test_chat_session_abstains_on_semantic_insufficient_fact_check_approval(
+    monkeypatch,
+):
+    class FakeProgram:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            self.effective_mode = "live"
+            self.model_name = "test-model"
+            self.last_run_metadata = {
+                "query_mode": "fact_check",
+                "safe_evidence": [
+                    {
+                        "citation": "[1]",
+                        "source": "operations_note",
+                        "document_id": "operations_note::1",
+                        "text": (
+                            "The operations note tracks latency during pilot reviews "
+                            "but omits any guaranteed response-time SLA."
+                        ),
+                    }
+                ],
+            }
+
+        def __call__(self, query: str, constraints: str = ""):
+            del query, constraints
+            answer = "The cited note leaves the requested latency guarantee unresolved [1]."
+            fused = FusionResponse(
+                verdict="approve",
+                justification=answer,
+                confidence=0.8,
+                final_answer=answer,
+                next_steps=["Ask for a published service-level commitment."],
+                consensus_points=["The cited note was reviewed."],
+                disagreements=[],
+                residual_risk="medium",
+                risks=[],
+                mitigations=[],
+            )
+            personas = {
+                "melchior": SimpleNamespace(
+                    text=f"[APPROVE] [MELCHIOR] {answer}",
+                    confidence=0.8,
+                ),
+                "balthasar": SimpleNamespace(
+                    text=f"[APPROVE] [BALTHASAR] {answer}",
+                    confidence=0.8,
+                ),
+                "casper": SimpleNamespace(
+                    text=f"[APPROVE] [CASPER] {answer}",
+                    confidence=0.8,
+                ),
+            }
+            return fused, personas
+
+    monkeypatch.setattr(service, "MagiProgram", FakeProgram)
+
+    result = run_chat_session(
+        "Verify whether MAGI guarantees a 50ms p95 latency SLA.",
+        "",
+        retriever=object(),
+    )
+
+    assert result.decision_trace.decision_features["insufficient_information"] is True
+    assert result.decision_trace.citation_hit_rate == 1.0
+    assert result.decision_trace.answer_support_score > 0.2
+    assert result.final_decision.verdict == "abstain"
+    assert result.final_decision.abstained is True
+    assert "did not prove" in result.final_decision.abstention_reason.lower()
 
 
 def test_chat_session_answers_team_social_from_social_evidence():
