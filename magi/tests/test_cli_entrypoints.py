@@ -199,6 +199,24 @@ def test_main_requires_provider_setup_for_chat(
     assert "magi setup" in captured.err
 
 
+def test_main_requires_openai_setup_for_eval_gauntlet(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    monkeypatch.delenv("MAGI_ALLOW_OFFLINE", raising=False)
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(openai_api_key="", google_api_key="google-key"),
+    )
+
+    status = cli.main(["eval", "gauntlet", "--artifact-dir", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "OPENAI_API_KEY is required" in captured.err
+    assert "magi setup --provider openai" in captured.err
+
+
 def test_command_chat_empty_store_suggests_ingest(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
@@ -255,12 +273,23 @@ def test_eval_run_parser_accepts_file_alias_and_full_thresholds(tmp_path: Path) 
             "1.0",
             "--min-average-citation-hit-rate",
             "1.0",
+            "--min-cached-replay-hit-rate",
+            "1.0",
             "--max-p50-latency-ms",
             "100",
+            "--max-cached-p95-latency-ms",
+            "250",
             "--max-max-latency-ms",
             "500",
             "--max-average-cost-usd",
             "0.001",
+            "--max-live-fallbacks",
+            "0",
+            "--allow-live-fallbacks",
+            "--max-uncited-approvals",
+            "0",
+            "--max-empty-final-answers",
+            "0",
         ]
     )
 
@@ -268,9 +297,85 @@ def test_eval_run_parser_accepts_file_alias_and_full_thresholds(tmp_path: Path) 
     assert args.min_retrieval_top_source_accuracy == 1.0
     assert args.min_retrieval_source_recall == 1.0
     assert args.min_average_citation_hit_rate == 1.0
+    assert args.min_cached_replay_hit_rate == 1.0
     assert args.max_p50_latency_ms == 100.0
+    assert args.max_cached_p95_latency_ms == 250.0
     assert args.max_max_latency_ms == 500.0
     assert args.max_average_cost_usd == 0.001
+    assert args.max_live_fallbacks == 0
+    assert args.allow_live_fallbacks is True
+    assert args.max_uncited_approvals == 0
+    assert args.max_empty_final_answers == 0
+
+
+def test_eval_gauntlet_parser_accepts_acceptance_options(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "gauntlet"
+    semantic_cases = tmp_path / "adversarial.yaml"
+    retrieval_cases = tmp_path / "retrieval.yaml"
+
+    args = cli.build_parser().parse_args(
+        [
+            "eval",
+            "gauntlet",
+            "--artifact-dir",
+            str(artifact_dir),
+            "--retrieval-cases",
+            str(retrieval_cases),
+            "--semantic-cases",
+            str(semantic_cases),
+            "--semantic-mode",
+            "live",
+            "--semantic-concurrency",
+            "4",
+        ]
+    )
+
+    assert args.handler == cli.command_eval_gauntlet
+    assert args.artifact_dir == artifact_dir
+    assert args.retrieval_cases == retrieval_cases
+    assert args.semantic_cases == semantic_cases
+    assert args.semantic_mode == "live"
+    assert args.semantic_concurrency == 4
+
+
+def test_eval_verify_gauntlet_parser_accepts_manifest(tmp_path: Path) -> None:
+    manifest = tmp_path / "gauntlet_manifest.json"
+
+    args = cli.build_parser().parse_args(
+        [
+            "eval",
+            "verify-gauntlet",
+            "--manifest",
+            str(manifest),
+            "--skip-report-file-check",
+        ]
+    )
+
+    assert args.handler == cli.command_eval_verify_gauntlet
+    assert args.manifest == manifest
+    assert args.skip_report_file_check is True
+
+
+def test_eval_audit_parser_accepts_manifest_and_output(tmp_path: Path) -> None:
+    manifest = tmp_path / "gauntlet_manifest.json"
+    out = tmp_path / "acceptance_audit.json"
+
+    args = cli.build_parser().parse_args(
+        [
+            "eval",
+            "audit",
+            "--manifest",
+            str(manifest),
+            "--out",
+            str(out),
+            "--skip-report-file-check",
+        ]
+    )
+
+    assert args.handler == cli.command_eval_audit
+    assert args.manifest == manifest
+    assert args.out == out
+    assert args.skip_report_file_check is True
 
 
 def test_main_opens_shell_without_subcommand_on_tty(monkeypatch) -> None:
@@ -684,6 +789,110 @@ def test_command_explain_renders_saved_artifact(tmp_path: Path, capsys) -> None:
     assert status == 0
     assert "Run ID: demo" in captured.out
     assert "Resolved Mode: summarize" in captured.out
+
+
+def test_command_replay_reuses_artifact_input(monkeypatch, tmp_path: Path) -> None:
+    artifact_path = tmp_path / "artifact.json"
+    store_path = tmp_path / "store.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "run_id": "demo",
+                "input": {
+                    "query": "Should we approve the rollout?",
+                    "constraints": "Keep human review.",
+                    "profile": "security-review",
+                    "requested_route": "decision",
+                },
+                "store": {"path": str(store_path)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_chat(args: argparse.Namespace) -> int:
+        captured["query"] = args.query
+        captured["constraints"] = args.constraints
+        captured["profile"] = args.profile
+        captured["route"] = args.route
+        captured["store"] = args.store
+        captured["json"] = args.json
+        return 0
+
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(run_artifact_dir=""))
+    monkeypatch.setattr(cli, "command_chat", fake_chat)
+
+    status = cli.command_replay(
+        argparse.Namespace(
+            artifact=str(artifact_path),
+            store=None,
+            verbose=False,
+            json=True,
+            profile="",
+            route="",
+            model="",
+        )
+    )
+
+    assert status == 0
+    assert captured == {
+        "query": "Should we approve the rollout?",
+        "constraints": "Keep human review.",
+        "profile": "security-review",
+        "route": "decision",
+        "store": store_path,
+        "json": True,
+    }
+
+
+def test_command_diff_renders_artifact_diff(monkeypatch, tmp_path: Path, capsys) -> None:
+    left = tmp_path / "left.json"
+    right = tmp_path / "right.json"
+    base_summary: dict[str, object] = {
+        "query_mode": "decision",
+        "effective_mode": "stub",
+        "requires_human_review": False,
+        "abstained": False,
+    }
+    left.write_text(
+        json.dumps(
+            {
+                "run_id": "left",
+                "input": {"profile": "", "requested_route": ""},
+                "summary": {**base_summary, "verdict": "revise"},
+                "decision_trace": {"end_to_end_ms": 10.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    right.write_text(
+        json.dumps(
+            {
+                "run_id": "right",
+                "input": {"profile": "exec-brief", "requested_route": "summarize"},
+                "summary": {
+                    **base_summary,
+                    "verdict": "approve",
+                    "query_mode": "summarize",
+                    "effective_mode": "live",
+                    "requires_human_review": True,
+                },
+                "decision_trace": {"end_to_end_ms": 25.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(run_artifact_dir=""))
+
+    status = cli.command_diff(argparse.Namespace(left=str(left), right=str(right)))
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert "ARTIFACT DIFF" in captured.out
+    assert "Verdict: revise -> approve" in captured.out
+    assert "Effective Mode: stub -> live" in captured.out
+    assert "Latency Delta: +15.000 ms" in captured.out
 
 
 def test_command_profiles_lists_builtin_profiles(capsys) -> None:
