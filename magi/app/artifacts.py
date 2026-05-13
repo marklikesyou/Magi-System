@@ -172,6 +172,24 @@ def _count_items(value: object) -> int:
     return 0
 
 
+def _render_trace_spans(spans: object) -> list[str]:
+    if not isinstance(spans, list) or not spans:
+        return []
+    lines = ["", "Trace Spans:"]
+    for span in spans:
+        if not isinstance(span, Mapping):
+            continue
+        name = _safe_str(span.get("name")) or "unknown"
+        duration_ms = _safe_float(span.get("duration_ms"))
+        start_ms = _safe_float(span.get("start_ms"))
+        attributes = span.get("attributes", {})
+        suffix = ""
+        if isinstance(attributes, Mapping) and attributes:
+            suffix = f" ({_format_mapping(attributes)})"
+        lines.append(f"  - {name}: start={start_ms:.3f}ms duration={duration_ms:.3f}ms{suffix}")
+    return lines if len(lines) > 1 else []
+
+
 def diff_run_artifacts(
     left: Mapping[str, object],
     right: Mapping[str, object],
@@ -273,6 +291,9 @@ def render_run_artifact(payload: Mapping[str, object]) -> str:
         f"Run ID: {payload.get('run_id', '')}",
         f"Created: {payload.get('created_at', '')}",
     ]
+    trace_id = _safe_str(trace_payload.get("trace_id"))
+    if trace_id:
+        lines.append(f"Trace ID: {trace_id}")
     artifact_path = _safe_str(payload.get("artifact_path"))
     if artifact_path:
         lines.append(f"Artifact Path: {artifact_path}")
@@ -320,6 +341,27 @@ def render_run_artifact(payload: Mapping[str, object]) -> str:
     signals = trace_payload.get("routing_signals", [])
     if isinstance(signals, list) and signals:
         lines.append(f"  Signals: {', '.join(str(item) for item in signals)}")
+    lines.extend(
+        [
+            "",
+            "Execution:",
+            f"  Trace ID: {trace_id or 'None'}",
+            f"  Cache Hit: {'yes' if trace_payload.get('cache_hit') else 'no'}",
+            f"  Persona Mode: {_safe_str(trace_payload.get('persona_mode')) or 'unknown'}",
+            f"  Responder Mode: {_safe_str(trace_payload.get('responder_mode')) or 'unknown'}",
+            f"  Live Fallback Count: {_count_items(trace_payload.get('live_fallback_labels')) or int(_safe_float(trace_payload.get('live_fallback_count')))}",
+        ]
+    )
+    fallback_labels = trace_payload.get("live_fallback_labels", [])
+    if isinstance(fallback_labels, list) and fallback_labels:
+        lines.append(
+            "  Live Fallback Labels: "
+            + ", ".join(str(item) for item in fallback_labels if str(item).strip())
+        )
+    features = trace_payload.get("decision_features", {})
+    if isinstance(features, Mapping) and features:
+        lines.append(f"  Decision Features: {_format_mapping(features)}")
+    lines.extend(_render_trace_spans(trace_payload.get("spans", [])))
     justification = _safe_str(decision_payload.get("justification"))
     if justification:
         lines.extend(["", "Decision:", f"  Justification: {justification}"])
