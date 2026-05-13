@@ -130,7 +130,7 @@ class Settings(BaseSettings):
         ),
     )
     enable_live_personas: bool = Field(
-        default=False,
+        default=True,
         validation_alias=AliasChoices(
             "enable_live_personas",
             "MAGI_ENABLE_LIVE_PERSONAS",
