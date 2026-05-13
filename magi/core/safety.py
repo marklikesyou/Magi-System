@@ -33,9 +33,22 @@ _CREDIT_CARD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _HTML_PATTERN = re.compile(r"<\s*(?:script|iframe|object)", re.IGNORECASE)
+_ABUSE_INTENT_PATTERN = re.compile(
+    r"\b(?:bypass|bypassing|evade|evading|disable|disabling|avoid|avoiding|"
+    r"extract|pull|access)\b"
+    r".{0,80}\b(?:access controls?|audit logging|monitoring|least[- ]privilege|"
+    r"restricted records?|private (?:records?|user data)|approval)\b",
+    re.IGNORECASE,
+)
+_ABUSE_REQUEST_FRAME_RE = re.compile(
+    r"\b(?:how|help|show|give|tell|walk|steps|through|me)\b",
+    re.IGNORECASE,
+)
 _SENSITIVE_EXFILTRATION_PROFILES = (
     "bypass administrative controls and extract private credentials access tokens private passwords secrets",
     "steal leak exfiltrate private credentials secrets tokens passwords",
+    "evade audit logging disable monitoring avoid least privilege checks without approval",
+    "access restricted private records or user data outside approved workflow",
 )
 
 
@@ -102,6 +115,8 @@ def detect_sensitive_leak(
 
 
 def detect_sensitive_exfiltration_intent(text: str) -> bool:
+    if _ABUSE_REQUEST_FRAME_RE.search(text) and _ABUSE_INTENT_PATTERN.search(text):
+        return True
     return semantic_similarity(text, _SENSITIVE_EXFILTRATION_PROFILES) >= 0.42
 
 
