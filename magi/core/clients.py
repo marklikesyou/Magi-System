@@ -47,6 +47,20 @@ def _normalize_messages(messages: Sequence[LLMMessage]) -> List[Dict[str, Any]]:
     return payload
 
 
+def _normalize_responses_input(
+    messages: Sequence[LLMMessage],
+) -> List[Dict[str, Any]]:
+    payload: List[Dict[str, Any]] = []
+    valid_roles = {"user", "assistant", "system", "developer"}
+    for message in messages:
+        role = str(message.get("role", "")).strip().lower() or "user"
+        if role not in valid_roles:
+            role = "user"
+        content = message.get("content", "")
+        payload.append({"role": role, "content": content, "type": "message"})
+    return payload
+
+
 def _normalize_tools(
     tools: Optional[Sequence[ToolSpec]],
 ) -> Optional[List[Dict[str, Any]]]:
@@ -65,6 +79,80 @@ def _normalize_tools(
             }
         )
     return normalized
+
+
+def _normalize_responses_tools(
+    tools: Optional[Sequence[ToolSpec]],
+) -> Optional[List[Dict[str, Any]]]:
+    if not tools:
+        return None
+    normalized: List[Dict[str, Any]] = []
+    for spec in tools:
+        normalized.append(
+            {
+                "type": "function",
+                "name": spec["name"],
+                "description": spec.get("description", ""),
+                "parameters": spec.get("parameters", {}),
+                "strict": True,
+            }
+        )
+    return normalized
+
+
+def _responses_text_config(
+    response_format: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if response_format is None:
+        return None
+    if response_format.get("type") == "json_schema":
+        json_schema = response_format.get("json_schema", {})
+        if not isinstance(json_schema, dict):
+            raise LLMClientError("json_schema response format must be an object")
+        format_payload: Dict[str, Any] = {
+            "type": "json_schema",
+            "name": json_schema.get("name", "magi_response"),
+            "schema": json_schema.get("schema", {}),
+            "strict": bool(json_schema.get("strict", True)),
+        }
+        description = json_schema.get("description")
+        if description:
+            format_payload["description"] = description
+        return {"format": format_payload}
+    if response_format.get("type") == "json_object":
+        return {"format": {"type": "json_object"}}
+    return {"format": response_format}
+
+
+def _extract_responses_text(payload: Dict[str, Any]) -> str:
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    output = payload.get("output")
+    parts: List[str] = []
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                for content_item in content:
+                    if not isinstance(content_item, dict):
+                        continue
+                    text = content_item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+    if parts:
+        return "\n".join(parts)
+
+    text = payload.get("text")
+    if isinstance(text, str):
+        return text.strip()
+    return ""
 
 
 class OpenAIClient(LLMClient):
@@ -105,16 +193,19 @@ class OpenAIClient(LLMClient):
         tools: Optional[Sequence[ToolSpec]] = None,
         response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        normalized_messages = _normalize_messages(messages)
-        normalized_tools = _normalize_tools(tools)
+        normalized_input = _normalize_responses_input(messages)
+        normalized_tools = _normalize_responses_tools(tools)
+        text_config = _responses_text_config(response_format)
         kwargs: Dict[str, Any] = {
             "model": self.model,
-            "messages": normalized_messages,
+            "input": normalized_input,
+            "store": False,
         }
         if normalized_tools is not None:
             kwargs["tools"] = normalized_tools
-        if response_format is not None:
-            kwargs["response_format"] = response_format
+            kwargs["parallel_tool_calls"] = True
+        if text_config is not None:
+            kwargs["text"] = text_config
         rate_limiter = getattr(self, "rate_limiter", None)
         if rate_limiter is not None:
             rate_limiter.acquire()
@@ -126,20 +217,28 @@ class OpenAIClient(LLMClient):
             max_retries=max_retries,
             initial_delay=retry_initial_delay,
             exceptions=(Exception,),
-        )(lambda: self.client.chat.completions.create(**kwargs))
+        )(lambda: self.client.responses.create(**kwargs))
         try:
             response = call()
         except Exception as exc:
             raise LLMClientError(str(exc)) from exc
         if hasattr(response, "model_dump"):
-            return cast(Dict[str, Any], response.model_dump())
-        if hasattr(response, "to_dict"):
-            return cast(Dict[str, Any], response.to_dict())
-        return (
-            json.loads(response.json())
-            if hasattr(response, "json")
-            else {"response": response}
-        )
+            raw = cast(Dict[str, Any], response.model_dump())
+        elif hasattr(response, "to_dict"):
+            raw = cast(Dict[str, Any], response.to_dict())
+        elif hasattr(response, "json"):
+            raw = cast(Dict[str, Any], json.loads(response.json()))
+        else:
+            raw = {"response": response}
+
+        text = getattr(response, "output_text", None)
+        if not isinstance(text, str) or not text.strip():
+            text = _extract_responses_text(raw)
+        return {
+            "choices": [{"message": {"content": text or json.dumps(raw)}}],
+            "response": raw,
+            "text": text,
+        }
 
 
 class GeminiClient(LLMClient):
