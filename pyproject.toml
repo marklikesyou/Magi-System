@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openai = ["openai>=1.40.0"]
+openai = ["openai>=2.0.0"]
 google = ["google-genai>=0.4.0"]
 dspy = ["dspy>=2.5.0"]
 dev = [
@@ -53,6 +53,7 @@ exclude = ["magi.tests", "magi.tests.*"]
 [tool.setuptools.package-data]
 magi = [
   "profiles/*.yaml",
+  "eval/ACCEPTANCE.md",
   "eval/*.yaml",
   "eval/retrieval_corpus/*",
   "infra/docker-compose.yml"
