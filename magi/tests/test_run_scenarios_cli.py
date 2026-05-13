@@ -1,11 +1,143 @@
 from __future__ import annotations
 
+from argparse import Namespace
 import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml  # type: ignore[import-untyped]
+
+from magi.eval.run_scenarios import _threshold_failures
+
+
+def _threshold_args(**overrides: object) -> Namespace:
+    defaults: dict[str, object] = {
+        "min_overall_score": None,
+        "min_verdict_accuracy": None,
+        "min_requirement_pass_rate": None,
+        "min_retrieval_hit_rate": None,
+        "min_retrieval_top_source_accuracy": None,
+        "min_retrieval_source_recall": None,
+        "min_average_citation_hit_rate": None,
+        "min_average_answer_support_score": None,
+        "min_supported_answer_rate": None,
+        "min_cached_replay_hit_rate": None,
+        "max_p50_latency_ms": None,
+        "max_p95_latency_ms": None,
+        "max_cached_p95_latency_ms": None,
+        "max_max_latency_ms": None,
+        "max_average_cost_usd": None,
+        "max_total_cost_usd": None,
+        "max_live_fallbacks": None,
+        "allow_live_fallbacks": False,
+        "max_uncited_approvals": 0,
+        "max_empty_final_answers": 0,
+    }
+    defaults.update(overrides)
+    return Namespace(**defaults)
+
+
+def test_threshold_failures_gate_uncited_approvals_and_empty_answers() -> None:
+    report = SimpleNamespace(
+        summary=SimpleNamespace(
+            effective_mode="stub",
+            overall_score=1.0,
+            verdict_accuracy=1.0,
+            requirement_pass_rate=1.0,
+            retrieval_hit_rate=1.0,
+            retrieval_top_source_accuracy=1.0,
+            retrieval_source_recall=1.0,
+            average_citation_hit_rate=1.0,
+            average_answer_support_score=1.0,
+            supported_answer_rate=1.0,
+            cached_replay_hit_rate=1.0,
+            latency_p50_ms=1.0,
+            latency_p95_ms=1.0,
+            cached_latency_p95_ms=1.0,
+            latency_max_ms=1.0,
+            average_estimated_cost_usd=0.0,
+            total_estimated_cost_usd=0.0,
+            live_fallback_count=0,
+            uncited_approval_count=1,
+            empty_final_answer_count=1,
+        )
+    )
+
+    failures = _threshold_failures(report, _threshold_args())
+
+    assert ("uncited_approval_count", 1.0, 0.0, "maximum") in failures
+    assert ("empty_final_answer_count", 1.0, 0.0, "maximum") in failures
+
+
+def test_threshold_failures_gate_cached_replay_metrics() -> None:
+    report = SimpleNamespace(
+        summary=SimpleNamespace(
+            effective_mode="stub",
+            overall_score=1.0,
+            verdict_accuracy=1.0,
+            requirement_pass_rate=1.0,
+            retrieval_hit_rate=1.0,
+            retrieval_top_source_accuracy=1.0,
+            retrieval_source_recall=1.0,
+            average_citation_hit_rate=1.0,
+            average_answer_support_score=1.0,
+            supported_answer_rate=1.0,
+            cached_replay_hit_rate=0.5,
+            latency_p50_ms=1.0,
+            latency_p95_ms=1.0,
+            cached_latency_p95_ms=300.0,
+            latency_max_ms=1.0,
+            average_estimated_cost_usd=0.0,
+            total_estimated_cost_usd=0.0,
+            live_fallback_count=0,
+            uncited_approval_count=0,
+            empty_final_answer_count=0,
+        )
+    )
+
+    failures = _threshold_failures(
+        report,
+        _threshold_args(
+            min_cached_replay_hit_rate=1.0,
+            max_cached_p95_latency_ms=250.0,
+        ),
+    )
+
+    assert ("cached_replay_hit_rate", 0.5, 1.0, "minimum") in failures
+    assert ("cached_latency_p95_ms", 300.0, 250.0, "maximum") in failures
+
+
+def test_threshold_failures_gate_requested_live_effective_mode() -> None:
+    report = SimpleNamespace(
+        summary=SimpleNamespace(
+            effective_mode="stub",
+            overall_score=1.0,
+            verdict_accuracy=1.0,
+            requirement_pass_rate=1.0,
+            retrieval_hit_rate=1.0,
+            retrieval_top_source_accuracy=1.0,
+            retrieval_source_recall=1.0,
+            average_citation_hit_rate=1.0,
+            average_answer_support_score=1.0,
+            supported_answer_rate=1.0,
+            cached_replay_hit_rate=1.0,
+            latency_p50_ms=1.0,
+            latency_p95_ms=1.0,
+            cached_latency_p95_ms=1.0,
+            latency_max_ms=1.0,
+            average_estimated_cost_usd=0.0,
+            total_estimated_cost_usd=0.0,
+            live_fallback_count=0,
+            uncited_approval_count=0,
+            empty_final_answer_count=0,
+        )
+    )
+
+    failures = _threshold_failures(report, _threshold_args(mode="live"))
+
+    assert ("effective_mode_live", 0.0, 1.0, "minimum") in failures
 
 
 def test_run_scenarios_cli_fails_when_threshold_is_not_met(tmp_path: Path) -> None:
