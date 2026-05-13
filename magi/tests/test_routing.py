@@ -69,6 +69,43 @@ def test_route_query_selects_decision_when_constraints_are_present() -> None:
     assert route.scores["decision"] > route.scores["recommend"]
 
 
+def test_route_query_keeps_constrained_summary_as_summary() -> None:
+    route = route_query(
+        "Give a cited readiness brief for the billing alert rollout.",
+        constraints="Use only cited evidence and ignore unrelated agenda material.",
+    )
+
+    assert route.mode == "summarize"
+    assert route.scores["summarize"] > route.scores["decision"]
+
+
+def test_route_query_selects_extract_for_owner_field() -> None:
+    route = route_query(
+        "Return the stated owning team for the support portal migration.",
+        constraints="Return the owner only when it is stated by evidence.",
+    )
+
+    assert route.mode == "extract"
+
+
+def test_route_query_selects_fact_check_for_claim_support() -> None:
+    route = route_query(
+        "Can the source support the claim that rollout has customer-facing approval?",
+        constraints="Answer only from the supplied source.",
+    )
+
+    assert route.mode == "fact_check"
+
+
+def test_route_query_selects_recommend_for_next_step() -> None:
+    route = route_query(
+        "What should the team do next for the billing alert rollout?",
+        constraints="Separate evidence-backed next steps from assumptions.",
+    )
+
+    assert route.mode == "recommend"
+
+
 def test_route_query_honors_forced_mode() -> None:
     route = route_query("Summarize this", forced_mode="fact_check")
 
