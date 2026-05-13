@@ -47,11 +47,32 @@ def _payload(
             "next_steps": ["Confirm rollback owner."],
         },
         "decision_trace": {
+            "trace_id": f"trace-{run_id}",
             "end_to_end_ms": 42.5,
             "retrieved_evidence_ids": ["doc::1", "doc::2"],
             "used_evidence_ids": ["doc::1"],
             "cited_evidence_ids": ["doc::1"],
             "blocked_evidence_ids": ["doc::2"],
+            "cache_hit": True,
+            "persona_mode": "live",
+            "responder_mode": "deterministic",
+            "live_fallback_count": 1,
+            "live_fallback_labels": ["fusion"],
+            "decision_features": {"approve_guardrail_triggered": False},
+            "spans": [
+                {
+                    "name": "program.run",
+                    "start_ms": 1.0,
+                    "duration_ms": 40.0,
+                    "attributes": {"effective_mode": effective_mode},
+                },
+                {
+                    "name": "grounding.verify",
+                    "start_ms": 41.0,
+                    "duration_ms": 1.0,
+                    "attributes": {"citation_hit_rate": 1.0},
+                },
+            ],
             "routing_rationale": "Decision markers outweighed summary markers.",
             "routing_scores": {"decision": 4, "summarize": 1},
             "routing_signals": ["contains should we", "contains deploy"],
@@ -78,6 +99,10 @@ def test_render_run_artifact_uses_readable_sections() -> None:
     assert "Outcome:" in report
     assert "Grounding:" in report
     assert "Routing:" in report
+    assert "Execution:" in report
+    assert "Trace Spans:" in report
+    assert "program.run" in report
+    assert "Live Fallback Labels: fusion" in report
     assert "Next Steps:" in report
     assert "Mitigations:" in report
 
