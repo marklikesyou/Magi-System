@@ -45,6 +45,7 @@ from .heuristic_signals import (
     is_information_request as _is_information_request,
     is_informational_query as _is_informational,
     is_specific_detail_query as _is_specific_detail_query,
+    is_recommendation_query as _is_recommendation_query,
     looks_like_decision_directive as _looks_like_decision_directive,
     query_removes_evidence_requirement as _query_removes_evidence_requirement,
     recommendation_support_hits as _recommendation_support_hits,
@@ -81,13 +82,16 @@ _FORCE_STUB = os.getenv("MAGI_FORCE_DSPY_STUB", "0") != "0"
 _CACHE = LRUCache(max_size=128)
 _TRACE_CACHE = LRUCache(max_size=128)
 _TOKENS = TokenTracker()
-_RUNTIME_CACHE_VERSION = "magi-runtime-v6"
+_RUNTIME_CACHE_VERSION = "magi-runtime-v7"
 _STANCE_TAGS = {"approve": "APPROVE", "reject": "REJECT", "revise": "REVISE"}
 _STATUS_REPORT_PROFILES = (
     "current state report incident status monitoring outcome after release",
 )
 _SYSTEM_OVERVIEW_PROFILES = (
     "system overview describes product capabilities architecture personas verdict and evidence base",
+)
+_FACT_LIMITING_PROFILES = (
+    "sentence limits excludes denies or narrows approval authority or customer facing release",
 )
 
 
@@ -184,7 +188,13 @@ def _supports_grounded_synthesis(
 
 def _evidence_negates_fact_claim(query: str, evidence_text: str) -> bool:
     for sentence in _split_evidence_sentences(evidence_text):
-        if _text_negates_query_claim(query, sentence):
+        if _text_negates_query_claim(query, sentence) or (
+            semantic_similarity(sentence, _FACT_LIMITING_PROFILES) >= 0.2
+            and (
+                _sentence_supports_fact_claim(query, sentence)
+                or semantic_similarity(query, [sentence]) >= 0.25
+            )
+        ):
             return True
     return False
 
@@ -222,6 +232,8 @@ def _has_fact_check_support(
     for item in evidence:
         if _looks_like_distractor(item, query):
             continue
+        if _evidence_negates_fact_claim(query, item.text):
+            return True
         for sentence in _split_evidence_sentences(item.text):
             if _sentence_supports_fact_claim(query, sentence):
                 return True
@@ -358,11 +370,10 @@ def _select_decision_evidence(
 ) -> list[RetrievedEvidence]:
     candidates: list[tuple[tuple[int, int, int, float], int, RetrievedEvidence]] = []
     for index, item in enumerate(evidence):
-        combined = _source_and_text(item)
         if _looks_like_distractor(item, query):
             continue
         control_hits = _decision_control_hits(item)
-        gap_hits = _decision_gap_hits(combined)
+        gap_hits = _decision_gap_hits(item.text)
         overlap = _source_overlap(query, item)
         if _status_report_score(item) >= 0.25 or _system_overview_score(item) >= 0.25:
             continue
@@ -399,10 +410,9 @@ def _has_decision_blocking_gap(
     for item in evidence:
         if _looks_like_distractor(item, query):
             continue
-        combined = _source_and_text(item)
-        if _query_removes_evidence_requirement(query_lower, combined):
+        if _query_removes_evidence_requirement(query_lower, item.text):
             return True
-        if _decision_gap_hits(combined) and _decision_critical_hits(combined):
+        if _decision_gap_hits(item.text) and _decision_critical_hits(item.text):
             return True
     return False
 
@@ -422,6 +432,15 @@ def _has_guarded_decision_support(
     return _decision_control_hits_for_text(combined) >= 2
 
 
+def _has_recommendation_support(
+    query: str,
+    evidence: Sequence[RetrievedEvidence],
+) -> bool:
+    return _is_recommendation_query(query) and bool(
+        _select_relevant_evidence(query, evidence, limit=1)
+    )
+
+
 def _has_semantic_support(query: str, evidence: Sequence[RetrievedEvidence]) -> bool:
     if _has_decision_blocking_gap(query, evidence):
         return False
@@ -429,6 +448,8 @@ def _has_semantic_support(query: str, evidence: Sequence[RetrievedEvidence]) -> 
         return True
     if _is_fact_check_query(query):
         return _has_fact_check_support(query, evidence)
+    if _is_recommendation_query(query):
+        return _has_recommendation_support(query, evidence)
     if _is_informational(query):
         return _has_informational_support(query, evidence)
     if _evidence_directly_addresses_query(query, evidence):
@@ -530,6 +551,19 @@ def _supports_grounded_recommendation(
         )
         >= 3
     )
+
+
+def _has_grounded_non_decision_support(
+    query: str,
+    evidence: Sequence[RetrievedEvidence],
+) -> bool:
+    if not evidence or _is_harmful(query) or _is_decision_query(query):
+        return False
+    if _has_decision_blocking_gap(query, evidence):
+        return False
+    if _is_fact_check_query(query):
+        return _has_fact_check_support(query, evidence)
+    return _has_semantic_support(query, evidence)
 
 
 def _is_grounded_approve_text(
@@ -781,8 +815,96 @@ def _quoted_evidence(
     return quotes
 
 
+def _source_citation(item: RetrievedEvidence) -> str:
+    return f"SOURCE {item.source} {item.citation}"
+
+
 def _join_cited_evidence(items: Sequence[RetrievedEvidence], *, limit: int = 2) -> str:
-    return "; ".join(f"{item.citation} {item.text}" for item in items[:limit])
+    return "; ".join(
+        f"{_source_citation(item)}: {item.text}" for item in items[:limit]
+    )
+
+
+_KEY_POINT_DIRECTIVE_RE = re.compile(
+    r"\b(?:key\s+points?|bullet(?:s|ed)?|takeaways?|main\s+points?|list)\b",
+    re.IGNORECASE,
+)
+_OWNER_VALUE_PATTERNS = (
+    re.compile(
+        r"\b(?:owner|owning\s+team|accountable\s+team|responsible\s+team)\s+"
+        r"(?:is|:)\s+([^.;]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bowned\s+by\s+([^.;]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\blists?\s+([^.;]+?)\s+as\s+(?:the\s+)?owner\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bis\s+owned\s+by\s+([^.;]+)",
+        re.IGNORECASE,
+    ),
+)
+_DOCUMENTED_SCOPE_RE = re.compile(
+    r"\bit\s+says\s+(.+?)\s+"
+    r"(?:are|is)\s+documented\s+for\s+([^.;]+)",
+    re.IGNORECASE,
+)
+_FOR_TOPIC_RE = re.compile(r"\bfor\s+([^?.]+)", re.IGNORECASE)
+
+
+def _clean_extracted_value(value: str) -> str:
+    clean = re.sub(r"\s+", " ", value).strip(" ,.;:")
+    return clean
+
+
+def _field_value_from_segment(query: str, segment: str) -> str | None:
+    lowered_query = query.lower()
+    if not re.search(
+        r"\b(?:owner|owns|owning|owned|accountable|responsible)\b",
+        lowered_query,
+        re.IGNORECASE,
+    ):
+        return None
+    for pattern in _OWNER_VALUE_PATTERNS:
+        match = pattern.search(segment)
+        if match:
+            value = _clean_extracted_value(match.group(1))
+            if value:
+                return value
+    return None
+
+
+def _brief_summary_from_evidence(item: RetrievedEvidence) -> str | None:
+    owner: str | None = None
+    for sentence in _split_evidence_sentences(item.text):
+        owner = _field_value_from_segment("owner", sentence)
+        if owner:
+            break
+    documented_match = _DOCUMENTED_SCOPE_RE.search(item.text)
+    if not (owner or documented_match):
+        return None
+    parts = [f"{_source_citation(item)}."]
+    if owner:
+        parts.append(f"Owner: {owner}.")
+    if documented_match:
+        controls = _clean_extracted_value(documented_match.group(1))
+        scope = _clean_extracted_value(documented_match.group(2))
+        parts.append(f"Documented controls: {controls}.")
+        parts.append(f"Scope: {scope}.")
+    return " ".join(parts)
+
+
+def _topic_from_query(query: str) -> str:
+    match = _FOR_TOPIC_RE.search(query)
+    if match:
+        topic = _clean_extracted_value(match.group(1))
+        if topic:
+            return topic
+    return "the requested work"
 
 
 def _key_point_fragments(text: str) -> list[str]:
@@ -820,12 +942,16 @@ def _build_summary_answer(
     selected = _select_relevant_evidence(query, evidence, limit=1)
     if not selected:
         selected = list(evidence[:1])
-    if _wants_key_points(query) and selected:
+    if _KEY_POINT_DIRECTIVE_RE.search(query) and _wants_key_points(query) and selected:
         points = _key_point_fragments(selected[0].text)
         return "Key points from {citation}: {points}".format(
-            citation=selected[0].citation,
+            citation=_source_citation(selected[0]),
             points="; ".join(f"{index + 1}. {point}" for index, point in enumerate(points)),
         )
+    if selected:
+        brief = _brief_summary_from_evidence(selected[0])
+        if brief:
+            return f"Summary: {brief}"
     supporting = _join_cited_evidence(selected, limit=1)
     return f"Summary: {supporting}"
 
@@ -856,6 +982,9 @@ def _build_extractive_answer(
         supporting = _join_cited_evidence(selected, limit=1)
         return f"Extracted answer: {supporting}"
     item, segment = best
+    value = _field_value_from_segment(query, segment)
+    if value:
+        return f"{value} {item.citation}"
     return f"{segment} ({item.source} {item.citation})"
 
 
@@ -875,6 +1004,32 @@ def _build_decision_approval_answer(
     return (
         "Approve only within the cited limits and controls: "
         f"{supporting}"
+    )
+
+
+def _build_recommendation_answer(
+    query: str,
+    evidence: Sequence[RetrievedEvidence],
+) -> str:
+    selected = _select_relevant_evidence(query, evidence, limit=2)
+    if not selected:
+        selected = list(evidence[:1])
+    supporting = _join_cited_evidence(selected, limit=2)
+    has_gap = any(_decision_gap_hits(_source_and_text(item)) > 0 for item in selected)
+    topic = _topic_from_query(query)
+    if has_gap:
+        return (
+            "Recommendation: Evidence-backed next step: close the cited evidence gap for "
+            f"{topic} before any stronger action. Assign or confirm the missing "
+            f"operational support, then revisit. Citation: {supporting} "
+            "Assumption boundary: do not expand scope until the cited gap is closed."
+        )
+    return (
+        "Recommendation: Evidence-backed next step: verify and document the completed "
+        f"monitoring, rollback ownership, and review steps for {topic}, then hand "
+        f"that record to the plan owner for the next plan-defined phase. Citation: "
+        f"{supporting} Assumption boundary: the cited source supports completed "
+        "controls, not broader release approval or an unnamed phase."
     )
 
 
@@ -978,6 +1133,10 @@ def _heuristic_melchior(
         stance = "revise"
         analysis = _insufficient_query_support_message(query, evidence)
         actions = ["Ask for a source that directly proves or disproves the claim."]
+    elif _is_recommendation_query(query) and _has_recommendation_support(query, evidence):
+        stance = "approve"
+        analysis = "The evidence supports a bounded recommendation or next step."
+        actions = ["Recommend only the cited next step and call out any cited gap."]
     elif not _has_semantic_support(query, evidence):
         stance = "revise"
         analysis = _insufficient_query_support_message(query, evidence)
@@ -1037,6 +1196,10 @@ def _heuristic_balthasar(
         stance = "revise"
         plan = "Treat the claim as unverified until a direct supporting source is available."
         actions = ["Ask for authoritative evidence that proves the requested claim."]
+    elif _is_recommendation_query(query) and _has_recommendation_support(query, evidence):
+        stance = "approve"
+        plan = "Provide a bounded recommendation from the cited evidence without turning it into an approval decision."
+        actions = ["State the cited next step and any cited gap."]
     elif not _has_semantic_support(query, evidence):
         stance = "revise"
         plan = "Pause execution because the requested detail is not supported by the retrieved evidence."
@@ -1125,6 +1288,11 @@ def _heuristic_casper(
         stance = "revise"
         residual_risk = "medium"
         outstanding.append("Need a source that directly proves the claim.")
+    elif _is_recommendation_query(query) and _has_recommendation_support(query, evidence):
+        risks.append("Risk is limited to overstating the cited recommendation as approval.")
+        mitigations.append("Frame the answer as a bounded recommendation, not an authorization.")
+        stance = "approve"
+        residual_risk = "medium"
     elif not _has_semantic_support(query, evidence):
         risks.append(
             "The retrieved sources do not state the key detail needed to answer this query safely."
@@ -1196,6 +1364,12 @@ def _heuristic_answer(
     if _is_fact_check_query(query):
         answer = _build_fact_check_answer(query, evidence)
         justification = "The verification answer is grounded in the cited evidence."
+        if blocked:
+            justification += " Unsafe retrieved instructions were ignored."
+        return answer, justification
+    if _is_recommendation_query(query):
+        answer = _build_recommendation_answer(query, evidence)
+        justification = "The recommendation is bounded by the cited evidence."
         if blocked:
             justification += " Unsafe retrieved instructions were ignored."
         return answer, justification
@@ -1313,6 +1487,8 @@ def _heuristic_responder(
             final_answer = _build_revision_answer(query, evidence)
         elif _is_fact_check_query(query):
             final_answer = _build_fact_gap_answer(query, evidence)
+        elif _is_recommendation_query(query):
+            final_answer = _build_recommendation_answer(query, evidence)
         elif _is_informational(query):
             final_answer = _build_informational_gap_answer(query, evidence)
         else:
@@ -1337,6 +1513,9 @@ def _heuristic_responder(
         elif _is_fact_check_query(query):
             final_answer = _build_fact_gap_answer(query, evidence)
             justification = "The retrieved evidence does not directly prove the claim."
+        elif _is_recommendation_query(query):
+            final_answer = _build_recommendation_answer(query, evidence)
+            justification = "The recommendation is bounded by the cited evidence."
         else:
             justification = "The retrieved evidence is insufficient and does not directly support the requested detail."
     else:
@@ -1370,6 +1549,8 @@ def _promote_grounded_revision(
 ) -> str:
     if stance != "revise":
         return stance
+    if _has_grounded_non_decision_support(query, evidence):
+        return "approve"
     if _supports_grounded_synthesis(query, evidence, combined):
         return "approve"
     if _supports_grounded_recommendation(query, evidence, combined):
@@ -1462,6 +1643,16 @@ def _normalize_casper_response(
             residual_risk = "low"
     if (
         stance == "revise"
+        and _has_grounded_non_decision_support(query, evidence)
+        and residual_risk != "high"
+    ):
+        stance = "approve"
+        if _is_informational(query) and not blocked:
+            residual_risk = "low"
+        elif blocked and residual_risk == "low":
+            residual_risk = "medium"
+    if (
+        stance == "revise"
         and _supports_grounded_recommendation(query, evidence, joined)
         and not blocked
         and not _signals_refusal(joined)
@@ -1493,6 +1684,7 @@ def _persona_vote_counts(
 def _fusion_verdict_policy_update(
     query: str,
     evidence: Sequence[RetrievedEvidence],
+    blocked: Sequence[RetrievedEvidence],
     response: FusionResponse,
     *,
     approve_votes: int,
@@ -1507,8 +1699,10 @@ def _fusion_verdict_policy_update(
         )
     )
     direct_support = _has_semantic_support(query, evidence)
+    grounded_non_decision_support = _has_grounded_non_decision_support(query, evidence)
     query_is_safe = not _is_harmful(query)
     verdict: str = response.verdict
+    updates: dict[str, Any] = {}
     if query_is_safe and _has_decision_blocking_gap(query, evidence):
         verdict = "revise"
     elif (
@@ -1524,6 +1718,7 @@ def _fusion_verdict_policy_update(
         query_is_safe
         and _signals_evidence_gap(combined)
         and not (direct_support and approve_votes >= 2 and not _is_fact_check_query(query))
+        and not grounded_non_decision_support
     ):
         verdict = "revise"
     elif (
@@ -1536,7 +1731,30 @@ def _fusion_verdict_policy_update(
         and not _signals_evidence_gap(combined)
     ):
         verdict = "approve"
-    return {"verdict": verdict} if verdict != response.verdict else {}
+    elif (
+        query_is_safe
+        and reject_votes == 0
+        and response.residual_risk != "high"
+        and grounded_non_decision_support
+    ):
+        verdict = "approve"
+    if verdict != response.verdict:
+        updates["verdict"] = verdict
+    if (
+        verdict == "approve"
+        and not blocked
+        and _is_informational(query)
+        and _has_informational_support(query, evidence)
+        and response.residual_risk != "low"
+    ):
+        updates["residual_risk"] = "low"
+    elif (
+        verdict == "approve"
+        and blocked
+        and str(response.residual_risk).lower() == "low"
+    ):
+        updates["residual_risk"] = "medium"
+    return updates
 
 
 def _fusion_grounding_policy_update(
@@ -1570,6 +1788,15 @@ def _approved_answer_policy_update(
     if verdict != "approve":
         return {}
     if (
+        blocked
+        and _is_information_request(query)
+        and _has_informational_support(query, evidence)
+    ):
+        return {
+            "final_answer": _build_status_answer(query, evidence),
+            "justification": "The answer is grounded in safe retrieved status and control evidence.",
+        }
+    if (
         _is_information_request(query)
         and _has_informational_support(query, evidence)
         and _looks_like_decision_directive(final_answer or justification)
@@ -1582,6 +1809,15 @@ def _approved_answer_policy_update(
             "final_answer": final_answer,
             "justification": "The answer summarizes the relevant cited evidence.",
         }
+    if _is_recommendation_query(query) and _has_recommendation_support(query, evidence):
+        if (
+            _looks_like_decision_directive(final_answer or justification)
+            or not _contains_evidence_citation(final_answer or justification, evidence)
+        ):
+            return {
+                "final_answer": _build_recommendation_answer(query, evidence),
+                "justification": "The recommendation is bounded by the cited evidence.",
+            }
     if _needs_status_control_answer(
         blocked=blocked,
         evidence=evidence,
@@ -1641,6 +1877,7 @@ def _normalize_fusion_response(
     updates = _fusion_verdict_policy_update(
         query,
         evidence,
+        blocked,
         response,
         approve_votes=approve_votes,
         reject_votes=reject_votes,
@@ -2336,10 +2573,12 @@ class MagiProgram:
         clean_constraints: str,
         safe_evidence: Sequence[RetrievedEvidence],
         blocked_evidence: Sequence[RetrievedEvidence],
+        input_report: Any,
     ) -> tuple[FusionResponse, dict[str, Any]]:
-        harmful = _is_harmful(clean_query)
+        report_reasons = set(getattr(input_report, "reasons", []) or [])
+        harmful = _is_harmful(clean_query) or "sensitive_exfiltration_intent" in report_reasons
         final_answer = (
-            "I can’t assist with that request."
+            "I can’t assist with that request. I can help with an authorized audit, access review, or least-privilege remediation plan."
             if harmful
             else "The request needs to be rephrased safely."
         )
@@ -2369,6 +2608,47 @@ class MagiProgram:
                 blocked_evidence,
             ),
         }
+        if harmful:
+            melchior = personas["melchior"].model_copy(
+                update={
+                    "stance": "reject",
+                    "analysis": "The request asks for unsafe operational guidance.",
+                    "text": _with_tag(
+                        "melchior",
+                        "reject",
+                        "The request asks for unsafe operational guidance.",
+                    ),
+                }
+            )
+            balthasar = personas["balthasar"].model_copy(
+                update={
+                    "stance": "reject",
+                    "plan": "Do not operationalize this request.",
+                    "text": _with_tag(
+                        "balthasar",
+                        "reject",
+                        "Do not operationalize this request.",
+                    ),
+                }
+            )
+            casper = personas["casper"].model_copy(
+                update={
+                    "stance": "reject",
+                    "residual_risk": "high",
+                    "risks": ["The request asks for unsafe operational guidance."],
+                    "mitigations": ["Refuse and redirect to an authorized review path."],
+                    "text": _with_tag(
+                        "casper",
+                        "reject",
+                        "Risk level: high. The request asks for unsafe operational guidance.",
+                    ),
+                }
+            )
+            personas = {
+                "melchior": melchior,
+                "balthasar": balthasar,
+                "casper": casper,
+            }
         return fused, personas
 
     def _run_personas(
@@ -2498,6 +2778,7 @@ class MagiProgram:
                 clean_constraints,
                 safe_evidence,
                 blocked_evidence,
+                input_report,
             )
             self._remember_result(
                 cache_key,
