@@ -53,8 +53,16 @@ def test_live_scenarios_suite_passes_in_stub_mode() -> None:
     assert report.summary.latency_p50_ms >= 0.0
     assert report.summary.latency_p95_ms >= report.summary.latency_p50_ms
     assert report.summary.latency_max_ms >= report.summary.latency_p50_ms
+    assert report.summary.cached_replay_hit_rate == 1.0
+    assert report.summary.cached_latency_p95_ms < 250.0
     assert report.summary.average_estimated_cost_usd == 0.0
+    assert report.summary.empty_final_answer_count == 0
+    assert report.summary.uncited_approval_count == 0
     assert report.cases[0].latency_ms >= 0.0
+    assert report.cases[0].cached_cache_hit is True
+    assert report.cases[0].cached_latency_ms >= 0.0
+    assert report.cases[0].final_answer_empty is False
+    assert report.cases[0].uncited_approval is False
 
 
 def test_production_scenarios_suite_passes_in_stub_mode() -> None:
@@ -223,8 +231,8 @@ def test_live_scenario_gate_fails_when_provider_fallback_occurs() -> None:
     )
 
     assert report.summary.effective_mode == "live"
-    assert report.summary.live_fallback_count == 1
-    assert report.cases[0].live_fallback_count == 1
+    assert report.summary.live_fallback_count == 4
+    assert report.cases[0].live_fallback_count == 4
     failures = _threshold_failures(
         report,
         Namespace(
@@ -237,8 +245,10 @@ def test_live_scenario_gate_fails_when_provider_fallback_occurs() -> None:
             min_average_citation_hit_rate=None,
             min_average_answer_support_score=None,
             min_supported_answer_rate=None,
+            min_cached_replay_hit_rate=None,
             max_p50_latency_ms=None,
             max_p95_latency_ms=None,
+            max_cached_p95_latency_ms=None,
             max_max_latency_ms=None,
             max_average_cost_usd=None,
             max_total_cost_usd=None,
@@ -247,7 +257,7 @@ def test_live_scenario_gate_fails_when_provider_fallback_occurs() -> None:
             mode="live",
         ),
     )
-    assert ("live_fallback_count", 1.0, 0.0, "maximum") in failures
+    assert ("live_fallback_count", 4.0, 0.0, "maximum") in failures
 
     allowed_failures = _threshold_failures(
         report,
@@ -261,8 +271,10 @@ def test_live_scenario_gate_fails_when_provider_fallback_occurs() -> None:
             min_average_citation_hit_rate=None,
             min_average_answer_support_score=None,
             min_supported_answer_rate=None,
+            min_cached_replay_hit_rate=None,
             max_p50_latency_ms=None,
             max_p95_latency_ms=None,
+            max_cached_p95_latency_ms=None,
             max_max_latency_ms=None,
             max_average_cost_usd=None,
             max_total_cost_usd=None,
