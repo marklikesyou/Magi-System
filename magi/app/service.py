@@ -6,6 +6,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from time import perf_counter
 from typing import Any, Literal, Mapping, cast
+from uuid import uuid4
 
 from magi.core.config import get_settings
 from magi.core.routing import route_query
@@ -20,6 +21,7 @@ from magi.eval.metrics import answer_support_score
 logger = logging.getLogger(__name__)
 _CITATION_LABEL_RE = re.compile(r"\[\d+\]")
 _SUPPORTED_ANSWER_SCORE_THRESHOLD = 0.2
+_FACT_CHECK_INSUFFICIENT_APPROVE_MAX_SUPPORT_SCORE = 0.7
 _HIGH_STAKES_MODEL_PROFILES = (
     "high stakes security incident breach production deployment legal compliance financial customer data administrative access policy decision",
     "regulated operational change that could affect users data finances legal obligations or service availability",
@@ -44,8 +46,18 @@ class BlockedEvidenceTrace:
 
 
 @dataclass
+class DecisionTraceSpan:
+    name: str = ""
+    start_ms: float = 0.0
+    duration_ms: float = 0.0
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class DecisionTrace:
+    trace_id: str = ""
     query_hash: str = ""
+    spans: list[DecisionTraceSpan] = field(default_factory=list)
     retrieved_evidence_ids: list[str] = field(default_factory=list)
     used_evidence_ids: list[str] = field(default_factory=list)
     blocked_evidence_ids: list[str] = field(default_factory=list)
@@ -133,6 +145,22 @@ def _detail_count(details: dict[str, object], key: str) -> int:
         return max(0, int(str(value or 0)))
     except (TypeError, ValueError):
         return 0
+
+
+def _trace_span(
+    name: str,
+    *,
+    root_start: float,
+    started_at: float,
+    ended_at: float,
+    attributes: Mapping[str, object] | None = None,
+) -> DecisionTraceSpan:
+    return DecisionTraceSpan(
+        name=name,
+        start_ms=round((started_at - root_start) * 1000.0, 3),
+        duration_ms=round((ended_at - started_at) * 1000.0, 3),
+        attributes=dict(attributes or {}),
+    )
 
 
 def _decision_justification(
@@ -307,30 +335,20 @@ def _combined_answer_text(*parts: object) -> str:
     return "\n".join(str(part).strip() for part in parts if str(part).strip()).strip()
 
 
-def _signals_negative_verification(text: str) -> bool:
-    normalized = re.sub(r"\s+", " ", str(text or "").lower()).strip()
-    if not normalized:
-        return False
-    return any(
-        signal in normalized
-        for signal in (
-            "does not guarantee",
-            "doesn't guarantee",
-            "no formal",
-            "not been approved",
-            "not approved",
-            "not supported",
-            "cannot be verified",
-            "did not prove",
-            "does not prove",
-            "does not authorize",
-            "doesn't authorize",
-            "being evaluated",
-            "no production sla",
-            "no customer-facing",
-            "no customer facing",
-        )
-    )
+def _ensure_non_empty_fusion(fused: FusionResponse) -> FusionResponse:
+    final_answer = str(fused.final_answer or "").strip()
+    if final_answer:
+        return fused
+    fallback = str(fused.justification or fused.text or "").strip()
+    if not fallback:
+        if fused.verdict == "reject":
+            fallback = "I can't assist with that request."
+        else:
+            fallback = (
+                "The available evidence is not sufficient to produce a reliable "
+                "answer yet."
+            )
+    return fused.model_copy(update={"final_answer": fallback, "text": fallback})
 
 
 def _safe_evidence_lookup(
@@ -535,7 +553,8 @@ def _apply_abstention(
     elif (
         query_mode == "fact_check"
         and decision.verdict == "approve"
-        and _signals_negative_verification(answer_text)
+        and bool(decision_details.get("insufficient_information"))
+        and support_score < _FACT_CHECK_INSUFFICIENT_APPROVE_MAX_SUPPORT_SCORE
     ):
         should_abstain = True
         reason = "The evidence did not prove the claim being verified."
@@ -627,6 +646,9 @@ def run_chat_session(
     approve_min_answer_support_score: float | None = None,
 ) -> ChatSessionResult:
     start = perf_counter()
+    trace_id = f"trace-{uuid4().hex}"
+    query_hash = hash_query(query, constraints)
+    spans: list[DecisionTraceSpan] = []
     selected_model, model_routing_reason = _select_model_for_session(
         query,
         constraints,
@@ -646,7 +668,21 @@ def run_chat_session(
     )
     program_start = perf_counter()
     fused, personas = program(query, constraints=constraints)
-    program_run_ms = round((perf_counter() - program_start) * 1000.0, 3)
+    fused = _ensure_non_empty_fusion(fused)
+    program_end = perf_counter()
+    program_run_ms = round((program_end - program_start) * 1000.0, 3)
+    spans.append(
+        _trace_span(
+            "program.run",
+            root_start=start,
+            started_at=program_start,
+            ended_at=program_end,
+            attributes={
+                "effective_mode": program.effective_mode,
+                "model": program.model_name,
+            },
+        )
+    )
     normalized_personas = {str(name).lower(): payload for name, payload in personas.items()}
     persona_stances = _persona_stances(normalized_personas)
     persona_outputs: list[PersonaOutput] = []
@@ -665,7 +701,17 @@ def run_chat_session(
         normalized_personas,
         persona_outputs,
     )
-    decision_resolution_ms = round((perf_counter() - resolution_start) * 1000.0, 3)
+    resolution_end = perf_counter()
+    decision_resolution_ms = round((resolution_end - resolution_start) * 1000.0, 3)
+    spans.append(
+        _trace_span(
+            "decision.resolve",
+            root_start=start,
+            started_at=resolution_start,
+            ended_at=resolution_end,
+            attributes={"verdict": verdict},
+        )
+    )
     trace_start = perf_counter()
     (
         retrieved_evidence_ids,
@@ -675,7 +721,20 @@ def run_chat_session(
         cache_hit,
     ) = _runtime_retrieval_trace(program)
     blocked_evidence = _blocked_evidence_trace(program)
-    trace_capture_ms = round((perf_counter() - trace_start) * 1000.0, 3)
+    trace_end = perf_counter()
+    trace_capture_ms = round((trace_end - trace_start) * 1000.0, 3)
+    spans.append(
+        _trace_span(
+            "trace.capture",
+            root_start=start,
+            started_at=trace_start,
+            ended_at=trace_end,
+            attributes={
+                "retrieved_evidence_count": len(retrieved_evidence_ids),
+                "blocked_evidence_count": len(blocked_evidence_ids),
+            },
+        )
+    )
     decision = FinalDecision(
         verdict=verdict,
         justification=_decision_justification(fused, verdict, decision_details),
@@ -719,6 +778,7 @@ def run_chat_session(
     ]
     user_answer_text = _combined_answer_text(fused.final_answer)
     grounding_text = user_answer_text or _combined_answer_text(fused.justification)
+    grounding_start = perf_counter()
     (
         citation_hit_rate,
         support_score,
@@ -728,6 +788,21 @@ def run_chat_session(
         cited_evidence,
         unsupported_citations,
     ) = _grounding_metrics(program, grounding_text, support_text=user_answer_text)
+    grounding_end = perf_counter()
+    spans.append(
+        _trace_span(
+            "grounding.verify",
+            root_start=start,
+            started_at=grounding_start,
+            ended_at=grounding_end,
+            attributes={
+                "citation_hit_rate": round(citation_hit_rate, 4),
+                "answer_support_score": round(support_score, 4),
+                "unsupported_citation_count": len(unsupported_citations),
+            },
+        )
+    )
+    guardrail_start = perf_counter()
     decision, approve_guardrail_triggered = _apply_approve_guardrail(
         decision,
         citation_hit_rate=citation_hit_rate,
@@ -745,9 +820,25 @@ def run_chat_session(
         answer_text=_combined_answer_text(fused.final_answer, fused.justification),
     )
     decision, human_review_required = _apply_human_review_requirement(decision)
+    guardrail_end = perf_counter()
+    spans.append(
+        _trace_span(
+            "decision.guardrails",
+            root_start=start,
+            started_at=guardrail_start,
+            ended_at=guardrail_end,
+            attributes={
+                "approve_guardrail_triggered": approve_guardrail_triggered,
+                "abstained": abstained,
+                "requires_human_review": human_review_required,
+            },
+        )
+    )
     used_evidence_ids = list(cited_evidence_ids)
     decision_trace = DecisionTrace(
-        query_hash=hash_query(query, constraints),
+        trace_id=trace_id,
+        query_hash=query_hash,
+        spans=spans,
         retrieved_evidence_ids=retrieved_evidence_ids,
         used_evidence_ids=used_evidence_ids,
         blocked_evidence_ids=blocked_evidence_ids,
