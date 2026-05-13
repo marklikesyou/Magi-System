@@ -4,6 +4,8 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from pathlib import Path
+import re
+import sys
 from time import perf_counter
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -16,6 +18,8 @@ from magi.core.config import get_settings
 from magi.core.utils import TokenTracker
 from magi.dspy_programs.signatures import SemanticValidationJudge
 from magi.eval.scenario_harness import ScenarioEvidence, ScenarioRetriever
+
+_CITATION_RE = re.compile(r"\[\d+\]")
 
 
 class SemanticEvidence(BaseModel):
@@ -110,6 +114,9 @@ class SemanticCaseResult(BaseModel):
     justification: str
     next_steps: List[str] = Field(default_factory=list)
     persona_stances: Dict[str, str] = Field(default_factory=dict)
+    final_answer_empty: bool = False
+    uncited_approval: bool = False
+    live_fallback_count: int = 0
     latency_ms: float = 0.0
     program_run_ms: float = 0.0
     effective_mode: str = ""
@@ -127,6 +134,9 @@ class SemanticSummary(BaseModel):
     latency_p50_ms: float
     latency_p95_ms: float
     latency_max_ms: float
+    empty_final_answer_count: int = 0
+    uncited_approval_count: int = 0
+    live_fallback_count: int = 0
     effective_mode: str = ""
     model: str = ""
     token_stats: Dict[str, Any] = Field(default_factory=dict)
@@ -136,6 +146,9 @@ class SemanticReport(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     summary: SemanticSummary
     cases: List[SemanticCaseResult] = Field(default_factory=list)
+
+
+SemanticThresholdFailure = tuple[str, float, float, str]
 
 
 def load_semantic_dataset(path: Path) -> SemanticDataset:
@@ -297,6 +310,16 @@ def _scenario_evidence(items: Sequence[SemanticEvidence]) -> list[ScenarioEviden
     ]
 
 
+def _uncited_approval(final_answer: str, valid_citations: Sequence[str], verdict: str) -> bool:
+    if verdict != "approve":
+        return False
+    citations = _CITATION_RE.findall(final_answer)
+    if not citations:
+        return True
+    valid = set(valid_citations)
+    return any(citation not in valid for citation in citations)
+
+
 def _run_case(
     case: SemanticCase,
     *,
@@ -316,17 +339,30 @@ def _run_case(
         model=model,
     )
     latency_ms = round((perf_counter() - started) * 1000.0, 3)
+    final_answer = session.fused.final_answer
+    valid_citations = [
+        item.citation
+        for item in session.decision_trace.cited_evidence
+        if item.citation
+    ]
+    uncited_approval = _uncited_approval(
+        final_answer,
+        valid_citations,
+        session.final_decision.verdict,
+    )
     magi_payload = {
         "verdict": session.final_decision.verdict,
         "residual_risk": session.final_decision.residual_risk,
         "requires_human_review": session.final_decision.requires_human_review,
-        "final_answer": session.fused.final_answer,
+        "final_answer": final_answer,
         "justification": session.fused.justification,
         "next_steps": session.fused.next_steps,
         "persona_stances": session.decision_trace.persona_stances,
         "safety_outcome": session.decision_trace.safety_outcome,
         "abstained": session.final_decision.abstained,
         "blocked_evidence_count": len(session.decision_trace.blocked_evidence_ids),
+        "live_fallback_count": session.decision_trace.live_fallback_count,
+        "uncited_approval": uncited_approval,
     }
     judgment = _judge_case(
         client=judge_client,
@@ -342,10 +378,13 @@ def _run_case(
         expected_behavior=case.expected_behavior,
         magi_verdict=session.final_decision.verdict,
         residual_risk=session.final_decision.residual_risk,
-        final_answer=session.fused.final_answer,
+        final_answer=final_answer,
         justification=session.fused.justification,
         next_steps=[str(item) for item in session.fused.next_steps],
         persona_stances=session.decision_trace.persona_stances,
+        final_answer_empty=not final_answer.strip(),
+        uncited_approval=uncited_approval,
+        live_fallback_count=session.decision_trace.live_fallback_count,
         latency_ms=session.decision_trace.end_to_end_ms or latency_ms,
         program_run_ms=session.decision_trace.program_run_ms,
         effective_mode=session.effective_mode,
@@ -396,8 +435,13 @@ def run_semantic_suite(
     case_results = [item for item in results if item is not None]
     pass_count = sum(1 for item in case_results if item.judgment.overall_pass)
     latency_values = [item.latency_ms for item in case_results]
-    effective_mode = case_results[-1].effective_mode if case_results else ""
-    resolved_model = case_results[-1].model if case_results else ""
+    empty_final_answer_count = sum(1 for item in case_results if item.final_answer_empty)
+    uncited_approval_count = sum(1 for item in case_results if item.uncited_approval)
+    live_fallback_count = sum(item.live_fallback_count for item in case_results)
+    effective_modes = {item.effective_mode for item in case_results if item.effective_mode}
+    models = {item.model for item in case_results if item.model}
+    effective_mode = next(iter(effective_modes)) if len(effective_modes) == 1 else "mixed"
+    resolved_model = next(iter(models)) if len(models) == 1 else "mixed"
     metadata = dict(dataset.metadata)
     metadata["suite_type"] = "semantic_validation"
     metadata["judge_model"] = resolved_judge_model
@@ -420,6 +464,9 @@ def run_semantic_suite(
             latency_p50_ms=round(_percentile(latency_values, 0.5), 3),
             latency_p95_ms=round(_percentile(latency_values, 0.95), 3),
             latency_max_ms=round(max(latency_values, default=0.0), 3),
+            empty_final_answer_count=empty_final_answer_count,
+            uncited_approval_count=uncited_approval_count,
+            live_fallback_count=live_fallback_count,
             effective_mode=effective_mode,
             model=resolved_model,
             token_stats=tracker.get_stats(),
@@ -430,7 +477,7 @@ def run_semantic_suite(
 
 def render_semantic_report(report: SemanticReport) -> str:
     lines = [
-        "case_id\tpassed\tverdict\tquality\tgrounding\tsafety\tlatency_ms\tcritique"
+        "case_id\tpassed\tverdict\tquality\tgrounding\tsafety\tlatency_ms\tuncited_approval\tempty_answer\tlive_fallbacks\tcritique"
     ]
     for item in report.cases:
         lines.append(
@@ -443,6 +490,9 @@ def render_semantic_report(report: SemanticReport) -> str:
                     f"{item.judgment.grounding_score:.2f}",
                     f"{item.judgment.safety_score:.2f}",
                     f"{item.latency_ms:.3f}",
+                    "yes" if item.uncited_approval else "no",
+                    "yes" if item.final_answer_empty else "no",
+                    str(item.live_fallback_count),
                     item.judgment.critique.replace("\t", " ").replace("\n", " "),
                 ]
             )
@@ -458,6 +508,9 @@ def render_semantic_report(report: SemanticReport) -> str:
             f"latency_p50_ms\t{report.summary.latency_p50_ms:.3f}",
             f"latency_p95_ms\t{report.summary.latency_p95_ms:.3f}",
             f"latency_max_ms\t{report.summary.latency_max_ms:.3f}",
+            f"empty_final_answer_count\t{report.summary.empty_final_answer_count}",
+            f"uncited_approval_count\t{report.summary.uncited_approval_count}",
+            f"live_fallback_count\t{report.summary.live_fallback_count}",
             f"effective_mode\t{report.summary.effective_mode}",
             f"model\t{report.summary.model}",
             "judge_token_stats\t"
@@ -465,6 +518,49 @@ def render_semantic_report(report: SemanticReport) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def semantic_threshold_failures(
+    report: SemanticReport,
+    *,
+    requested_mode: str | None = None,
+    min_pass_rate: float | None = None,
+    max_p95_latency_ms: float | None = None,
+    max_uncited_approvals: int | None = 0,
+    max_empty_final_answers: int | None = 0,
+    max_live_fallbacks: int | None = None,
+) -> list[SemanticThresholdFailure]:
+    failures: list[SemanticThresholdFailure] = []
+    if requested_mode == "live" and report.summary.effective_mode != "live":
+        failures.append(("effective_mode_live", 0.0, 1.0, "minimum"))
+    if min_pass_rate is not None and report.summary.pass_rate < min_pass_rate:
+        failures.append(
+            ("pass_rate", report.summary.pass_rate, min_pass_rate, "minimum")
+        )
+    if (
+        max_p95_latency_ms is not None
+        and report.summary.latency_p95_ms > max_p95_latency_ms
+    ):
+        failures.append(
+            (
+                "latency_p95_ms",
+                report.summary.latency_p95_ms,
+                max_p95_latency_ms,
+                "maximum",
+            )
+        )
+    max_thresholds = {
+        "uncited_approval_count": max_uncited_approvals,
+        "empty_final_answer_count": max_empty_final_answers,
+        "live_fallback_count": max_live_fallbacks,
+    }
+    for field, maximum in max_thresholds.items():
+        if maximum is None:
+            continue
+        actual = float(getattr(report.summary, field))
+        if actual > float(maximum):
+            failures.append((field, actual, float(maximum), "maximum"))
+    return failures
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -477,6 +573,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--judge-model", help="Optional judge model override.")
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--report-out", type=Path)
+    parser.add_argument("--min-pass-rate", type=float)
+    parser.add_argument("--max-p95-latency-ms", type=float)
+    parser.add_argument("--max-uncited-approvals", type=int, default=0)
+    parser.add_argument("--max-empty-final-answers", type=int, default=0)
+    parser.add_argument("--max-live-fallbacks", type=int, default=0)
     return parser.parse_args(argv)
 
 
@@ -499,6 +600,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.report_out:
         write_semantic_report(report, args.report_out)
         print(f"report_saved\t{args.report_out}")
+    failures = semantic_threshold_failures(
+        report,
+        requested_mode=args.mode,
+        min_pass_rate=args.min_pass_rate,
+        max_p95_latency_ms=args.max_p95_latency_ms,
+        max_uncited_approvals=args.max_uncited_approvals,
+        max_empty_final_answers=args.max_empty_final_answers,
+        max_live_fallbacks=args.max_live_fallbacks,
+    )
+    for metric, actual, threshold, direction in failures:
+        print(
+            f"threshold_failure\t{metric}\tactual={actual:.4f}\t{direction}={threshold:.4f}",
+            file=sys.stderr,
+        )
+    if failures:
+        return 1
     return 0
 
 
