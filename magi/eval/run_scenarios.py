@@ -37,6 +37,7 @@ def _threshold_failures(
     report, args: argparse.Namespace
 ) -> list[tuple[str, float, float, str]]:
     summary = report.summary
+    requested_mode = str(getattr(args, "mode", "") or "")
     max_live_fallbacks = args.max_live_fallbacks
     if (
         max_live_fallbacks is None
@@ -44,6 +45,8 @@ def _threshold_failures(
         and summary.effective_mode == "live"
     ):
         max_live_fallbacks = 0
+    max_uncited_approvals = getattr(args, "max_uncited_approvals", 0)
+    max_empty_final_answers = getattr(args, "max_empty_final_answers", 0)
     min_thresholds = {
         "overall_score": args.min_overall_score,
         "verdict_accuracy": args.min_verdict_accuracy,
@@ -54,16 +57,22 @@ def _threshold_failures(
         "average_citation_hit_rate": args.min_average_citation_hit_rate,
         "average_answer_support_score": args.min_average_answer_support_score,
         "supported_answer_rate": args.min_supported_answer_rate,
+        "cached_replay_hit_rate": args.min_cached_replay_hit_rate,
     }
     max_thresholds = {
         "latency_p50_ms": args.max_p50_latency_ms,
         "latency_p95_ms": args.max_p95_latency_ms,
         "latency_max_ms": args.max_max_latency_ms,
+        "cached_latency_p95_ms": args.max_cached_p95_latency_ms,
         "average_estimated_cost_usd": args.max_average_cost_usd,
         "total_estimated_cost_usd": args.max_total_cost_usd,
         "live_fallback_count": max_live_fallbacks,
+        "uncited_approval_count": max_uncited_approvals,
+        "empty_final_answer_count": max_empty_final_answers,
     }
     failures: list[tuple[str, float, float, str]] = []
+    if requested_mode == "live" and summary.effective_mode != "live":
+        failures.append(("effective_mode_live", 0.0, 1.0, "minimum"))
     for field, minimum in min_thresholds.items():
         if minimum is None:
             continue
@@ -152,6 +161,11 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Fail if supported_answer_rate falls below this threshold.",
     )
     parser.add_argument(
+        "--min-cached-replay-hit-rate",
+        type=_bounded_rate,
+        help="Fail if cached_replay_hit_rate falls below this threshold.",
+    )
+    parser.add_argument(
         "--max-p50-latency-ms",
         type=float,
         help="Fail if latency_p50_ms exceeds this threshold.",
@@ -160,6 +174,11 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         "--max-p95-latency-ms",
         type=float,
         help="Fail if latency_p95_ms exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--max-cached-p95-latency-ms",
+        type=float,
+        help="Fail if cached_latency_p95_ms exceeds this threshold.",
     )
     parser.add_argument(
         "--max-max-latency-ms",
@@ -180,6 +199,18 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         "--max-live-fallbacks",
         type=_nonnegative_int,
         help="Fail if live_fallback_count exceeds this threshold. Live mode defaults to 0.",
+    )
+    parser.add_argument(
+        "--max-uncited-approvals",
+        type=_nonnegative_int,
+        default=0,
+        help="Fail if any approve verdict lacks a fully valid final-answer citation by default.",
+    )
+    parser.add_argument(
+        "--max-empty-final-answers",
+        type=_nonnegative_int,
+        default=0,
+        help="Fail if any case returns an empty final answer by default.",
     )
     parser.add_argument(
         "--allow-live-fallbacks",
