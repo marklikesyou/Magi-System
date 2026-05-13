@@ -15,7 +15,7 @@ class PresentationPolicy:
     style: PresentationStyle = "standard"
     response_format_guidance: str = ""
     show_persona_perspectives: bool = True
-    show_routing_rationale: bool = True
+    show_routing_rationale: bool = False
     show_cited_evidence: bool = True
     show_blocked_evidence: bool = True
     max_next_steps: int | None = None
@@ -137,6 +137,21 @@ def _evidence_block(trace: DecisionTrace, policy: PresentationPolicy) -> list[st
     return lines
 
 
+def _routing_block(trace: DecisionTrace, policy: PresentationPolicy) -> list[str]:
+    if not policy.show_routing_rationale:
+        return []
+    lines = [
+        "Why This Route:",
+        f"  - Mode: {trace.query_mode}",
+    ]
+    rationale = str(trace.routing_rationale or "").strip()
+    if rationale:
+        lines.append(f"  - Rationale: {rationale}")
+    if trace.requested_route:
+        lines.append(f"  - Requested Route: {trace.requested_route}")
+    return lines
+
+
 def _persona_block(personas: Iterable[PersonaOutput]) -> list[str]:
     lines = [f"{'-' * 60}", "Persona Perspectives:", ""]
     for persona in personas:
@@ -200,6 +215,9 @@ def _render_standard(
         lines.append(f"Abstention Reason: {decision.abstention_reason}")
         lines.append("")
     lines.extend(_evidence_block(trace, policy))
+    routing = _routing_block(trace, policy)
+    if routing:
+        lines.extend([""] + routing)
     if policy.show_persona_perspectives:
         lines.extend(_persona_block(decision.persona_outputs))
     lines.extend(_bullet_block("Risks", decision.risks))
@@ -239,6 +257,9 @@ def _render_executive_brief(
     evidence = _evidence_block(trace, policy)
     if evidence:
         lines.extend([""] + evidence[:-1])
+    routing = _routing_block(trace, policy)
+    if routing:
+        lines.extend([""] + routing)
     risk_block = _bullet_block("Key Risks", decision.risks)
     if risk_block:
         lines.extend([""] + risk_block)
@@ -280,6 +301,9 @@ def _render_incident_review(
     evidence = _evidence_block(result.decision_trace, policy)
     if evidence:
         lines.extend([""] + evidence[:-1])
+    routing = _routing_block(result.decision_trace, policy)
+    if routing:
+        lines.extend([""] + routing)
     if decision.abstained and decision.abstention_reason:
         lines.extend(["", f"Unknowns: {decision.abstention_reason}"])
     if policy.show_persona_perspectives:
@@ -306,6 +330,9 @@ def _render_policy_triage(
     evidence = _evidence_block(result.decision_trace, policy)
     if evidence:
         lines.extend([""] + evidence[:-1])
+    routing = _routing_block(result.decision_trace, policy)
+    if routing:
+        lines.extend([""] + routing)
     lines.extend(["", "Interpretation And Guardrails:", decision.justification])
     follow_up = _trim_next_steps(result, policy)
     if follow_up or decision.review_reason:
@@ -336,6 +363,9 @@ def _render_vendor_review(
     evidence = _evidence_block(result.decision_trace, policy)
     if evidence:
         lines.extend([""] + evidence[:-1])
+    routing = _routing_block(result.decision_trace, policy)
+    if routing:
+        lines.extend([""] + routing)
     risk_block = _bullet_block("Key Risks", decision.risks)
     if risk_block:
         lines.extend([""] + risk_block)
@@ -375,6 +405,9 @@ def _render_security_review(
     evidence = _evidence_block(result.decision_trace, policy)
     if evidence:
         lines.extend([""] + evidence[:-1])
+    routing = _routing_block(result.decision_trace, policy)
+    if routing:
+        lines.extend([""] + routing)
     if decision.requires_human_review and decision.review_reason:
         lines.extend(["", f"Review Gate: {decision.review_reason}"])
     if policy.show_persona_perspectives:
