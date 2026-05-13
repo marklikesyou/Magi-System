@@ -53,6 +53,11 @@ def test_built_wheel_contains_runtime_assets_without_tests(tmp_path: Path) -> No
         metadata = wheel.read(metadata_path).decode("utf-8")
 
     assert "magi/profiles/security-review.yaml" in names
+    assert "magi/eval/ACCEPTANCE.md" in names
+    assert "magi/eval/acceptance_audit.py" in names
+    assert "magi/eval/build_adversarial_semantic_suite.py" in names
+    assert "magi/eval/run_gauntlet.py" in names
+    assert "magi/eval/verify_gauntlet_manifest.py" in names
     assert "magi/eval/production_scenarios.yaml" in names
     assert "magi/eval/retrieval_corpus/pilot_brief.txt" in names
     assert "magi/infra/docker-compose.yml" in names
