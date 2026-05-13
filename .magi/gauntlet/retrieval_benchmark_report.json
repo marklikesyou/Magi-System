@@ -1,0 +1,111 @@
+{
+  "metadata": {
+    "name": "MAGI Retrieval Benchmark",
+    "version": "1.0",
+    "description": "Corpus-backed retrieval benchmark that exercises ingest, chunking, embedding, storage, and retrieval.",
+    "suite_type": "retrieval_benchmark",
+    "corpus_root": "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus",
+    "store_path": "/var/folders/j3/01dxh7d97679dyq4v6k7dmbh0000gn/T/tmp2hehwq0j/retrieval_benchmark_store.json"
+  },
+  "summary": {
+    "total_cases": 3,
+    "passed_cases": 3,
+    "overall_score": 1.0,
+    "retrieval_evaluable_cases": 3,
+    "cases_with_retrieval_hits": 3,
+    "retrieval_hit_rate": 1.0,
+    "retrieval_ranked_cases": 3,
+    "retrieval_top_source_accuracy": 1.0,
+    "retrieval_mrr": 1.0,
+    "retrieval_source_recall": 1.0,
+    "ingested_document_count": 4,
+    "ingested_chunk_count": 4,
+    "store_backend": "InMemoryVectorStore",
+    "store_destination": "Store persisted to /var/folders/j3/01dxh7d97679dyq4v6k7dmbh0000gn/T/tmp2hehwq0j/retrieval_benchmark_store.json (hashing(dim=384, bucket_size=2), entries=4)",
+    "embedder": "HashingEmbedder",
+    "embedding_dimension": 384
+  },
+  "cases": [
+    {
+      "id": "retrieve_magi_overview",
+      "description": "Retrieve the MAGI overview for a product summary query.",
+      "query": "Which system is a multi persona reasoning engine that returns a final verdict with cited support?",
+      "top_k": 8,
+      "passed": true,
+      "expected_match_mode": "any",
+      "expected_sources": [
+        "magi_overview"
+      ],
+      "retrieved_sources": [
+        "magi_overview",
+        "team_social",
+        "rollout_status",
+        "pilot_brief"
+      ],
+      "retrieved_document_ids": [
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/magi_overview.txt::chunk-0",
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/team_social.txt::chunk-0",
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/rollout_status.txt::chunk-0",
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/pilot_brief.txt::chunk-0"
+      ],
+      "retrieved_chunk_count": 4,
+      "retrieved_relevant_chunk_count": 1,
+      "first_expected_source_rank": 1,
+      "retrieval_source_recall": 1.0
+    },
+    {
+      "id": "retrieve_pilot_guardrails",
+      "description": "Retrieve the pilot controls document for guardrail questions.",
+      "query": "What guardrails are required for the internal policy triage pilot?",
+      "top_k": 8,
+      "passed": true,
+      "expected_match_mode": "any",
+      "expected_sources": [
+        "pilot_brief"
+      ],
+      "retrieved_sources": [
+        "pilot_brief",
+        "rollout_status",
+        "team_social",
+        "magi_overview"
+      ],
+      "retrieved_document_ids": [
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/pilot_brief.txt::chunk-0",
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/rollout_status.txt::chunk-0",
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/team_social.txt::chunk-0",
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/magi_overview.txt::chunk-0"
+      ],
+      "retrieved_chunk_count": 4,
+      "retrieved_relevant_chunk_count": 1,
+      "first_expected_source_rank": 1,
+      "retrieval_source_recall": 1.0
+    },
+    {
+      "id": "retrieve_rollout_status",
+      "description": "Retrieve rollout status notes for operational status questions.",
+      "query": "What is the current rollout status and who is monitoring it?",
+      "top_k": 8,
+      "passed": true,
+      "expected_match_mode": "any",
+      "expected_sources": [
+        "rollout_status"
+      ],
+      "retrieved_sources": [
+        "rollout_status",
+        "team_social",
+        "pilot_brief",
+        "magi_overview"
+      ],
+      "retrieved_document_ids": [
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/rollout_status.txt::chunk-0",
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/team_social.txt::chunk-0",
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/pilot_brief.txt::chunk-0",
+        "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_corpus/magi_overview.txt::chunk-0"
+      ],
+      "retrieved_chunk_count": 4,
+      "retrieved_relevant_chunk_count": 1,
+      "first_expected_source_rank": 1,
+      "retrieval_source_recall": 1.0
+    }
+  ]
+}
