@@ -117,6 +117,18 @@ def _provider_setup_issue(settings: Settings) -> str:
     return "No AI provider API key is configured."
 
 
+def _openai_setup_issue(settings: Settings) -> str:
+    openai_key = str(getattr(settings, "openai_api_key", "") or "").strip()
+    if not openai_key:
+        return "OPENAI_API_KEY is required for the production acceptance gauntlet."
+    if not _module_available("openai"):
+        return (
+            "OPENAI_API_KEY is set, but the openai package is not installed. "
+            "Reinstall with `magi-system[openai]` or rerun the curl installer."
+        )
+    return ""
+
+
 def _requires_provider_setup(args: argparse.Namespace) -> bool:
     command = str(getattr(args, "command", "") or "")
     if command in _PROVIDER_REQUIRED_COMMANDS:
@@ -124,11 +136,19 @@ def _requires_provider_setup(args: argparse.Namespace) -> bool:
     if command == "docs":
         return str(getattr(args, "docs_command", "") or "") == "add"
     if command == "eval":
+        eval_command = str(getattr(args, "eval_command", "") or "")
         return (
-            str(getattr(args, "eval_command", "") or "") == "run"
+            eval_command == "run"
             and str(getattr(args, "mode", "") or "") == "live"
         )
     return False
+
+
+def _requires_openai_setup(args: argparse.Namespace) -> bool:
+    return (
+        str(getattr(args, "command", "") or "") == "eval"
+        and str(getattr(args, "eval_command", "") or "") == "gauntlet"
+    )
 
 
 def ensure_provider_setup() -> bool:
@@ -141,6 +161,22 @@ def ensure_provider_setup() -> bool:
 
     _print_error(f"Error: {issue}")
     _print_error("Run `magi setup` to save an OpenAI or Google API key before using MAGI.")
+    _print_error(f"Config file: {user_env_file()}")
+    return False
+
+
+def ensure_openai_setup() -> bool:
+    if _offline_mode_allowed():
+        return True
+
+    issue = _openai_setup_issue(get_settings())
+    if not issue:
+        return True
+
+    _print_error(f"Error: {issue}")
+    _print_error(
+        "Run `magi setup --provider openai` to save an OpenAI API key before running the gauntlet."
+    )
     _print_error(f"Config file: {user_env_file()}")
     return False
 
@@ -1130,6 +1166,14 @@ def _scenario_threshold_failures(
     args: argparse.Namespace,
 ) -> list[tuple[str, float, float, str]]:
     summary = report.summary
+    requested_mode = str(getattr(args, "mode", "") or "")
+    max_live_fallbacks = getattr(args, "max_live_fallbacks", None)
+    if (
+        max_live_fallbacks is None
+        and not getattr(args, "allow_live_fallbacks", False)
+        and summary.effective_mode == "live"
+    ):
+        max_live_fallbacks = 0
     min_thresholds = {
         "overall_score": getattr(args, "min_overall_score", None),
         "verdict_accuracy": getattr(args, "min_verdict_accuracy", None),
@@ -1156,15 +1200,26 @@ def _scenario_threshold_failures(
             None,
         ),
         "supported_answer_rate": getattr(args, "min_supported_answer_rate", None),
+        "cached_replay_hit_rate": getattr(
+            args,
+            "min_cached_replay_hit_rate",
+            None,
+        ),
     }
     max_thresholds = {
         "latency_p50_ms": getattr(args, "max_p50_latency_ms", None),
         "latency_p95_ms": getattr(args, "max_p95_latency_ms", None),
         "latency_max_ms": getattr(args, "max_max_latency_ms", None),
+        "cached_latency_p95_ms": getattr(args, "max_cached_p95_latency_ms", None),
         "average_estimated_cost_usd": getattr(args, "max_average_cost_usd", None),
         "total_estimated_cost_usd": getattr(args, "max_total_cost_usd", None),
+        "live_fallback_count": max_live_fallbacks,
+        "uncited_approval_count": getattr(args, "max_uncited_approvals", 0),
+        "empty_final_answer_count": getattr(args, "max_empty_final_answers", 0),
     }
     failures: list[tuple[str, float, float, str]] = []
+    if requested_mode == "live" and summary.effective_mode != "live":
+        failures.append(("effective_mode_live", 0.0, 1.0, "minimum"))
     for field, minimum in min_thresholds.items():
         if minimum is None:
             continue
@@ -1262,6 +1317,56 @@ def command_eval_regressions(args: argparse.Namespace) -> int:
             return 1
         print("status\tok")
         return 0
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
+
+
+def command_eval_gauntlet(args: argparse.Namespace) -> int:
+    try:
+        from magi.eval.run_gauntlet import run_gauntlet
+
+        return run_gauntlet(args)
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
+
+
+def command_eval_verify_gauntlet(args: argparse.Namespace) -> int:
+    try:
+        from magi.eval.verify_gauntlet_manifest import verify_gauntlet_manifest
+
+        failures = verify_gauntlet_manifest(
+            args.manifest,
+            check_report_files=not args.skip_report_file_check,
+        )
+        if failures:
+            for failure in failures:
+                _print_error(f"gauntlet_manifest_failed\t{failure}")
+            return 1
+        print(f"gauntlet_manifest_verified\t{args.manifest}")
+        return 0
+    except Exception as e:
+        _print_error(f"Error: {e}")
+        return 1
+
+
+def command_eval_audit(args: argparse.Namespace) -> int:
+    try:
+        from magi.eval.acceptance_audit import build_acceptance_audit
+
+        audit = build_acceptance_audit(
+            args.manifest,
+            check_report_files=not args.skip_report_file_check,
+        )
+        text = json.dumps(audit, ensure_ascii=True, indent=2)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(text, encoding="utf-8")
+            print(f"acceptance_audit_saved\t{args.out}")
+        else:
+            print(text)
+        return 0 if audit["metadata"]["status"] == "passed" else 1
     except Exception as e:
         _print_error(f"Error: {e}")
         return 1
@@ -1690,11 +1795,17 @@ def _add_eval_run_thresholds(target: argparse.ArgumentParser) -> None:
     target.add_argument("--min-average-citation-hit-rate", type=float)
     target.add_argument("--min-average-answer-support-score", type=float)
     target.add_argument("--min-supported-answer-rate", type=float)
+    target.add_argument("--min-cached-replay-hit-rate", type=float)
     target.add_argument("--max-p50-latency-ms", type=float)
     target.add_argument("--max-p95-latency-ms", type=float)
+    target.add_argument("--max-cached-p95-latency-ms", type=float)
     target.add_argument("--max-max-latency-ms", type=float)
     target.add_argument("--max-average-cost-usd", type=float)
     target.add_argument("--max-total-cost-usd", type=float)
+    target.add_argument("--max-live-fallbacks", type=int)
+    target.add_argument("--allow-live-fallbacks", action="store_true")
+    target.add_argument("--max-uncited-approvals", type=int, default=0)
+    target.add_argument("--max-empty-final-answers", type=int, default=0)
 
 
 def _add_eval_parsers(subparsers: Any) -> None:
@@ -1737,6 +1848,51 @@ def _add_eval_parsers(subparsers: Any) -> None:
     )
     _add_eval_run_thresholds(eval_run_parser)
     eval_run_parser.set_defaults(handler=command_eval_run)
+
+    eval_gauntlet_parser = eval_subparsers.add_parser(
+        "gauntlet", help="Run the full production acceptance gauntlet."
+    )
+    from magi.eval.run_gauntlet import add_gauntlet_arguments
+
+    add_gauntlet_arguments(eval_gauntlet_parser)
+    eval_gauntlet_parser.set_defaults(handler=command_eval_gauntlet)
+
+    verify_gauntlet_parser = eval_subparsers.add_parser(
+        "verify-gauntlet", help="Verify a saved production gauntlet manifest."
+    )
+    verify_gauntlet_parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path(".magi") / "gauntlet" / "gauntlet_manifest.json",
+        help="Path to gauntlet_manifest.json.",
+    )
+    verify_gauntlet_parser.add_argument(
+        "--skip-report-file-check",
+        action="store_true",
+        help="Validate manifest contents only.",
+    )
+    verify_gauntlet_parser.set_defaults(handler=command_eval_verify_gauntlet)
+
+    audit_parser = eval_subparsers.add_parser(
+        "audit", help="Build an objective-to-artifact acceptance audit."
+    )
+    audit_parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path(".magi") / "gauntlet" / "gauntlet_manifest.json",
+        help="Path to gauntlet_manifest.json.",
+    )
+    audit_parser.add_argument(
+        "--out",
+        type=Path,
+        help="Optional path to write the acceptance audit JSON.",
+    )
+    audit_parser.add_argument(
+        "--skip-report-file-check",
+        action="store_true",
+        help="Validate manifest contents only.",
+    )
+    audit_parser.set_defaults(handler=command_eval_audit)
 
     eval_compare_parser = eval_subparsers.add_parser(
         "compare", help="Compare two saved evaluation reports."
@@ -1841,7 +1997,10 @@ def main(argv: List[str] | None = None) -> int:
             return command_shell(args)
         parser.print_help()
         return 0
-    if _requires_provider_setup(args) and not ensure_provider_setup():
+    if _requires_openai_setup(args):
+        if not ensure_openai_setup():
+            return 1
+    elif _requires_provider_setup(args) and not ensure_provider_setup():
         return 1
     store_path = getattr(args, "store", None)
     if isinstance(store_path, Path):
