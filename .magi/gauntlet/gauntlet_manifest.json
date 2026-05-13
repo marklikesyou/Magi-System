@@ -1,0 +1,241 @@
+{
+  "metadata": {
+    "suite_type": "production_acceptance_gauntlet",
+    "status": "passed",
+    "generated_at": "2026-05-13T13:57:18.928060+00:00",
+    "adversarial_semantic_cases": 1000,
+    "criteria": [
+      {
+        "id": "production_scenarios",
+        "gate": "production_stub",
+        "overall_score": 1.0
+      },
+      {
+        "id": "retrieval_benchmark",
+        "gate": "retrieval_benchmark",
+        "overall_score": 1.0,
+        "retrieval_hit_rate": 1.0,
+        "retrieval_top_source_accuracy": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_source_recall": 1.0
+      },
+      {
+        "id": "live_scenarios",
+        "gate": "live_provider",
+        "overall_score": 1.0,
+        "provider": "openai_responses_api",
+        "effective_mode": "live",
+        "max_live_fallbacks": 0
+      },
+      {
+        "id": "semantic_suite",
+        "gate": "semantic",
+        "case_count": 1000,
+        "categories": [
+          "summary",
+          "extract",
+          "fact_check",
+          "recommend",
+          "decision",
+          "injection",
+          "harmful"
+        ],
+        "min_pass_rate": 0.95
+      },
+      {
+        "id": "no_uncited_approvals",
+        "max_uncited_approvals": 0
+      },
+      {
+        "id": "no_empty_final_answers",
+        "max_empty_final_answers": 0
+      },
+      {
+        "id": "stub_latency",
+        "max_p95_latency_ms": 1000
+      },
+      {
+        "id": "cached_replay_latency",
+        "max_cached_p95_latency_ms": 250
+      }
+    ]
+  },
+  "inputs": {
+    "production_cases": "/Users/marcoianni/Work Code/Magi-System/magi/eval/production_scenarios.yaml",
+    "live_cases": "/Users/marcoianni/Work Code/Magi-System/magi/eval/live_scenarios.yaml",
+    "retrieval_cases": "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_benchmark.yaml",
+    "semantic_cases": ".magi/gauntlet/adversarial_semantic.yaml",
+    "semantic_mode": "stub",
+    "semantic_concurrency": 8,
+    "model": "",
+    "judge_model": ""
+  },
+  "reports": {
+    "production": ".magi/gauntlet/production_report.json",
+    "live": ".magi/gauntlet/live_report.json",
+    "retrieval": ".magi/gauntlet/retrieval_benchmark_report.json",
+    "semantic": ".magi/gauntlet/adversarial_semantic_report.json",
+    "manifest": ".magi/gauntlet/gauntlet_manifest.json"
+  },
+  "results": [
+    {
+      "gate": "production_stub",
+      "status": "passed",
+      "mode": "stub",
+      "cases": "/Users/marcoianni/Work Code/Magi-System/magi/eval/production_scenarios.yaml",
+      "report": ".magi/gauntlet/production_report.json",
+      "thresholds": {
+        "min_overall_score": 1.0,
+        "min_verdict_accuracy": 1.0,
+        "min_requirement_pass_rate": 1.0,
+        "min_retrieval_hit_rate": 1.0,
+        "min_retrieval_top_source_accuracy": 1.0,
+        "min_retrieval_source_recall": 1.0,
+        "min_average_answer_support_score": 0.1,
+        "min_cached_replay_hit_rate": 1.0,
+        "max_p95_latency_ms": 1000.0,
+        "max_cached_p95_latency_ms": 250.0,
+        "max_average_cost_usd": 0.001,
+        "max_total_cost_usd": 0.0,
+        "max_live_fallbacks": 0,
+        "allow_live_fallbacks": false,
+        "max_uncited_approvals": 0,
+        "max_empty_final_answers": 0,
+        "mode": "stub"
+      },
+      "summary": {
+        "overall_score": 1.0,
+        "verdict_accuracy": 1.0,
+        "requirement_pass_rate": 1.0,
+        "requested_mode": "stub",
+        "effective_mode": "stub",
+        "total_cases": 4,
+        "passed_cases": 4,
+        "retrieval_hit_rate": 1.0,
+        "retrieval_top_source_accuracy": 1.0,
+        "retrieval_source_recall": 1.0,
+        "average_citation_hit_rate": 1.0,
+        "average_answer_support_score": 0.5972986897844093,
+        "supported_answer_rate": 1.0,
+        "latency_p95_ms": 17.87,
+        "cached_latency_p95_ms": 0.812,
+        "cached_replay_hit_rate": 1.0,
+        "live_fallback_count": 0,
+        "empty_final_answer_count": 0,
+        "uncited_approval_count": 0,
+        "total_estimated_cost_usd": 0.0
+      },
+      "failures": []
+    },
+    {
+      "gate": "retrieval_benchmark",
+      "status": "passed",
+      "cases": "/Users/marcoianni/Work Code/Magi-System/magi/eval/retrieval_benchmark.yaml",
+      "report": ".magi/gauntlet/retrieval_benchmark_report.json",
+      "thresholds": {
+        "min_overall_score": 1.0,
+        "min_retrieval_hit_rate": 1.0,
+        "min_retrieval_top_source_accuracy": 1.0,
+        "min_retrieval_mrr": 1.0,
+        "min_retrieval_source_recall": 1.0
+      },
+      "summary": {
+        "total_cases": 3,
+        "passed_cases": 3,
+        "overall_score": 1.0,
+        "retrieval_evaluable_cases": 3,
+        "cases_with_retrieval_hits": 3,
+        "retrieval_hit_rate": 1.0,
+        "retrieval_ranked_cases": 3,
+        "retrieval_top_source_accuracy": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_source_recall": 1.0,
+        "ingested_document_count": 4,
+        "ingested_chunk_count": 4,
+        "store_backend": "InMemoryVectorStore",
+        "embedder": "HashingEmbedder",
+        "embedding_dimension": 384
+      },
+      "failures": []
+    },
+    {
+      "gate": "live_provider",
+      "status": "passed",
+      "mode": "live",
+      "cases": "/Users/marcoianni/Work Code/Magi-System/magi/eval/live_scenarios.yaml",
+      "report": ".magi/gauntlet/live_report.json",
+      "thresholds": {
+        "min_overall_score": 1.0,
+        "min_verdict_accuracy": 1.0,
+        "min_requirement_pass_rate": 1.0,
+        "min_retrieval_hit_rate": 1.0,
+        "min_retrieval_top_source_accuracy": 1.0,
+        "min_retrieval_source_recall": 1.0,
+        "min_average_citation_hit_rate": 1.0,
+        "min_average_answer_support_score": 0.2,
+        "min_supported_answer_rate": 1.0,
+        "min_cached_replay_hit_rate": 1.0,
+        "max_p95_latency_ms": 60000.0,
+        "max_cached_p95_latency_ms": 250.0,
+        "max_average_cost_usd": 0.02,
+        "max_live_fallbacks": 0,
+        "allow_live_fallbacks": false,
+        "max_uncited_approvals": 0,
+        "max_empty_final_answers": 0,
+        "mode": "live"
+      },
+      "summary": {
+        "overall_score": 1.0,
+        "verdict_accuracy": 1.0,
+        "requirement_pass_rate": 1.0,
+        "requested_mode": "live",
+        "effective_mode": "live",
+        "total_cases": 5,
+        "passed_cases": 5,
+        "retrieval_hit_rate": 1.0,
+        "retrieval_top_source_accuracy": 1.0,
+        "retrieval_source_recall": 1.0,
+        "average_citation_hit_rate": 1.0,
+        "average_answer_support_score": 0.5160668933590926,
+        "supported_answer_rate": 1.0,
+        "latency_p95_ms": 44362.953,
+        "cached_latency_p95_ms": 26.66,
+        "cached_replay_hit_rate": 1.0,
+        "live_fallback_count": 0,
+        "empty_final_answer_count": 0,
+        "uncited_approval_count": 0,
+        "total_estimated_cost_usd": 0.0749
+      },
+      "failures": []
+    },
+    {
+      "gate": "semantic",
+      "status": "passed",
+      "mode": "stub",
+      "cases": ".magi/gauntlet/adversarial_semantic.yaml",
+      "report": ".magi/gauntlet/adversarial_semantic_report.json",
+      "thresholds": {
+        "min_pass_rate": 0.95,
+        "max_p95_latency_ms": 1000.0,
+        "max_uncited_approvals": 0,
+        "max_empty_final_answers": 0,
+        "max_live_fallbacks": 0
+      },
+      "summary": {
+        "total_cases": 1000,
+        "passed_cases": 973,
+        "pass_rate": 0.973,
+        "latency_p95_ms": 66.733,
+        "empty_final_answer_count": 0,
+        "uncited_approval_count": 0,
+        "live_fallback_count": 0,
+        "average_answer_quality_score": 0.86893,
+        "average_grounding_score": 0.9083300000000001,
+        "average_safety_score": 0.9927999999999999,
+        "effective_mode": "stub",
+        "judge_model": "gpt-5.2"
+      },
+      "failures": []
+    }
+  ]
+}
