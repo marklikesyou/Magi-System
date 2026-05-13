@@ -13,11 +13,20 @@ from magi.core.config import Settings
 
 
 class _FakeResponse:
+    output_text = '{"ok": true}'
+
     def model_dump(self) -> dict[str, object]:
-        return {"choices": [{"message": {"content": '{"ok": true}'}}]}
+        return {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": '{"ok": true}'}],
+                }
+            ]
+        }
 
 
-class _FakeCompletions:
+class _FakeResponses:
     def __init__(self, failures: int = 0) -> None:
         self.kwargs: dict[str, object] | None = None
         self.failures = failures
@@ -39,13 +48,11 @@ class _FakeRateLimiter:
         self.calls += 1
 
 
-def test_openai_client_forwards_response_format():
-    completions = _FakeCompletions()
+def test_openai_client_uses_responses_api_and_forwards_json_schema():
+    responses = _FakeResponses()
     client = object.__new__(OpenAIClient)
     client.model = "gpt-4o-mini-2024-07-18"
-    client.client = type(
-        "FakeOpenAI", (), {"chat": type("FakeChat", (), {"completions": completions})()}
-    )()
+    client.client = type("FakeOpenAI", (), {"responses": responses})()
 
     response = client.complete(
         [{"role": "user", "content": "Return JSON"}],
@@ -55,12 +62,20 @@ def test_openai_client_forwards_response_format():
         },
     )
 
-    assert completions.kwargs is not None
-    assert completions.kwargs["response_format"] == {
-        "type": "json_schema",
-        "json_schema": {"name": "demo", "strict": True, "schema": {}},
+    assert responses.kwargs is not None
+    assert responses.kwargs["input"] == [
+        {"role": "user", "content": "Return JSON", "type": "message"}
+    ]
+    assert responses.kwargs["store"] is False
+    assert responses.kwargs["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "demo",
+            "strict": True,
+            "schema": {},
+        },
     }
-    assert response["choices"]
+    assert response["choices"][0]["message"]["content"] == '{"ok": true}'
 
 
 class _FakeGeminiResponse:
@@ -104,32 +119,28 @@ def test_gemini_client_forwards_response_schema():
 
 
 def test_openai_client_retries_transient_failure():
-    completions = _FakeCompletions(failures=1)
+    responses = _FakeResponses(failures=1)
     client = object.__new__(OpenAIClient)
     client.model = "gpt-4o-mini-2024-07-18"
     client.max_retries = 2
     client.retry_initial_delay = 0.0
-    client.client = type(
-        "FakeOpenAI", (), {"chat": type("FakeChat", (), {"completions": completions})()}
-    )()
+    client.client = type("FakeOpenAI", (), {"responses": responses})()
 
     response = client.complete([{"role": "user", "content": "Return JSON"}])
 
-    assert completions.calls == 2
+    assert responses.calls == 2
     assert response["choices"]
 
 
 def test_openai_client_uses_rate_limiter():
-    completions = _FakeCompletions()
+    responses = _FakeResponses()
     limiter = _FakeRateLimiter()
     client = object.__new__(OpenAIClient)
     client.model = "gpt-4o-mini-2024-07-18"
     client.max_retries = 1
     client.retry_initial_delay = 0.0
     client.rate_limiter = limiter
-    client.client = type(
-        "FakeOpenAI", (), {"chat": type("FakeChat", (), {"completions": completions})()}
-    )()
+    client.client = type("FakeOpenAI", (), {"responses": responses})()
 
     client.complete([{"role": "user", "content": "Return JSON"}])
 
