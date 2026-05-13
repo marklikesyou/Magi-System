@@ -24,7 +24,7 @@ def test_settings_default_runtime_controls() -> None:
     assert settings.openai_high_stakes_model == "gpt-5.2"
     assert settings.enable_model_routing is True
     assert settings.enable_responder_llm is False
-    assert settings.enable_live_personas is False
+    assert settings.enable_live_personas is True
     assert settings.decision_trace_dir == ""
     assert settings.run_artifact_dir == ""
     assert settings.data_dir == ""
