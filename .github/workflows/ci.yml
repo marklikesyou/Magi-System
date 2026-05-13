@@ -18,6 +18,8 @@ jobs:
     env:
       MAGI_FORCE_DSPY_STUB: "1"
       MAGI_FORCE_HASH_EMBEDDER: "1"
+      HAS_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+      HAS_GOOGLE_KEY: ${{ secrets.GOOGLE_API_KEY != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -35,14 +37,30 @@ jobs:
 
       - name: Lint
         if: ${{ matrix.python-version == '3.10' }}
-        run: uv run ruff check magi/
+        run: uv run ruff check .
 
       - name: Type check
         if: ${{ matrix.python-version == '3.10' }}
-        run: uv run mypy magi/ --ignore-missing-imports
+        run: uv run mypy magi
+
+      - name: Whitespace check
+        if: ${{ matrix.python-version == '3.10' }}
+        run: git diff --check
 
       - name: Run tests
         run: uv run pytest magi/tests/ -v --tb=short
+
+      - name: Run retrieval benchmark gate
+        if: ${{ matrix.python-version == '3.10' }}
+        run: |
+          uv run python magi/eval/run_retrieval_benchmark.py \
+            --cases magi/eval/retrieval_benchmark.yaml \
+            --report-out retrieval_benchmark_report.json \
+            --min-overall-score 1.0 \
+            --min-retrieval-hit-rate 1.0 \
+            --min-retrieval-top-source-accuracy 1.0 \
+            --min-retrieval-mrr 1.0 \
+            --min-retrieval-source-recall 1.0
 
       - name: Run production scenario gates
         if: ${{ matrix.python-version == '3.10' }}
@@ -58,11 +76,37 @@ jobs:
             --min-retrieval-source-recall 1.0 \
             --min-average-answer-support-score 0.10 \
             --max-p95-latency-ms 1000 \
+            --min-cached-replay-hit-rate 1.0 \
+            --max-cached-p95-latency-ms 250 \
             --max-average-cost-usd 0.001 \
-            --max-total-cost-usd 0.0
+            --max-total-cost-usd 0.0 \
+            --max-uncited-approvals 0 \
+            --max-empty-final-answers 0
+
+      - name: Run deterministic live-scenario dataset gate
+        if: ${{ matrix.python-version == '3.10' }}
+        run: |
+          uv run python magi/eval/run_scenarios.py \
+            --cases magi/eval/live_scenarios.yaml \
+            --mode stub \
+            --min-overall-score 1.0 \
+            --min-verdict-accuracy 1.0 \
+            --min-requirement-pass-rate 1.0 \
+            --min-retrieval-hit-rate 1.0 \
+            --min-retrieval-top-source-accuracy 1.0 \
+            --min-retrieval-source-recall 1.0 \
+            --min-average-citation-hit-rate 1.0 \
+            --min-average-answer-support-score 0.20 \
+            --min-supported-answer-rate 1.0 \
+            --max-p95-latency-ms 1000 \
+            --min-cached-replay-hit-rate 1.0 \
+            --max-cached-p95-latency-ms 250 \
+            --max-total-cost-usd 0.0 \
+            --max-uncited-approvals 0 \
+            --max-empty-final-answers 0
 
       - name: Run live provider smoke test
-        if: ${{ matrix.python-version == '3.13' && (secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') }}
+        if: ${{ matrix.python-version == '3.13' && (env.HAS_OPENAI_KEY == 'true' || env.HAS_GOOGLE_KEY == 'true') }}
         env:
           MAGI_FORCE_DSPY_STUB: "0"
           MAGI_FORCE_HASH_EMBEDDER: "1"
@@ -72,20 +116,19 @@ jobs:
         run: uv run pytest magi/tests/test_live_provider_smoke.py -v --tb=short
 
       - name: Run live scenario suite
-        if: ${{ matrix.python-version == '3.13' && (secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') }}
+        if: ${{ matrix.python-version == '3.13' && env.HAS_OPENAI_KEY == 'true' }}
         env:
           MAGI_FORCE_DSPY_STUB: "0"
           MAGI_FORCE_HASH_EMBEDDER: "1"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           uv run python magi/eval/run_scenarios.py \
             --cases magi/eval/live_scenarios.yaml \
             --mode live \
             --report-out live_scenario_report.json \
-            --min-overall-score 0.80 \
-            --min-verdict-accuracy 0.80 \
-            --min-requirement-pass-rate 0.80 \
+            --min-overall-score 1.0 \
+            --min-verdict-accuracy 1.0 \
+            --min-requirement-pass-rate 1.0 \
             --min-retrieval-hit-rate 1.0 \
             --min-retrieval-top-source-accuracy 1.0 \
             --min-retrieval-source-recall 1.0 \
@@ -93,12 +136,36 @@ jobs:
             --min-average-answer-support-score 0.20 \
             --min-supported-answer-rate 1.0 \
             --max-p95-latency-ms 60000 \
+            --min-cached-replay-hit-rate 1.0 \
+            --max-cached-p95-latency-ms 250 \
+            --max-live-fallbacks 0 \
+            --max-uncited-approvals 0 \
+            --max-empty-final-answers 0 \
             --max-average-cost-usd 0.02
 
+      - name: Run live acceptance gauntlet
+        if: ${{ matrix.python-version == '3.13' && github.event_name == 'workflow_dispatch' && env.HAS_OPENAI_KEY == 'true' }}
+        env:
+          MAGI_FORCE_DSPY_STUB: "0"
+          MAGI_FORCE_HASH_EMBEDDER: "1"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          uv run python magi/eval/run_gauntlet.py
+          uv run python magi/eval/verify_gauntlet_manifest.py \
+            --manifest .magi/gauntlet/gauntlet_manifest.json
+
       - name: Upload live scenario report
-        if: ${{ always() && matrix.python-version == '3.13' && (secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '') }}
+        if: ${{ always() && matrix.python-version == '3.13' && env.HAS_OPENAI_KEY == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: live-scenario-report
           path: live_scenario_report.json
+          if-no-files-found: ignore
+
+      - name: Upload live gauntlet reports
+        if: ${{ always() && matrix.python-version == '3.13' && github.event_name == 'workflow_dispatch' && env.HAS_OPENAI_KEY == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-gauntlet-reports
+          path: .magi/gauntlet/
           if-no-files-found: ignore
