@@ -1,0 +1,299 @@
+{
+  "metadata": {
+    "suite_type": "acceptance_audit",
+    "status": "passed",
+    "generated_at": "2026-05-13T14:03:01.277497+00:00",
+    "manifest": ".magi/gauntlet/gauntlet_manifest.json",
+    "manifest_verified": true,
+    "checked_report_files": true
+  },
+  "objective": "Production-grade MAGI evidence-decision engine with preserved Melchior, Balthasar, and Casper contracts; Responses API-backed live runtime; deterministic offline parity; calibrated evidence gates; replayable operator artifacts; and a manifest-verifiable acceptance gauntlet.",
+  "checklist": [
+    {
+      "id": "persona_contracts",
+      "requirement": "Melchior, Balthasar, and Casper names, responsibilities, schemas, and public outputs are preserved.",
+      "status": "passed",
+      "evidence": [
+        "magi/tests/test_persona_contracts.py",
+        "magi/dspy_programs/personas.py",
+        "magi/dspy_programs/schemas.py",
+        "magi/dspy_programs/signatures.py"
+      ],
+      "gate": "",
+      "gate_summary": {},
+      "failures": []
+    },
+    {
+      "id": "responses_api_live_runtime",
+      "requirement": "Responses-API-backed live runtime with strict structured outputs is available and proven by the live gate.",
+      "status": "passed",
+      "evidence": [
+        "magi/core/clients.py",
+        "magi/tests/test_clients.py",
+        "gauntlet_manifest.json live_provider gate"
+      ],
+      "gate": "live_provider",
+      "gate_summary": {
+        "overall_score": 1.0,
+        "verdict_accuracy": 1.0,
+        "requirement_pass_rate": 1.0,
+        "requested_mode": "live",
+        "effective_mode": "live",
+        "total_cases": 5,
+        "passed_cases": 5,
+        "retrieval_hit_rate": 1.0,
+        "retrieval_top_source_accuracy": 1.0,
+        "retrieval_source_recall": 1.0,
+        "average_citation_hit_rate": 1.0,
+        "average_answer_support_score": 0.5160668933590926,
+        "supported_answer_rate": 1.0,
+        "latency_p95_ms": 44362.953,
+        "cached_latency_p95_ms": 26.66,
+        "cached_replay_hit_rate": 1.0,
+        "live_fallback_count": 0,
+        "empty_final_answer_count": 0,
+        "uncited_approval_count": 0,
+        "total_estimated_cost_usd": 0.0749
+      },
+      "failures": []
+    },
+    {
+      "id": "parallel_personas",
+      "requirement": "Live persona execution runs Melchior, Balthasar, and Casper in parallel without changing their contracts.",
+      "status": "passed",
+      "evidence": [
+        "magi/dspy_programs/runtime.py",
+        "magi/tests/test_runtime.py::test_live_personas_run_in_parallel_when_client_supports_it"
+      ],
+      "gate": "",
+      "gate_summary": {},
+      "failures": []
+    },
+    {
+      "id": "trace_ids_spans",
+      "requirement": "Trace IDs and execution spans are captured in decision records and run artifacts.",
+      "status": "passed",
+      "evidence": [
+        "magi/app/service.py",
+        "magi/app/artifacts.py",
+        "magi/tests/test_artifacts.py",
+        "magi/tests/test_magi_integration.py"
+      ],
+      "gate": "",
+      "gate_summary": {},
+      "failures": []
+    },
+    {
+      "id": "deterministic_offline_parity",
+      "requirement": "Deterministic offline mode remains testable with stub DSPy and hashing embeddings.",
+      "status": "passed",
+      "evidence": [
+        "MAGI_FORCE_DSPY_STUB=1 MAGI_FORCE_HASH_EMBEDDER=1 uv run pytest -q"
+      ],
+      "gate": "",
+      "gate_summary": {},
+      "failures": []
+    },
+    {
+      "id": "calibrated_thresholds",
+      "requirement": "Approval, abstention, citation, answer-support, cost, fallback, and latency thresholds are enforced.",
+      "status": "passed",
+      "evidence": [
+        "magi/eval/run_scenarios.py",
+        "magi/eval/scenario_harness.py",
+        "magi/eval/run_gauntlet.py",
+        "magi/eval/verify_gauntlet_manifest.py"
+      ],
+      "gate": "",
+      "gate_summary": {},
+      "failures": []
+    },
+    {
+      "id": "retrieval_reranking_citations",
+      "requirement": "Evidence retrieval, reranking, source recall, and citation verification are gated.",
+      "status": "passed",
+      "evidence": [
+        "magi/core/rag.py",
+        "retrieval_benchmark_report.json",
+        "gauntlet_manifest.json retrieval_benchmark gate"
+      ],
+      "gate": "retrieval_benchmark",
+      "gate_summary": {
+        "total_cases": 3,
+        "passed_cases": 3,
+        "overall_score": 1.0,
+        "retrieval_evaluable_cases": 3,
+        "cases_with_retrieval_hits": 3,
+        "retrieval_hit_rate": 1.0,
+        "retrieval_ranked_cases": 3,
+        "retrieval_top_source_accuracy": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_source_recall": 1.0,
+        "ingested_document_count": 4,
+        "ingested_chunk_count": 4,
+        "store_backend": "InMemoryVectorStore",
+        "embedder": "HashingEmbedder",
+        "embedding_dimension": 384
+      },
+      "failures": []
+    },
+    {
+      "id": "profile_rendering",
+      "requirement": "Profile-aware answer rendering is implemented for operator workflows.",
+      "status": "passed",
+      "evidence": [
+        "magi/app/presentation.py",
+        "magi/profiles/*.yaml",
+        "magi/tests/test_presentation.py",
+        "magi/tests/test_profiles.py"
+      ],
+      "gate": "",
+      "gate_summary": {},
+      "failures": []
+    },
+    {
+      "id": "replay_diff_debug_artifacts",
+      "requirement": "Replay, diff, explain, and debug artifacts are available through CLI and rendered artifacts.",
+      "status": "passed",
+      "evidence": [
+        "magi/app/artifacts.py",
+        "magi/app/cli.py",
+        "magi/tests/test_artifacts.py",
+        "magi/tests/test_cli_entrypoints.py"
+      ],
+      "gate": "",
+      "gate_summary": {},
+      "failures": []
+    },
+    {
+      "id": "production_scenarios",
+      "requirement": "Production scenario gate passes at 100% with strict deterministic thresholds.",
+      "status": "passed",
+      "evidence": [
+        "production_report.json",
+        "gauntlet_manifest.json production_stub gate"
+      ],
+      "gate": "production_stub",
+      "gate_summary": {
+        "overall_score": 1.0,
+        "verdict_accuracy": 1.0,
+        "requirement_pass_rate": 1.0,
+        "requested_mode": "stub",
+        "effective_mode": "stub",
+        "total_cases": 4,
+        "passed_cases": 4,
+        "retrieval_hit_rate": 1.0,
+        "retrieval_top_source_accuracy": 1.0,
+        "retrieval_source_recall": 1.0,
+        "average_citation_hit_rate": 1.0,
+        "average_answer_support_score": 0.5972986897844093,
+        "supported_answer_rate": 1.0,
+        "latency_p95_ms": 17.87,
+        "cached_latency_p95_ms": 0.812,
+        "cached_replay_hit_rate": 1.0,
+        "live_fallback_count": 0,
+        "empty_final_answer_count": 0,
+        "uncited_approval_count": 0,
+        "total_estimated_cost_usd": 0.0
+      },
+      "failures": []
+    },
+    {
+      "id": "live_scenarios",
+      "requirement": "OpenAI live scenario gate passes at 100% with zero live fallbacks.",
+      "status": "passed",
+      "evidence": [
+        "live_report.json",
+        "gauntlet_manifest.json live_provider gate"
+      ],
+      "gate": "live_provider",
+      "gate_summary": {
+        "overall_score": 1.0,
+        "verdict_accuracy": 1.0,
+        "requirement_pass_rate": 1.0,
+        "requested_mode": "live",
+        "effective_mode": "live",
+        "total_cases": 5,
+        "passed_cases": 5,
+        "retrieval_hit_rate": 1.0,
+        "retrieval_top_source_accuracy": 1.0,
+        "retrieval_source_recall": 1.0,
+        "average_citation_hit_rate": 1.0,
+        "average_answer_support_score": 0.5160668933590926,
+        "supported_answer_rate": 1.0,
+        "latency_p95_ms": 44362.953,
+        "cached_latency_p95_ms": 26.66,
+        "cached_replay_hit_rate": 1.0,
+        "live_fallback_count": 0,
+        "empty_final_answer_count": 0,
+        "uncited_approval_count": 0,
+        "total_estimated_cost_usd": 0.0749
+      },
+      "failures": []
+    },
+    {
+      "id": "semantic_suite",
+      "requirement": "1,000-case adversarial semantic suite passes at >=95% across summary, extract, fact-check, recommend, decision, injection, and harmful prompts.",
+      "status": "passed",
+      "evidence": [
+        "adversarial_semantic.yaml",
+        "adversarial_semantic_report.json",
+        "gauntlet_manifest.json semantic gate"
+      ],
+      "gate": "semantic",
+      "gate_summary": {
+        "total_cases": 1000,
+        "passed_cases": 973,
+        "pass_rate": 0.973,
+        "latency_p95_ms": 66.733,
+        "empty_final_answer_count": 0,
+        "uncited_approval_count": 0,
+        "live_fallback_count": 0,
+        "average_answer_quality_score": 0.86893,
+        "average_grounding_score": 0.9083300000000001,
+        "average_safety_score": 0.9927999999999999,
+        "effective_mode": "stub",
+        "judge_model": "gpt-5.2"
+      },
+      "failures": []
+    },
+    {
+      "id": "zero_bad_outputs",
+      "requirement": "Acceptance reports prove zero uncited approvals, zero live fallbacks in live gates, and no empty final answers.",
+      "status": "passed",
+      "evidence": [
+        "gauntlet_manifest.json",
+        "magi/eval/verify_gauntlet_manifest.py"
+      ],
+      "gate": "",
+      "gate_summary": {},
+      "failures": []
+    },
+    {
+      "id": "latency_gates",
+      "requirement": "Stub p95 latency is below 1s and cached/replay p95 latency is below 250ms.",
+      "status": "passed",
+      "evidence": [
+        "production_report.json",
+        "live_report.json",
+        "gauntlet_manifest.json"
+      ],
+      "gate": "",
+      "gate_summary": {},
+      "failures": []
+    },
+    {
+      "id": "operator_workflows",
+      "requirement": "Operator workflows for setup, evaluation, gauntlet verification, replay, diff, and audit are documented.",
+      "status": "passed",
+      "evidence": [
+        "README.md",
+        "magi/eval/ACCEPTANCE.md"
+      ],
+      "gate": "",
+      "gate_summary": {},
+      "failures": []
+    }
+  ],
+  "failures": []
+}
